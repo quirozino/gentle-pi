@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -67,4 +67,11 @@ test("sdd-sync declares canonical artifact and guardrail summary", () => {
 	const prompt = agentPrompt("sdd-sync");
 	assert.match(prompt, /openspec\/changes\/\{change\}\/sync-report\.md/);
 	assertGuardrailContract(prompt);
+});
+
+test("SDD agent assets do not hardcode unsupported Codex routes", () => {
+	const dir = join(root, "assets", "agents");
+	for (const file of readdirSync(dir).filter((name) => name.startsWith("sdd-") && name.endsWith(".md"))) {
+		assert.doesNotMatch(readFileSync(join(dir, file), "utf8"), /model:\s*openai-codex\/gpt-5\.3-codex/);
+	}
 });
