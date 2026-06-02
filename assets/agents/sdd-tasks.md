@@ -27,6 +27,13 @@ Read proposal, specs, design, project testing capabilities, and `openspec/config
 
 Write `openspec/changes/{change}/tasks.md` with concrete, reviewable implementation tasks.
 
+## Artifact and Guardrail Contract
+
+- Write the canonical artifact `openspec/changes/{change}/tasks.md`.
+- Include concrete tasks, dependencies, review workload forecast, and the exact guard lines.
+- Return a concise `GuardrailStatusSummary` covering any parent-provided `RouteValidationRecord`, artifact write status, `ReviewWorkloadGuard`, and `EngramPersistenceStatus` or fallback reason.
+- Do not report `COMPLETED` if the canonical artifact was not written.
+
 ## Required Review Workload Forecast
 
 Put this near the top of `tasks.md`:
