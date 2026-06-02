@@ -367,14 +367,21 @@ function textContent(value: unknown): string {
 	return value.map((part) => isRecord(part) && typeof part.text === "string" ? part.text : "").join("\n");
 }
 
+function explicitArtifactPath(agent: SddAgentName, content: string): string | undefined {
+	if (agent === "sdd-spec") return /\b(openspec\/changes\/[A-Za-z0-9_.-]+\/specs\/[A-Za-z0-9_.-]+\/spec\.md)\b/.exec(content)?.[1];
+	if (agent === "sdd-archive") return /\b(openspec\/changes\/(?:archive\/[0-9-]+-[A-Za-z0-9_.-]+|[A-Za-z0-9_.-]+)\/archive-report\.md)\b/.exec(content)?.[1];
+	return undefined;
+}
+
 function missingArtifactReplacement(cwd: string, agent: SddAgentName, message: unknown): string | undefined {
 	const content = textContent(isRecord(message) ? message.content : undefined);
-	const change = /openspec\/changes\/([A-Za-z0-9_.-]+)/.exec(content)?.[1]
-		?? /\bchange(?:[_-]?id|name)?\s*[:=]\s*[`'"]?([A-Za-z0-9_.-]+)/i.exec(content)?.[1]
+	const explicit = explicitArtifactPath(agent, content);
+	const change = /\bchange(?:[_-]?id|name)?\s*[:=]\s*[`'"]?([A-Za-z0-9_.-]+)/i.exec(content)?.[1]
 		?? /\bchange\s+[`'"]?([A-Za-z0-9_.-]+)/i.exec(content)?.[1]
+		?? /openspec\/changes\/([A-Za-z0-9_.-]+)/.exec(content)?.[1]
 		?? (agent === "sdd-init" ? "project" : undefined);
 	const domain = /\bdomain\s*[:=]\s*[`'"]?([A-Za-z0-9_.-]+)/i.exec(content)?.[1];
-	const expected = change ? canonicalArtifactForAgent(agent, change, domain) : undefined;
+	const expected = explicit ?? (change ? canonicalArtifactForAgent(agent, change, domain) : undefined);
 	if (!change || !expected || existsSync(join(cwd, expected))) return undefined;
 	const record = buildArtifactRecord({
 		change,

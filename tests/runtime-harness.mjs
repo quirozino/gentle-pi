@@ -591,12 +591,28 @@ async function run() {
 			ctx,
 		);
 		assert.match(specReplaced.message.content, /specs\/billing\/spec\.md/);
+		await mkdir(join(missingArtifactCwd, "openspec", "changes", "good", "specs", "billing"), { recursive: true });
+		await writeFile(join(missingArtifactCwd, "openspec", "changes", "good", "specs", "billing", "spec.md"), "ok\n");
+		await promptHook({ agentName: "sdd-spec", systemPrompt: "spec base" }, ctx);
+		const specOk = await messageEndHook(
+			{ message: { role: "assistant", content: "status: COMPLETED\nartifacts:\n- openspec/changes/good/specs/billing/spec.md" } },
+			ctx,
+		);
+		assert.equal(specOk, undefined);
 		await promptHook({ agentName: "sdd-archive", systemPrompt: "archive base" }, ctx);
 		const archiveReplaced = await messageEndHook(
 			{ message: { role: "assistant", content: "COMPLETED openspec/changes/missing-artifact" } },
 			ctx,
 		);
 		assert.match(archiveReplaced.message.content, /archive-report\.md/);
+		await mkdir(join(missingArtifactCwd, "openspec", "changes", "archive", "2026-06-02-good"), { recursive: true });
+		await writeFile(join(missingArtifactCwd, "openspec", "changes", "archive", "2026-06-02-good", "archive-report.md"), "ok\n");
+		await promptHook({ agentName: "sdd-archive", systemPrompt: "archive base" }, ctx);
+		const archiveOk = await messageEndHook(
+			{ message: { role: "assistant", content: "status: COMPLETED\nchange: good\narchived_path: openspec/changes/archive/2026-06-02-good\nartifacts:\n- openspec/changes/archive/2026-06-02-good/archive-report.md" } },
+			ctx,
+		);
+		assert.equal(archiveOk, undefined);
 		await promptHook({ agentName: "sdd-init", systemPrompt: "init base" }, ctx);
 		const initReplaced = await messageEndHook(
 			{ message: { role: "assistant", content: "status: COMPLETED" } },
