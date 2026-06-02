@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildClosureGateRecord, buildEngramStatus } from "../lib/sdd-guardrails.ts";
+import {
+	buildClosureGateRecord,
+	buildEngramStatus,
+	buildReviewWorkloadGuard,
+} from "../lib/sdd-guardrails.ts";
 
 test("buildEngramStatus passes verified significant saves", () => {
 	assert.deepEqual(
@@ -110,4 +114,33 @@ test("buildClosureGateRecord blocks failed verification and unresolved highs", (
 	assert.equal(record.status, "block");
 	assert.equal(record.remediation_required, true);
 	assert.equal(record.revalidation_required, true);
+});
+
+test("buildReviewWorkloadGuard selects stricter project budget", () => {
+	const guard = buildReviewWorkloadGuard({
+		change: "guardrails",
+		session_preflight_budget: 400,
+		openspec_config_budget: 100,
+		estimated_changed_lines: "180-280",
+		pr_strategy_preflight: "auto-forecast",
+		forecast_basis: ["tests", "helper"],
+		chain_strategy: "feature-branch-chain",
+	});
+	assert.equal(guard.selected_effective_budget, 100);
+	assert.equal(guard.decision_needed_before_apply, "Yes");
+	assert.equal(guard.status, "block");
+});
+
+test("buildReviewWorkloadGuard blocks pending chain strategy", () => {
+	const guard = buildReviewWorkloadGuard({
+		change: "guardrails",
+		session_preflight_budget: 400,
+		openspec_config_budget: 100,
+		estimated_changed_lines: "50",
+		pr_strategy_preflight: "auto-forecast",
+		forecast_basis: [],
+		chain_strategy: "pending",
+	});
+	assert.equal(guard.status, "block");
+	assert.equal(guard.chained_prs_recommended, "Yes");
 });

@@ -71,6 +71,38 @@ export interface ReviewWorkloadGuard {
 	status: GuardrailStatus;
 }
 
+export type ReviewWorkloadInput = Pick<ReviewWorkloadGuard, "change" | "session_preflight_budget" | "openspec_config_budget" | "pr_strategy_preflight" | "estimated_changed_lines" | "forecast_basis" | "chain_strategy">;
+
+function maxEstimatedLines(value: string): number {
+	return Math.max(...(value.match(/\d+/g) ?? ["0"]).map(Number));
+}
+
+function risk(estimate: number, budget: number | null): "Low" | "Medium" | "High" {
+	if (!budget) return "High";
+	if (estimate > budget) return "High";
+	if (estimate > budget * 0.75) return "Medium";
+	return "Low";
+}
+
+export function buildReviewWorkloadGuard(input: ReviewWorkloadInput): ReviewWorkloadGuard {
+	const budgets = [input.session_preflight_budget, input.openspec_config_budget].filter((n): n is number => typeof n === "number");
+	const selected = budgets.length > 0 ? Math.min(...budgets) : null;
+	const estimate = maxEstimatedLines(input.estimated_changed_lines);
+	const budget_risk_effective = risk(estimate, selected);
+	const pending = input.chain_strategy === "pending";
+	const needsDecision = pending || budget_risk_effective === "High";
+	return {
+		...input,
+		selected_effective_budget: selected,
+		budget_decision_source: selected === null ? "unresolved" : "stricter-default",
+		budget_risk_400: risk(estimate, 400),
+		budget_risk_effective,
+		decision_needed_before_apply: needsDecision ? "Yes" : "No",
+		chained_prs_recommended: needsDecision ? "Yes" : "No",
+		status: needsDecision ? "block" : "pass",
+	};
+}
+
 export interface ClosureGateRecord {
 	change: string;
 	non_trivial_change: boolean;
