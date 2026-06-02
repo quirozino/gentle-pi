@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+	buildArtifactRecord,
 	buildClosureGateRecord,
 	buildEngramStatus,
 	buildReviewWorkloadGuard,
@@ -143,4 +144,36 @@ test("buildReviewWorkloadGuard blocks pending chain strategy", () => {
 	});
 	assert.equal(guard.status, "block");
 	assert.equal(guard.chained_prs_recommended, "Yes");
+});
+
+test("buildArtifactRecord passes complete artifacts", () => {
+	assert.equal(
+		buildArtifactRecord({
+			change: "guardrails",
+			phase: "design",
+			expected_paths: ["design.md"],
+			found_paths: ["design.md"],
+			minimum_sections: ["decisions"],
+			present_sections: ["decisions"],
+			non_empty: true,
+			checked_at: "now",
+		}).status,
+		"pass",
+	);
+});
+
+test("buildArtifactRecord blocks missing or incomplete artifacts", () => {
+	const record = buildArtifactRecord({
+		change: "guardrails",
+		phase: "spec",
+		expected_paths: ["spec.md"],
+		found_paths: [],
+		minimum_sections: ["Requirement", "GIVEN"],
+		present_sections: ["Requirement"],
+		non_empty: false,
+		checked_at: "now",
+	});
+	assert.equal(record.status, "block");
+	assert.deepEqual(record.missing_paths, ["spec.md"]);
+	assert.deepEqual(record.missing_sections, ["GIVEN"]);
 });

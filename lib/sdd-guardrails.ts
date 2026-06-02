@@ -32,6 +32,18 @@ export interface ArtifactValidationRecord {
 	checked_at: string;
 }
 
+export type ArtifactValidationInput = Omit<ArtifactValidationRecord, "missing_paths" | "missing_sections" | "status"> & {
+	present_sections: string[];
+};
+
+export function buildArtifactRecord(input: ArtifactValidationInput): ArtifactValidationRecord {
+	const missing_paths = input.expected_paths.filter((path) => !input.found_paths.includes(path));
+	const missing_sections = input.minimum_sections.filter((section) => !input.present_sections.includes(section));
+	const status = missing_paths.length || missing_sections.length || !input.non_empty ? "block" : "pass";
+	const { present_sections: _present, ...record } = input;
+	return { ...record, missing_paths, missing_sections, status };
+}
+
 export interface EngramPersistenceStatus {
 	required: boolean;
 	available: boolean;
