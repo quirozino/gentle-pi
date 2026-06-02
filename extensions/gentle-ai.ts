@@ -344,16 +344,19 @@ function blockedSddRouteReason(cwd: string, event: unknown): string | undefined 
 	return `RouteValidationRecord blocked ${agent}: ${route.effective_model} (${route.compatibility_detail ?? "route validation failed"})`;
 }
 
-function canonicalArtifactForAgent(agent: SddAgentName, change: string): string | undefined {
+function canonicalArtifactForAgent(agent: SddAgentName, change: string, domain?: string): string | undefined {
+	if (agent === "sdd-init") return "openspec/config.yaml";
 	const base = `openspec/changes/${change}`;
 	const paths: Partial<Record<SddAgentName, string>> = {
 		"sdd-explore": `${base}/exploration.md`,
 		"sdd-proposal": `${base}/proposal.md`,
+		"sdd-spec": `${base}/specs/${domain ?? "{domain}"}/spec.md`,
 		"sdd-design": `${base}/design.md`,
 		"sdd-tasks": `${base}/tasks.md`,
 		"sdd-apply": `${base}/apply-progress.md`,
 		"sdd-verify": `${base}/verify-report.md`,
 		"sdd-sync": `${base}/sync-report.md`,
+		"sdd-archive": `${base}/archive-report.md`,
 	};
 	return paths[agent];
 }
@@ -366,8 +369,12 @@ function textContent(value: unknown): string {
 
 function missingArtifactReplacement(cwd: string, agent: SddAgentName, message: unknown): string | undefined {
 	const content = textContent(isRecord(message) ? message.content : undefined);
-	const change = /(?:change|openspec\/changes\/)\s*[`'"]?([A-Za-z0-9_.-]+)/.exec(content)?.[1];
-	const expected = change ? canonicalArtifactForAgent(agent, change) : undefined;
+	const change = /openspec\/changes\/([A-Za-z0-9_.-]+)/.exec(content)?.[1]
+		?? /\bchange(?:[_-]?id|name)?\s*[:=]\s*[`'"]?([A-Za-z0-9_.-]+)/i.exec(content)?.[1]
+		?? /\bchange\s+[`'"]?([A-Za-z0-9_.-]+)/i.exec(content)?.[1]
+		?? (agent === "sdd-init" ? "project" : undefined);
+	const domain = /\bdomain\s*[:=]\s*[`'"]?([A-Za-z0-9_.-]+)/i.exec(content)?.[1];
+	const expected = change ? canonicalArtifactForAgent(agent, change, domain) : undefined;
 	if (!change || !expected || existsSync(join(cwd, expected))) return undefined;
 	const record = buildArtifactRecord({
 		change,
@@ -1697,15 +1704,19 @@ export default function gentleAi(pi: ExtensionAPI): void {
 		};
 	});
 
-	pi.on("message_end", async (event, ctx) => {
-		if (!isRecord(event.message) || event.message.role !== "assistant") return undefined;
+	const agentLifecyclePi = pi as unknown as {
+		on(name: "message_end" | "agent_end", handler: (event: unknown, ctx: ExtensionContext) => unknown): void;
+	};
+	agentLifecyclePi.on("message_end", async (event, ctx) => {
+		const message = isRecord(event) ? event.message : undefined;
+		if (!isRecord(message) || message.role !== "assistant") return undefined;
 		const agent = activeSddAgentBySession.get(sessionKey(ctx));
 		if (!agent) return undefined;
-		const content = missingArtifactReplacement(ctx.cwd, agent, event.message);
-		return content ? { message: { ...event.message, content } } : undefined;
+		const content = missingArtifactReplacement(ctx.cwd, agent, message);
+		return content ? { message: { ...message, content } } : undefined;
 	});
 
-	pi.on("agent_end", async (_event, ctx) => {
+	agentLifecyclePi.on("agent_end", async (_event, ctx) => {
 		activeSddAgentBySession.delete(sessionKey(ctx));
 	});
 

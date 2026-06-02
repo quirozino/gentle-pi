@@ -580,11 +580,29 @@ async function run() {
 		await promptHook({ agentName: "sdd-apply", systemPrompt: "apply base" }, ctx);
 		const messageEndHook = hooks.get("message_end")[0];
 		const replaced = await messageEndHook(
-			{ message: { role: "assistant", content: "COMPLETED change missing-artifact" } },
+			{ message: { role: "assistant", content: "status: COMPLETED\nchange: missing-artifact" } },
 			ctx,
 		);
 		assert.match(replaced.message.content, /ArtifactValidationRecord/);
 		assert.match(replaced.message.content, /apply-progress\.md/);
+		await promptHook({ agentName: "sdd-spec", systemPrompt: "spec base" }, ctx);
+		const specReplaced = await messageEndHook(
+			{ message: { role: "assistant", content: "status: COMPLETED\nchange: missing-artifact\ndomain: billing" } },
+			ctx,
+		);
+		assert.match(specReplaced.message.content, /specs\/billing\/spec\.md/);
+		await promptHook({ agentName: "sdd-archive", systemPrompt: "archive base" }, ctx);
+		const archiveReplaced = await messageEndHook(
+			{ message: { role: "assistant", content: "COMPLETED openspec/changes/missing-artifact" } },
+			ctx,
+		);
+		assert.match(archiveReplaced.message.content, /archive-report\.md/);
+		await promptHook({ agentName: "sdd-init", systemPrompt: "init base" }, ctx);
+		const initReplaced = await messageEndHook(
+			{ message: { role: "assistant", content: "status: COMPLETED" } },
+			ctx,
+		);
+		assert.match(initReplaced.message.content, /openspec\/config\.yaml/);
 	} finally {
 		await rm(missingArtifactCwd, { recursive: true, force: true });
 	}
