@@ -133,6 +133,13 @@ Include:
 - archived path;
 - memory observation IDs when using Engram or `both` / `hybrid` mode.
 
+## Artifact and Guardrail Contract
+
+- Write the canonical archive report before moving the change; file-backed mode uses `openspec/changes/{change}/archive-report.md`.
+- Include archive status, artifacts read, domains synced, approvals/blockers, archived path, and memory status when applicable.
+- Return a concise `GuardrailStatusSummary` covering any parent-provided `RouteValidationRecord`, artifact write status, and `EngramPersistenceStatus` or fallback reason.
+- Do not report `COMPLETED` if the required archive report was not written.
+
 ## Rules
 
 - Read verify report before archiving.

@@ -62,6 +62,13 @@ Write `openspec/changes/{change}/verify-report.md` with:
 - review workload / PR boundary findings;
 - exact blockers.
 
+## Artifact and Guardrail Contract
+
+- Write the canonical artifact `openspec/changes/{change}/verify-report.md`.
+- Include pass/fail status, spec/task coverage, commands, blockers, and workload boundary findings.
+- Return a concise `GuardrailStatusSummary` covering any parent-provided `RouteValidationRecord`, artifact write status, and `EngramPersistenceStatus` or fallback reason.
+- Do not report `COMPLETED` if the canonical artifact was not written.
+
 Do NOT launch child subagents. Parent/orchestrator owns delegation. Do NOT fix issues; report them.
 
 Return the standard phase envelope with status, executive_summary, artifacts, next_recommended, risks, and skill_resolution.

@@ -44,3 +44,21 @@ test("sdd-tasks declares canonical artifact and guardrail summary", () => {
 	assert.match(prompt, /openspec\/changes\/\{change\}\/tasks\.md/);
 	assertGuardrailContract(prompt);
 });
+
+test("sdd-apply declares canonical artifact and guardrail summary", () => {
+	const prompt = agentPrompt("sdd-apply");
+	assert.match(prompt, /openspec\/changes\/\{change\}\/apply-progress\.md/);
+	assertGuardrailContract(prompt);
+});
+
+test("sdd-verify declares canonical artifact and guardrail summary", () => {
+	const prompt = agentPrompt("sdd-verify");
+	assert.match(prompt, /openspec\/changes\/\{change\}\/verify-report\.md/);
+	assertGuardrailContract(prompt);
+});
+
+test("sdd-archive declares canonical artifact and guardrail summary", () => {
+	const prompt = agentPrompt("sdd-archive");
+	assert.match(prompt, /archive-report/);
+	assertGuardrailContract(prompt);
+});
