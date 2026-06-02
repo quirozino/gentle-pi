@@ -591,8 +591,16 @@ async function run() {
 			ctx,
 		);
 		assert.match(specReplaced.message.content, /specs\/billing\/spec\.md/);
+		await mkdir(join(missingArtifactCwd, "openspec", "changes", "bad", "specs", "billing"), { recursive: true });
+		await writeFile(join(missingArtifactCwd, "openspec", "changes", "bad", "specs", "billing", "spec.md"), "ok\n");
+		await promptHook({ agentName: "sdd-spec", systemPrompt: "spec base" }, ctx);
+		const specIncomplete = await messageEndHook(
+			{ message: { role: "assistant", content: "status: COMPLETED\nartifacts:\n- openspec/changes/bad/specs/billing/spec.md" } },
+			ctx,
+		);
+		assert.match(specIncomplete.message.content, /Given/);
 		await mkdir(join(missingArtifactCwd, "openspec", "changes", "good", "specs", "billing"), { recursive: true });
-		await writeFile(join(missingArtifactCwd, "openspec", "changes", "good", "specs", "billing", "spec.md"), "ok\n");
+		await writeFile(join(missingArtifactCwd, "openspec", "changes", "good", "specs", "billing", "spec.md"), "## Requirements\nGiven billing exists\n");
 		await promptHook({ agentName: "sdd-spec", systemPrompt: "spec base" }, ctx);
 		const specOk = await messageEndHook(
 			{ message: { role: "assistant", content: "status: COMPLETED\nartifacts:\n- openspec/changes/good/specs/billing/spec.md" } },
@@ -606,7 +614,7 @@ async function run() {
 		);
 		assert.match(archiveReplaced.message.content, /archive-report\.md/);
 		await mkdir(join(missingArtifactCwd, "openspec", "changes", "archive", "2026-06-02-good"), { recursive: true });
-		await writeFile(join(missingArtifactCwd, "openspec", "changes", "archive", "2026-06-02-good", "archive-report.md"), "ok\n");
+		await writeFile(join(missingArtifactCwd, "openspec", "changes", "archive", "2026-06-02-good", "archive-report.md"), "archive status: pass\n");
 		await promptHook({ agentName: "sdd-archive", systemPrompt: "archive base" }, ctx);
 		const archiveOk = await messageEndHook(
 			{ message: { role: "assistant", content: "status: COMPLETED\nchange: good\narchived_path: openspec/changes/archive/2026-06-02-good\nartifacts:\n- openspec/changes/archive/2026-06-02-good/archive-report.md" } },
@@ -626,7 +634,7 @@ async function run() {
 	const engramGateCwd = await tempWorkspace();
 	try {
 		await mkdir(join(engramGateCwd, "openspec", "changes", "engram-block"), { recursive: true });
-		await writeFile(join(engramGateCwd, "openspec", "changes", "engram-block", "apply-progress.md"), "ok\n");
+		await writeFile(join(engramGateCwd, "openspec", "changes", "engram-block", "apply-progress.md"), "verification: pass\n");
 		const ctx = createCtx(engramGateCwd, false, "engram-gate-session");
 		const promptHook = hooks.get("before_agent_start")[0];
 		await promptHook({ agentName: "sdd-apply", systemPrompt: "apply base" }, ctx);

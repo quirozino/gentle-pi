@@ -379,24 +379,45 @@ function sddChangeName(content: string): string | undefined {
 		?? /openspec\/changes\/([A-Za-z0-9_.-]+)/.exec(content)?.[1];
 }
 
+function minimumArtifactSections(agent: SddAgentName): string[] {
+	return {
+		"sdd-init": ["strict_tdd"],
+		"sdd-explore": ["risks"],
+		"sdd-proposal": ["success criteria"],
+		"sdd-spec": ["Given"],
+		"sdd-design": ["decisions"],
+		"sdd-tasks": ["Review Workload Forecast"],
+		"sdd-apply": ["verification"],
+		"sdd-verify": ["pass"],
+		"sdd-sync": ["sync status"],
+		"sdd-archive": ["archive status"],
+	}[agent] ?? [];
+}
+
 function missingArtifactReplacement(cwd: string, agent: SddAgentName, message: unknown): string | undefined {
 	const content = textContent(isRecord(message) ? message.content : undefined);
 	const explicit = explicitArtifactPath(agent, content);
 	const change = sddChangeName(content) ?? (agent === "sdd-init" ? "project" : undefined);
 	const domain = /\bdomain\s*[:=]\s*[`'"]?([A-Za-z0-9_.-]+)/i.exec(content)?.[1];
 	const expected = explicit ?? (change ? canonicalArtifactForAgent(agent, change, domain) : undefined);
-	if (!change || !expected || existsSync(join(cwd, expected))) return undefined;
+	if (!change || !expected) return undefined;
+	const absolute = join(cwd, expected);
+	const artifact = existsSync(absolute) ? readFileSync(absolute, "utf8") : "";
+	const minimum_sections = minimumArtifactSections(agent);
+	const present_sections = minimum_sections.filter((section) => artifact.toLowerCase().includes(section.toLowerCase()));
 	const record = buildArtifactRecord({
 		change,
 		phase: agent.replace(/^sdd-/, ""),
 		expected_paths: [expected],
-		found_paths: [],
-		minimum_sections: [],
-		present_sections: [],
-		non_empty: false,
+		found_paths: artifact ? [expected] : [],
+		minimum_sections,
+		present_sections,
+		non_empty: artifact.trim().length > 0,
 		checked_at: new Date().toISOString(),
 	});
-	return `BLOCKED: ArtifactValidationRecord status=${record.status}; missing ${expected}`;
+	return record.status === "block"
+		? `BLOCKED: ArtifactValidationRecord status=${record.status}; missing ${[...record.missing_paths, ...record.missing_sections].join(", ")}`
+		: undefined;
 }
 
 function blockedEngramPersistenceReason(content: string): string | undefined {
