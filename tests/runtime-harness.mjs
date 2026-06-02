@@ -637,6 +637,8 @@ async function run() {
 		const blocked = await promptHook({ agentName: "sdd-apply", prompt: "apply change budget-block", systemPrompt: "apply base" }, ctx);
 		assert.equal(blocked.block, true);
 		assert.match(blocked.reason, /Decision needed before apply/);
+		const optionsOnly = await promptHook({ agentName: "sdd-apply", prompt: "apply change budget-block\noptions are feature-branch-chain, stacked-to-main, or size:exception", systemPrompt: "apply base" }, ctx);
+		assert.equal(optionsOnly.block, true);
 		const allowed = await promptHook({ agentName: "sdd-apply", prompt: "apply change budget-block\ndelivery decision: feature-branch-chain", systemPrompt: "apply base" }, ctx);
 		assert.equal(allowed.block, undefined);
 	} finally {

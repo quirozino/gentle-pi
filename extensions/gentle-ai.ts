@@ -401,7 +401,7 @@ function missingArtifactReplacement(cwd: string, agent: SddAgentName, message: u
 
 function blockedApplyBudgetReason(cwd: string, event: unknown): string | undefined {
 	const prompt = readStringPath(event, ["prompt"]) ?? readStringPath(event, ["text"]) ?? "";
-	if (/\b(feature-branch-chain|stacked-to-main|size:?exception)\b/i.test(prompt)) return undefined;
+	if (/\b(?:delivery decision|approved delivery strategy|chain strategy)\s*:\s*(?:feature-branch-chain|stacked-to-main|size:?exception)\b/i.test(prompt)) return undefined;
 	const change = sddChangeName(prompt);
 	if (!change) return undefined;
 	const tasksPath = join(cwd, "openspec", "changes", change, "tasks.md");
