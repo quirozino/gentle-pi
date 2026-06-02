@@ -5,6 +5,7 @@ import {
 	buildClosureGateRecord,
 	buildEngramStatus,
 	buildReviewWorkloadGuard,
+	buildRouteRecord,
 } from "../lib/sdd-guardrails.ts";
 
 test("buildEngramStatus passes verified significant saves", () => {
@@ -176,4 +177,56 @@ test("buildArtifactRecord blocks missing or incomplete artifacts", () => {
 	assert.equal(record.status, "block");
 	assert.deepEqual(record.missing_paths, ["spec.md"]);
 	assert.deepEqual(record.missing_sections, ["GIVEN"]);
+});
+
+test("buildRouteRecord passes matching runtime-compatible routes", () => {
+	assert.equal(
+		buildRouteRecord({
+			change: "guardrails",
+			phase: "spec",
+			agent: "sdd-spec",
+			intended_route: "openai-codex/gpt-5.5",
+			intended_source: "gentle:models",
+			effective_model: "openai-codex/gpt-5.5",
+			winning_source: "frontmatter",
+			runtime_account_compatibility: "pass",
+			checked_at: "now",
+		}).status,
+		"pass",
+	);
+});
+
+test("buildRouteRecord warns for documented compatible overrides", () => {
+	assert.equal(
+		buildRouteRecord({
+			change: "guardrails",
+			phase: "explore",
+			agent: "sdd-explore",
+			intended_route: "model-a",
+			intended_source: "gentle:models",
+			effective_model: "model-b",
+			winning_source: "frontmatter",
+			override_reason: "intentional cheap explore",
+			runtime_account_compatibility: "pass",
+			checked_at: "now",
+		}).status,
+		"warn",
+	);
+});
+
+test("buildRouteRecord blocks incompatible or undocumented routes", () => {
+	assert.equal(
+		buildRouteRecord({
+			change: "guardrails",
+			phase: "spec",
+			agent: "sdd-spec",
+			intended_route: "model-a",
+			intended_source: "gentle:models",
+			effective_model: "model-b",
+			winning_source: "frontmatter",
+			runtime_account_compatibility: "block",
+			checked_at: "now",
+		}).status,
+		"block",
+	);
 });

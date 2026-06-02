@@ -18,6 +18,18 @@ export interface RouteValidationRecord {
 	checked_at: string;
 }
 
+export type RouteValidationInput = Omit<RouteValidationRecord, "status">;
+
+export function buildRouteRecord(input: RouteValidationInput): RouteValidationRecord {
+	const routeDiffers = input.intended_route !== null && input.effective_model !== input.intended_route;
+	const incompatible = input.runtime_account_compatibility === "block";
+	const missing = !input.effective_model;
+	let status: GuardrailStatus = "pass";
+	if (missing || incompatible || (routeDiffers && !input.override_reason)) status = "block";
+	else if (routeDiffers) status = "warn";
+	return { ...input, status };
+}
+
 export interface ArtifactValidationRecord {
 	change: string;
 	phase: string;
