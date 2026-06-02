@@ -17,6 +17,14 @@ If skill paths are missing, explicit fallback loading is allowed only as degrade
 - Include intent, scope, affected areas, risks, rollback, and success criteria.
 - Do NOT launch child subagents. Parent/orchestrator owns delegation.
 - Persist planning output to OpenSpec artifacts; persistent memory is optional and handled by separate packages.
+
+## Artifact and Guardrail Contract
+
+- Write the canonical artifact `openspec/changes/{change}/proposal.md`.
+- Include problem/intent, scope, affected areas, risks, rollback, and success criteria.
+- Return a concise `GuardrailStatusSummary` covering any parent-provided `RouteValidationRecord`, artifact write status, and `EngramPersistenceStatus` or fallback reason.
+- Do not report `COMPLETED` if the canonical artifact was not written.
+
 ## Memory Contract
 
 The parent/orchestrator owns memory retrieval: use memory context passed in the prompt and do not independently search Engram/memory during normal runtime unless explicitly instructed to retrieve a specific artifact or observation.
