@@ -85,6 +85,17 @@ export interface ClosureGateRecord {
 	status: GuardrailStatus | "not_applicable";
 }
 
+export type ClosureGateInput = Omit<ClosureGateRecord, "remediation_required" | "revalidation_required" | "status">;
+
+export function buildClosureGateRecord(input: ClosureGateInput): ClosureGateRecord {
+	const reviewMissing = input.fresh_review_required && input.fresh_review_status !== "pass";
+	const failed = input.verification_status === "fail" || reviewMissing;
+	const severe = input.unresolved_blockers > 0 || input.unresolved_highs > 0;
+	const remediation_required = failed || severe;
+	const status = input.non_trivial_change ? (remediation_required ? "block" : "pass") : "not_applicable";
+	return { ...input, remediation_required, revalidation_required: remediation_required, status };
+}
+
 export interface ContextToolOverheadStatus {
 	inherited_context_risk: RiskLevel;
 	inherited_tokens?: number;
