@@ -22,11 +22,11 @@ export type RouteValidationInput = Omit<RouteValidationRecord, "status">;
 
 export function buildRouteRecord(input: RouteValidationInput): RouteValidationRecord {
 	const routeDiffers = input.intended_route !== null && input.effective_model !== input.intended_route;
-	const incompatible = input.runtime_account_compatibility === "block";
+	const compatibility = input.runtime_account_compatibility;
 	const missing = !input.effective_model;
 	let status: GuardrailStatus = "pass";
-	if (missing || incompatible || (routeDiffers && !input.override_reason)) status = "block";
-	else if (routeDiffers) status = "warn";
+	if (missing || compatibility === "block" || (routeDiffers && !input.override_reason)) status = "block";
+	else if (routeDiffers || compatibility === "warn" || compatibility === "unknown") status = "warn";
 	return { ...input, status };
 }
 
@@ -145,7 +145,7 @@ export type ClosureGateInput = Omit<ClosureGateRecord, "remediation_required" | 
 
 export function buildClosureGateRecord(input: ClosureGateInput): ClosureGateRecord {
 	const reviewMissing = input.fresh_review_required && input.fresh_review_status !== "pass";
-	const failed = input.verification_status === "fail" || reviewMissing;
+	const failed = input.verification_status !== "pass" || reviewMissing;
 	const severe = input.unresolved_blockers > 0 || input.unresolved_highs > 0;
 	const remediation_required = failed || severe;
 	const status = input.non_trivial_change ? (remediation_required ? "block" : "pass") : "not_applicable";
@@ -171,8 +171,9 @@ export type ContextToolOverheadInput = Omit<ContextToolOverheadStatus, "status">
 export function buildContextToolOverheadStatus(input: ContextToolOverheadInput): ContextToolOverheadStatus {
 	const high = input.inherited_context_risk === "high" || input.compaction_risk === "high";
 	const medium = input.inherited_context_risk === "medium" || input.compaction_risk === "medium";
+	const unknown = input.inherited_context_risk === "unknown" || input.compaction_risk === "unknown";
 	let status: GuardrailStatus = "pass";
 	if (high) status = input.mitigation ? "warn" : "block";
-	else if (medium) status = "warn";
+	else if (medium || unknown) status = "warn";
 	return { ...input, status };
 }

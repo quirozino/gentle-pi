@@ -104,6 +104,21 @@ test("buildClosureGateRecord blocks missing reviews for non-trivial changes", ()
 	);
 });
 
+test("buildClosureGateRecord blocks missing verification for non-trivial changes", () => {
+	assert.equal(
+		buildClosureGateRecord({
+			change: "guardrails",
+			non_trivial_change: true,
+			verification_status: "not_run",
+			fresh_review_required: true,
+			fresh_review_status: "pass",
+			unresolved_blockers: 0,
+			unresolved_highs: 0,
+		}).status,
+		"block",
+	);
+});
+
 test("buildClosureGateRecord blocks failed verification and unresolved highs", () => {
 	const record = buildClosureGateRecord({
 		change: "guardrails",
@@ -215,6 +230,25 @@ test("buildRouteRecord warns for documented compatible overrides", () => {
 	);
 });
 
+test("buildRouteRecord warns for unknown or warning compatibility", () => {
+	for (const compatibility of ["warn", "unknown"] as const) {
+		assert.equal(
+			buildRouteRecord({
+				change: "guardrails",
+				phase: "spec",
+				agent: "sdd-spec",
+				intended_route: "model-a",
+				intended_source: "gentle:models",
+				effective_model: "model-a",
+				winning_source: "frontmatter",
+				runtime_account_compatibility: compatibility,
+				checked_at: "now",
+			}).status,
+			"warn",
+		);
+	}
+});
+
 test("buildRouteRecord blocks incompatible or undocumented routes", () => {
 	assert.equal(
 		buildRouteRecord({
@@ -250,6 +284,16 @@ test("buildContextToolOverheadStatus warns with high risk and mitigation", () =>
 			compaction_risk: "high",
 			context_window_used_percent: 82,
 			mitigation: "OpenSpec handoff written",
+		}).status,
+		"warn",
+	);
+});
+
+test("buildContextToolOverheadStatus warns for unknown risk", () => {
+	assert.equal(
+		buildContextToolOverheadStatus({
+			inherited_context_risk: "unknown",
+			compaction_risk: "unknown",
 		}).status,
 		"warn",
 	);
