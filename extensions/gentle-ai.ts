@@ -373,13 +373,16 @@ function explicitArtifactPath(agent: SddAgentName, content: string): string | un
 	return undefined;
 }
 
+function sddChangeName(content: string): string | undefined {
+	return /\bchange(?:[_-]?id|name)?\s*[:=]\s*[`'"]?([A-Za-z0-9_.-]+)/i.exec(content)?.[1]
+		?? /\bchange\s+[`'"]?([A-Za-z0-9_.-]+)/i.exec(content)?.[1]
+		?? /openspec\/changes\/([A-Za-z0-9_.-]+)/.exec(content)?.[1];
+}
+
 function missingArtifactReplacement(cwd: string, agent: SddAgentName, message: unknown): string | undefined {
 	const content = textContent(isRecord(message) ? message.content : undefined);
 	const explicit = explicitArtifactPath(agent, content);
-	const change = /\bchange(?:[_-]?id|name)?\s*[:=]\s*[`'"]?([A-Za-z0-9_.-]+)/i.exec(content)?.[1]
-		?? /\bchange\s+[`'"]?([A-Za-z0-9_.-]+)/i.exec(content)?.[1]
-		?? /openspec\/changes\/([A-Za-z0-9_.-]+)/.exec(content)?.[1]
-		?? (agent === "sdd-init" ? "project" : undefined);
+	const change = sddChangeName(content) ?? (agent === "sdd-init" ? "project" : undefined);
 	const domain = /\bdomain\s*[:=]\s*[`'"]?([A-Za-z0-9_.-]+)/i.exec(content)?.[1];
 	const expected = explicit ?? (change ? canonicalArtifactForAgent(agent, change, domain) : undefined);
 	if (!change || !expected || existsSync(join(cwd, expected))) return undefined;
@@ -394,6 +397,20 @@ function missingArtifactReplacement(cwd: string, agent: SddAgentName, message: u
 		checked_at: new Date().toISOString(),
 	});
 	return `BLOCKED: ArtifactValidationRecord status=${record.status}; missing ${expected}`;
+}
+
+function blockedApplyBudgetReason(cwd: string, event: unknown): string | undefined {
+	const prompt = readStringPath(event, ["prompt"]) ?? readStringPath(event, ["text"]) ?? "";
+	if (/\b(feature-branch-chain|stacked-to-main|size:?exception)\b/i.test(prompt)) return undefined;
+	const change = sddChangeName(prompt);
+	if (!change) return undefined;
+	const tasksPath = join(cwd, "openspec", "changes", change, "tasks.md");
+	if (!existsSync(tasksPath)) return undefined;
+	const tasks = readFileSync(tasksPath, "utf8");
+	const needsDecision = /^\s*Decision needed before apply:\s*Yes\s*$/im.test(tasks);
+	const highBudgetRisk = /^\s*400-line budget risk:\s*High\s*$/im.test(tasks);
+	if (!needsDecision && !highBudgetRisk) return undefined;
+	return `ReviewWorkloadGuard blocked sdd-apply for ${change}: Decision needed before apply or high budget risk. Provide feature-branch-chain, stacked-to-main, or size:exception.`;
 }
 
 function evaluateDeniedCommand(
@@ -1697,6 +1714,8 @@ export default function gentleAi(pi: ExtensionAPI): void {
 		const blockedRoute = isSddAgent ? blockedSddRouteReason(ctx.cwd, event) : undefined;
 		if (blockedRoute) return { block: true, reason: blockedRoute };
 		const agent = sddAgentNameFromStartEvent(event);
+		const blockedBudget = agent === "sdd-apply" ? blockedApplyBudgetReason(ctx.cwd, event) : undefined;
+		if (blockedBudget) return { block: true, reason: blockedBudget };
 		if (agent) activeSddAgentBySession.set(sessionKey(ctx), agent);
 		const prefs = getSddPreflightPreferences(ctx);
 		const sddPrompt =

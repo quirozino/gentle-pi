@@ -623,6 +623,26 @@ async function run() {
 		await rm(missingArtifactCwd, { recursive: true, force: true });
 	}
 
+	const budgetGateCwd = await tempWorkspace();
+	try {
+		await mkdir(join(budgetGateCwd, "openspec", "changes", "budget-block"), { recursive: true });
+		await writeFile(join(budgetGateCwd, "openspec", "changes", "budget-block", "tasks.md"), [
+			"Decision needed before apply: Yes",
+			"Chained PRs recommended: Yes",
+			"Chain strategy: pending",
+			"400-line budget risk: High",
+		].join("\n"));
+		const ctx = createCtx(budgetGateCwd, false, "budget-gate-session");
+		const promptHook = hooks.get("before_agent_start")[0];
+		const blocked = await promptHook({ agentName: "sdd-apply", prompt: "apply change budget-block", systemPrompt: "apply base" }, ctx);
+		assert.equal(blocked.block, true);
+		assert.match(blocked.reason, /Decision needed before apply/);
+		const allowed = await promptHook({ agentName: "sdd-apply", prompt: "apply change budget-block\ndelivery decision: feature-branch-chain", systemPrompt: "apply base" }, ctx);
+		assert.equal(allowed.block, undefined);
+	} finally {
+		await rm(budgetGateCwd, { recursive: true, force: true });
+	}
+
 	const noUiSddAgentCwd = await tempWorkspace();
 	try {
 		const ctx = createCtx(noUiSddAgentCwd, false, "no-ui-sdd-agent-session");
