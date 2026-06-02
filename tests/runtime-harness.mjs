@@ -167,6 +167,8 @@ async function run() {
 	assert.ok(hooks.has("session_shutdown"), "missing session_shutdown hook");
 	assert.ok(hooks.has("input"), "missing input hook");
 	assert.ok(hooks.has("before_agent_start"), "missing before_agent_start hook");
+	assert.ok(hooks.has("message_end"), "missing message_end hook");
+	assert.ok(hooks.has("agent_end"), "missing agent_end hook");
 	assert.ok(hooks.has("tool_call"), "missing tool_call hook");
 
 	for (const entry of await readdir(join(ROOT, "assets", "agents"))) {
@@ -569,6 +571,22 @@ async function run() {
 	} finally {
 		await rm(blockedRouteCwd, { recursive: true, force: true });
 		await rm(globalModelsPath, { force: true });
+	}
+
+	const missingArtifactCwd = await tempWorkspace();
+	try {
+		const ctx = createCtx(missingArtifactCwd, false, "missing-artifact-session");
+		const promptHook = hooks.get("before_agent_start")[0];
+		await promptHook({ agentName: "sdd-apply", systemPrompt: "apply base" }, ctx);
+		const messageEndHook = hooks.get("message_end")[0];
+		const replaced = await messageEndHook(
+			{ message: { role: "assistant", content: "COMPLETED change missing-artifact" } },
+			ctx,
+		);
+		assert.match(replaced.message.content, /ArtifactValidationRecord/);
+		assert.match(replaced.message.content, /apply-progress\.md/);
+	} finally {
+		await rm(missingArtifactCwd, { recursive: true, force: true });
 	}
 
 	const noUiSddAgentCwd = await tempWorkspace();

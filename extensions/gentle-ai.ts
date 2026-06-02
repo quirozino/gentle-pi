@@ -21,7 +21,7 @@ import type {
 	ToolCallEventResult,
 } from "@earendil-works/pi-coding-agent";
 import { matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
-import { buildRouteRecord } from "../lib/sdd-guardrails.ts";
+import { buildArtifactRecord, buildRouteRecord } from "../lib/sdd-guardrails.ts";
 import {
 	ensureSddPreflight,
 	getSddPreflightPreferences,
@@ -313,6 +313,13 @@ function sddAgentNameFromStartEvent(event: unknown): SddAgentName | undefined {
 	});
 }
 
+const activeSddAgentBySession = new Map<string, SddAgentName>();
+
+function sessionKey(ctx: ExtensionContext): string {
+	const manager = (ctx as unknown as { sessionManager?: { getSessionFile?: () => string; getSessionId?: () => string } }).sessionManager;
+	return manager?.getSessionFile?.() ?? manager?.getSessionId?.() ?? ctx.cwd;
+}
+
 function blockedSddRouteReason(cwd: string, event: unknown): string | undefined {
 	const agent = sddAgentNameFromStartEvent(event);
 	if (!agent) return undefined;
@@ -335,6 +342,44 @@ function blockedSddRouteReason(cwd: string, event: unknown): string | undefined 
 	});
 	if (route.status !== "block") return undefined;
 	return `RouteValidationRecord blocked ${agent}: ${route.effective_model} (${route.compatibility_detail ?? "route validation failed"})`;
+}
+
+function canonicalArtifactForAgent(agent: SddAgentName, change: string): string | undefined {
+	const base = `openspec/changes/${change}`;
+	const paths: Partial<Record<SddAgentName, string>> = {
+		"sdd-explore": `${base}/exploration.md`,
+		"sdd-proposal": `${base}/proposal.md`,
+		"sdd-design": `${base}/design.md`,
+		"sdd-tasks": `${base}/tasks.md`,
+		"sdd-apply": `${base}/apply-progress.md`,
+		"sdd-verify": `${base}/verify-report.md`,
+		"sdd-sync": `${base}/sync-report.md`,
+	};
+	return paths[agent];
+}
+
+function textContent(value: unknown): string {
+	if (typeof value === "string") return value;
+	if (!Array.isArray(value)) return "";
+	return value.map((part) => isRecord(part) && typeof part.text === "string" ? part.text : "").join("\n");
+}
+
+function missingArtifactReplacement(cwd: string, agent: SddAgentName, message: unknown): string | undefined {
+	const content = textContent(isRecord(message) ? message.content : undefined);
+	const change = /(?:change|openspec\/changes\/)\s*[`'"]?([A-Za-z0-9_.-]+)/.exec(content)?.[1];
+	const expected = change ? canonicalArtifactForAgent(agent, change) : undefined;
+	if (!change || !expected || existsSync(join(cwd, expected))) return undefined;
+	const record = buildArtifactRecord({
+		change,
+		phase: agent.replace(/^sdd-/, ""),
+		expected_paths: [expected],
+		found_paths: [],
+		minimum_sections: [],
+		present_sections: [],
+		non_empty: false,
+		checked_at: new Date().toISOString(),
+	});
+	return `BLOCKED: ArtifactValidationRecord status=${record.status}; missing ${expected}`;
 }
 
 function evaluateDeniedCommand(
@@ -1637,6 +1682,8 @@ export default function gentleAi(pi: ExtensionAPI): void {
 		}
 		const blockedRoute = isSddAgent ? blockedSddRouteReason(ctx.cwd, event) : undefined;
 		if (blockedRoute) return { block: true, reason: blockedRoute };
+		const agent = sddAgentNameFromStartEvent(event);
+		if (agent) activeSddAgentBySession.set(sessionKey(ctx), agent);
 		const prefs = getSddPreflightPreferences(ctx);
 		const sddPrompt =
 			prefs && (!isNamedAgent || isSddAgent)
@@ -1648,6 +1695,18 @@ export default function gentleAi(pi: ExtensionAPI): void {
 		return {
 			systemPrompt: `${event.systemPrompt}${gentlePrompt}${sddPrompt}`,
 		};
+	});
+
+	pi.on("message_end", async (event, ctx) => {
+		if (!isRecord(event.message) || event.message.role !== "assistant") return undefined;
+		const agent = activeSddAgentBySession.get(sessionKey(ctx));
+		if (!agent) return undefined;
+		const content = missingArtifactReplacement(ctx.cwd, agent, event.message);
+		return content ? { message: { ...event.message, content } } : undefined;
+	});
+
+	pi.on("agent_end", async (_event, ctx) => {
+		activeSddAgentBySession.delete(sessionKey(ctx));
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
