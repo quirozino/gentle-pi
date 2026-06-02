@@ -62,3 +62,9 @@ test("sdd-archive declares canonical artifact and guardrail summary", () => {
 	assert.match(prompt, /archive-report/);
 	assertGuardrailContract(prompt);
 });
+
+test("sdd-sync declares canonical artifact and guardrail summary", () => {
+	const prompt = agentPrompt("sdd-sync");
+	assert.match(prompt, /openspec\/changes\/\{change\}\/sync-report\.md/);
+	assertGuardrailContract(prompt);
+});

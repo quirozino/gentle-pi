@@ -94,6 +94,13 @@ Include:
 - validation commands or checks performed;
 - next recommended phase: `sdd-archive` when clean.
 
+## Artifact and Guardrail Contract
+
+- Write the canonical artifact `openspec/changes/{change}/sync-report.md` in file-backed modes.
+- Include sync status, domains, canonical files, requirement names, collisions, destructive approvals/blockers, and checks.
+- Return a concise `GuardrailStatusSummary` covering any parent-provided `RouteValidationRecord`, artifact write status, and `EngramPersistenceStatus` or fallback reason.
+- Do not report `COMPLETED` if the required sync report was not written.
+
 ## Rules
 
 - Do not move the change folder to archive.
