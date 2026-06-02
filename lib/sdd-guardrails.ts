@@ -43,6 +43,17 @@ export interface EngramPersistenceStatus {
 	status: OptionalGuardrailStatus;
 }
 
+export type EngramPersistenceInput = Omit<EngramPersistenceStatus, "status">;
+
+export function buildEngramStatus(input: EngramPersistenceInput): EngramPersistenceStatus {
+	let status: OptionalGuardrailStatus = "not_applicable";
+	if (input.required) {
+		if (!input.available) status = input.fallback_block_present ? "warn" : "block";
+		else status = input.attempted && input.verified ? "pass" : "block";
+	}
+	return { ...input, status };
+}
+
 export interface ReviewWorkloadGuard {
 	change: string;
 	session_preflight_budget: number | null;
