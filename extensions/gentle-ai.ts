@@ -21,7 +21,7 @@ import type {
 	ToolCallEventResult,
 } from "@earendil-works/pi-coding-agent";
 import { matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
-import { buildArtifactRecord, buildClosureGateRecord, buildEngramStatus, buildRouteRecord } from "../lib/sdd-guardrails.ts";
+import { buildArtifactRecord, buildClosureGateRecord, buildContextToolOverheadStatus, buildEngramStatus, buildRouteRecord } from "../lib/sdd-guardrails.ts";
 import {
 	ensureSddPreflight,
 	getSddPreflightPreferences,
@@ -413,6 +413,22 @@ function blockedEngramPersistenceReason(content: string): string | undefined {
 	return status.status === "block"
 		? "BLOCKED: EngramPersistenceStatus required memory persistence but Engram was unavailable and no fallback block was present."
 		: undefined;
+}
+
+function contextOverheadSignal(event: unknown): { block?: string; warning?: string } {
+	const prompt = readStringPath(event, ["prompt"]) ?? readStringPath(event, ["text"]) ?? "";
+	const risk = (label: string) => new RegExp(`\\b${label}\\s*:\\s*(low|medium|high|unknown)`, "i").exec(prompt)?.[1]?.toLowerCase() as "low" | "medium" | "high" | "unknown" | undefined;
+	const mitigation = /\bopenspec handoff\s*:\s*(yes|present|true)\b/i.test(prompt) ? "OpenSpec handoff present" : undefined;
+	const inherited_context_risk = risk("context risk");
+	const compaction_risk = risk("compaction risk");
+	if (!inherited_context_risk && !compaction_risk) return {};
+	const record = buildContextToolOverheadStatus({
+		inherited_context_risk: inherited_context_risk ?? "unknown",
+		compaction_risk: compaction_risk ?? "unknown",
+		mitigation,
+	});
+	const message = `ContextToolOverheadStatus status=${record.status}; context=${record.inherited_context_risk}; compaction=${record.compaction_risk}`;
+	return record.status === "block" ? { block: message } : record.status === "warn" ? { warning: message } : {};
 }
 
 function blockedArchiveClosureReason(event: unknown): string | undefined {
@@ -1756,17 +1772,20 @@ export default function gentleAi(pi: ExtensionAPI): void {
 		if (blockedBudget) return { block: true, reason: blockedBudget };
 		const blockedClosure = agent === "sdd-archive" ? blockedArchiveClosureReason(event) : undefined;
 		if (blockedClosure) return { block: true, reason: blockedClosure };
+		const overhead = isSddAgent ? contextOverheadSignal(event) : {};
+		if (overhead.block) return { block: true, reason: overhead.block };
 		if (agent) activeSddAgentBySession.set(sessionKey(ctx), agent);
 		const prefs = getSddPreflightPreferences(ctx);
 		const sddPrompt =
 			prefs && (!isNamedAgent || isSddAgent)
 				? `\n\n${renderSddPreflightPrompt(prefs)}`
 				: "";
+		const overheadPrompt = overhead.warning ? `\n\n${overhead.warning}` : "";
 		const gentlePrompt = isNamedAgent || isSddAgent
 			? ""
 			: `\n\n${buildGentlePrompt(readPersonaMode(ctx.cwd))}`;
 		return {
-			systemPrompt: `${event.systemPrompt}${gentlePrompt}${sddPrompt}`,
+			systemPrompt: `${event.systemPrompt}${gentlePrompt}${sddPrompt}${overheadPrompt}`,
 		};
 	});
 

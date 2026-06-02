@@ -641,6 +641,19 @@ async function run() {
 		await rm(engramGateCwd, { recursive: true, force: true });
 	}
 
+	const contextGateCwd = await tempWorkspace();
+	try {
+		const ctx = createCtx(contextGateCwd, false, "context-gate-session");
+		const promptHook = hooks.get("before_agent_start")[0];
+		const blocked = await promptHook({ agentName: "sdd-design", prompt: "context risk: high\ncompaction risk: high", systemPrompt: "design base" }, ctx);
+		assert.equal(blocked.block, true);
+		assert.match(blocked.reason, /ContextToolOverheadStatus/);
+		const warned = await promptHook({ agentName: "sdd-design", prompt: "context risk: medium\ncompaction risk: low", systemPrompt: "design base" }, ctx);
+		assert.match(warned.systemPrompt, /ContextToolOverheadStatus/);
+	} finally {
+		await rm(contextGateCwd, { recursive: true, force: true });
+	}
+
 	const closureGateCwd = await tempWorkspace();
 	try {
 		const ctx = createCtx(closureGateCwd, false, "closure-gate-session");
