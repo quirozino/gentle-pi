@@ -641,6 +641,19 @@ async function run() {
 		await rm(engramGateCwd, { recursive: true, force: true });
 	}
 
+	const closureGateCwd = await tempWorkspace();
+	try {
+		const ctx = createCtx(closureGateCwd, false, "closure-gate-session");
+		const promptHook = hooks.get("before_agent_start")[0];
+		const blocked = await promptHook({ agentName: "sdd-archive", prompt: "archive change close-me\nnon-trivial change: true", systemPrompt: "archive base" }, ctx);
+		assert.equal(blocked.block, true);
+		assert.match(blocked.reason, /ClosureGateRecord/);
+		const allowed = await promptHook({ agentName: "sdd-archive", prompt: "archive change close-me\nnon-trivial change: true\nfresh review: PASS", systemPrompt: "archive base" }, ctx);
+		assert.equal(allowed.block, undefined);
+	} finally {
+		await rm(closureGateCwd, { recursive: true, force: true });
+	}
+
 	const budgetGateCwd = await tempWorkspace();
 	try {
 		await mkdir(join(budgetGateCwd, "openspec", "changes", "budget-block"), { recursive: true });

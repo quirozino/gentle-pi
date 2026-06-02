@@ -21,7 +21,7 @@ import type {
 	ToolCallEventResult,
 } from "@earendil-works/pi-coding-agent";
 import { matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
-import { buildArtifactRecord, buildEngramStatus, buildRouteRecord } from "../lib/sdd-guardrails.ts";
+import { buildArtifactRecord, buildClosureGateRecord, buildEngramStatus, buildRouteRecord } from "../lib/sdd-guardrails.ts";
 import {
 	ensureSddPreflight,
 	getSddPreflightPreferences,
@@ -412,6 +412,26 @@ function blockedEngramPersistenceReason(content: string): string | undefined {
 	});
 	return status.status === "block"
 		? "BLOCKED: EngramPersistenceStatus required memory persistence but Engram was unavailable and no fallback block was present."
+		: undefined;
+}
+
+function blockedArchiveClosureReason(event: unknown): string | undefined {
+	const prompt = readStringPath(event, ["prompt"]) ?? readStringPath(event, ["text"]) ?? "";
+	const nonTrivial = /\bnon-trivial change\s*:\s*true\b/i.test(prompt) || /\b(prompts|validators|routing)\b/i.test(prompt);
+	if (!nonTrivial) return undefined;
+	const reviewPass = /\bfresh review\s*:\s*pass\b/i.test(prompt);
+	const severe = /\b(BLOCKER|HIGH)\b/.test(prompt);
+	const record = buildClosureGateRecord({
+		change: sddChangeName(prompt) ?? "unknown",
+		non_trivial_change: true,
+		verification_status: "pass",
+		fresh_review_required: true,
+		fresh_review_status: reviewPass && !severe ? "pass" : "not_run",
+		unresolved_blockers: /\bBLOCKER\b/.test(prompt) ? 1 : 0,
+		unresolved_highs: /\bHIGH\b/.test(prompt) ? 1 : 0,
+	});
+	return record.status === "block"
+		? `ClosureGateRecord blocked sdd-archive for ${record.change}: fresh review PASS required and no unresolved BLOCKER/HIGH allowed.`
 		: undefined;
 }
 
@@ -1732,6 +1752,8 @@ export default function gentleAi(pi: ExtensionAPI): void {
 		const agent = sddAgentNameFromStartEvent(event);
 		const blockedBudget = agent === "sdd-apply" ? blockedApplyBudgetReason(ctx.cwd, event) : undefined;
 		if (blockedBudget) return { block: true, reason: blockedBudget };
+		const blockedClosure = agent === "sdd-archive" ? blockedArchiveClosureReason(event) : undefined;
+		if (blockedClosure) return { block: true, reason: blockedClosure };
 		if (agent) activeSddAgentBySession.set(sessionKey(ctx), agent);
 		const prefs = getSddPreflightPreferences(ctx);
 		const sddPrompt =
