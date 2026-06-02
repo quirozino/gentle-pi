@@ -135,6 +135,7 @@ Include:
 
 ## Artifact and Guardrail Contract
 
+- Schema reference: `docs/sdd-guardrails.md`.
 - Write the canonical archive report before moving the change; file-backed mode uses `openspec/changes/{change}/archive-report.md`.
 - Include archive status, artifacts read, domains synced, approvals/blockers, archived path, and memory status when applicable.
 - Return a concise `GuardrailStatusSummary` covering any parent-provided `RouteValidationRecord`, artifact write status, and `EngramPersistenceStatus` or fallback reason.

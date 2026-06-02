@@ -96,6 +96,7 @@ Include:
 
 ## Artifact and Guardrail Contract
 
+- Schema reference: `docs/sdd-guardrails.md`.
 - Write the canonical artifact `openspec/changes/{change}/sync-report.md` in file-backed modes.
 - Include sync status, domains, canonical files, requirement names, collisions, destructive approvals/blockers, and checks.
 - Return a concise `GuardrailStatusSummary` covering any parent-provided `RouteValidationRecord`, artifact write status, and `EngramPersistenceStatus` or fallback reason.

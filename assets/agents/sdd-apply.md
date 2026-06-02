@@ -70,6 +70,7 @@ Update `openspec/changes/{change}/apply-progress.md` cumulatively. If previous p
 
 ## Artifact and Guardrail Contract
 
+- Schema reference: `docs/sdd-guardrails.md`.
 - Write the canonical artifact `openspec/changes/{change}/apply-progress.md`.
 - Include files changed, completed tasks, verification commands, deviations, remaining work, and workload/PR boundary.
 - Return a concise `GuardrailStatusSummary` covering any parent-provided `RouteValidationRecord`, artifact write status, `ReviewWorkloadGuard`, and `EngramPersistenceStatus` or fallback reason.

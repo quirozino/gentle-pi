@@ -29,6 +29,7 @@ Write `openspec/changes/{change}/tasks.md` with concrete, reviewable implementat
 
 ## Artifact and Guardrail Contract
 
+- Schema reference: `docs/sdd-guardrails.md`.
 - Write the canonical artifact `openspec/changes/{change}/tasks.md`.
 - Include concrete tasks, dependencies, review workload forecast, and the exact guard lines.
 - Return a concise `GuardrailStatusSummary` covering any parent-provided `RouteValidationRecord`, artifact write status, `ReviewWorkloadGuard`, and `EngramPersistenceStatus` or fallback reason.

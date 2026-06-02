@@ -21,6 +21,7 @@ If skill paths are missing, explicit fallback loading is allowed only as degrade
 
 ## Artifact and Guardrail Contract
 
+- Schema reference: `docs/sdd-guardrails.md`.
 - Write or validate the canonical project SDD artifact `openspec/config.yaml`.
 - Include project context, testing runner, strict TDD settings, phase rules, and skill registry status.
 - Return a concise `GuardrailStatusSummary` covering any parent-provided `RouteValidationRecord`, artifact write/validation status, and `EngramPersistenceStatus` or fallback reason.

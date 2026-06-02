@@ -20,6 +20,7 @@ If skill paths are missing, explicit fallback loading is allowed only as degrade
 
 ## Artifact and Guardrail Contract
 
+- Schema reference: `docs/sdd-guardrails.md`.
 - Write the canonical artifact `openspec/changes/{change}/design.md`.
 - Include decisions, data flow/contracts, file changes, tests, rollout, and rollback.
 - Return a concise `GuardrailStatusSummary` covering any parent-provided `RouteValidationRecord`, artifact write status, and `EngramPersistenceStatus` or fallback reason.

@@ -150,6 +150,7 @@ Archive will copy this new domain spec into `openspec/specs/{domain}/spec.md`.
 
 ## Artifact and Guardrail Contract
 
+- Schema reference: `docs/sdd-guardrails.md`.
 - Write canonical spec artifacts under `openspec/changes/{change}/specs/{domain}/spec.md` for each affected domain.
 - Include at least one RFC 2119 requirement and one Given/When/Then scenario per written spec.
 - Return a concise `GuardrailStatusSummary` covering any parent-provided `RouteValidationRecord`, artifact write status, and `EngramPersistenceStatus` or fallback reason.

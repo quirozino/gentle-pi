@@ -163,6 +163,8 @@ For substantial work, the parent session coordinates the flow and each phase wri
 - sync reports that update canonical specs while keeping the change active;
 - archive notes for future agents.
 
+Guardrail envelope fields are documented in [`docs/sdd-guardrails.md`](docs/sdd-guardrails.md).
+
 ### OpenSpec artifact model
 
 `gentle-pi` treats OpenSpec-compatible behavior as part of the harness. You do not need to install the external OpenSpec CLI/package for SDD.

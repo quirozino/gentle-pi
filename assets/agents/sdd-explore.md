@@ -20,6 +20,7 @@ If skill paths are missing, explicit fallback loading is allowed only as degrade
 
 ## Artifact and Guardrail Contract
 
+- Schema reference: `docs/sdd-guardrails.md`.
 - Write the canonical artifact `openspec/changes/{change}/exploration.md` unless the parent explicitly names another explore artifact path.
 - The artifact must include status, executive summary, findings/evidence, risks, and next recommended step.
 - Return a concise `GuardrailStatusSummary` covering any parent-provided `RouteValidationRecord`, artifact write status, and `EngramPersistenceStatus` or fallback reason.

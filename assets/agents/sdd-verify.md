@@ -64,6 +64,7 @@ Write `openspec/changes/{change}/verify-report.md` with:
 
 ## Artifact and Guardrail Contract
 
+- Schema reference: `docs/sdd-guardrails.md`.
 - Write the canonical artifact `openspec/changes/{change}/verify-report.md`.
 - Include pass/fail status, spec/task coverage, commands, blockers, and workload boundary findings.
 - Return a concise `GuardrailStatusSummary` covering any parent-provided `RouteValidationRecord`, artifact write status, and `EngramPersistenceStatus` or fallback reason.
