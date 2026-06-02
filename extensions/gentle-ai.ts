@@ -21,7 +21,7 @@ import type {
 	ToolCallEventResult,
 } from "@earendil-works/pi-coding-agent";
 import { matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
-import { buildArtifactRecord, buildRouteRecord } from "../lib/sdd-guardrails.ts";
+import { buildArtifactRecord, buildEngramStatus, buildRouteRecord } from "../lib/sdd-guardrails.ts";
 import {
 	ensureSddPreflight,
 	getSddPreflightPreferences,
@@ -397,6 +397,22 @@ function missingArtifactReplacement(cwd: string, agent: SddAgentName, message: u
 		checked_at: new Date().toISOString(),
 	});
 	return `BLOCKED: ArtifactValidationRecord status=${record.status}; missing ${expected}`;
+}
+
+function blockedEngramPersistenceReason(content: string): string | undefined {
+	if (!/EngramPersistenceStatus/i.test(content)) return undefined;
+	const booleanField = (name: string) => new RegExp(`\\b${name}\\s*:\\s*(true|false)`, "i").exec(content)?.[1]?.toLowerCase() === "true";
+	const status = buildEngramStatus({
+		required: booleanField("required"),
+		available: booleanField("available"),
+		attempted: booleanField("attempted"),
+		verified: booleanField("verified"),
+		saved_refs: [],
+		fallback_block_present: booleanField("fallback_block_present"),
+	});
+	return status.status === "block"
+		? "BLOCKED: EngramPersistenceStatus required memory persistence but Engram was unavailable and no fallback block was present."
+		: undefined;
 }
 
 function blockedApplyBudgetReason(cwd: string, event: unknown): string | undefined {
@@ -1738,8 +1754,11 @@ export default function gentleAi(pi: ExtensionAPI): void {
 		if (!isRecord(message) || message.role !== "assistant") return undefined;
 		const agent = activeSddAgentBySession.get(sessionKey(ctx));
 		if (!agent) return undefined;
-		const content = missingArtifactReplacement(ctx.cwd, agent, message);
-		return content ? { message: { ...message, content } } : undefined;
+		const content = textContent(message.content);
+		const blockedArtifact = missingArtifactReplacement(ctx.cwd, agent, message);
+		const blockedEngram = blockedArtifact ? undefined : blockedEngramPersistenceReason(content);
+		const replacement = blockedArtifact ?? blockedEngram;
+		return replacement ? { message: { ...message, content: replacement } } : undefined;
 	});
 
 	agentLifecyclePi.on("agent_end", async (_event, ctx) => {

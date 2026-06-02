@@ -623,6 +623,24 @@ async function run() {
 		await rm(missingArtifactCwd, { recursive: true, force: true });
 	}
 
+	const engramGateCwd = await tempWorkspace();
+	try {
+		await mkdir(join(engramGateCwd, "openspec", "changes", "engram-block"), { recursive: true });
+		await writeFile(join(engramGateCwd, "openspec", "changes", "engram-block", "apply-progress.md"), "ok\n");
+		const ctx = createCtx(engramGateCwd, false, "engram-gate-session");
+		const promptHook = hooks.get("before_agent_start")[0];
+		await promptHook({ agentName: "sdd-apply", systemPrompt: "apply base" }, ctx);
+		const messageEndHook = hooks.get("message_end")[0];
+		const replaced = await messageEndHook(
+			{ message: { role: "assistant", content: "status: COMPLETED\nchange: engram-block\nEngramPersistenceStatus\nrequired: true\navailable: false\nfallback_block_present: false" } },
+			ctx,
+		);
+		assert.match(replaced.message.content, /EngramPersistenceStatus/);
+		assert.match(replaced.message.content, /fallback/i);
+	} finally {
+		await rm(engramGateCwd, { recursive: true, force: true });
+	}
+
 	const budgetGateCwd = await tempWorkspace();
 	try {
 		await mkdir(join(budgetGateCwd, "openspec", "changes", "budget-block"), { recursive: true });
