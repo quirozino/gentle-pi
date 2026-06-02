@@ -168,15 +168,14 @@ test("duplicate extension load is skipped only across different sources", () => 
 test("project-local skill registry extension wins over installed package copy", () => {
 	const cwd = join(tmpdir(), `gentle-pi-local-extension-${Date.now()}`);
 	const localExtension = join(cwd, "extensions", "skill-registry.ts");
+	const installedExtension = join(tmpdir(), `gentle-pi-installed-${Date.now()}`, "extensions", "skill-registry.ts");
 	mkdirSync(dirname(localExtension), { recursive: true });
+	mkdirSync(dirname(installedExtension), { recursive: true });
 	writeFileSync(localExtension, "");
+	writeFileSync(installedExtension, "");
 
 	assert.equal(
-		__testing.shouldSkipDuplicateExtensionLoad(
-			"file:///home/.pi/agent/npm/node_modules/gentle-pi/extensions/skill-registry.ts",
-			cwd,
-			{},
-		),
+		__testing.shouldSkipDuplicateExtensionLoad(pathToFileURL(installedExtension).href, cwd, {}),
 		true,
 	);
 	assert.equal(
