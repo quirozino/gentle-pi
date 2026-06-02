@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
 	buildArtifactRecord,
+	buildContextToolOverheadStatus,
 	buildClosureGateRecord,
 	buildEngramStatus,
 	buildReviewWorkloadGuard,
@@ -226,6 +227,40 @@ test("buildRouteRecord blocks incompatible or undocumented routes", () => {
 			winning_source: "frontmatter",
 			runtime_account_compatibility: "block",
 			checked_at: "now",
+		}).status,
+		"block",
+	);
+});
+
+test("buildContextToolOverheadStatus passes low context risk", () => {
+	assert.equal(
+		buildContextToolOverheadStatus({
+			inherited_context_risk: "low",
+			compaction_risk: "low",
+			context_window_used_percent: 25,
+		}).status,
+		"pass",
+	);
+});
+
+test("buildContextToolOverheadStatus warns with high risk and mitigation", () => {
+	assert.equal(
+		buildContextToolOverheadStatus({
+			inherited_context_risk: "high",
+			compaction_risk: "high",
+			context_window_used_percent: 82,
+			mitigation: "OpenSpec handoff written",
+		}).status,
+		"warn",
+	);
+});
+
+test("buildContextToolOverheadStatus blocks high risk without mitigation", () => {
+	assert.equal(
+		buildContextToolOverheadStatus({
+			inherited_context_risk: "high",
+			compaction_risk: "high",
+			context_window_used_percent: 82,
 		}).status,
 		"block",
 	);

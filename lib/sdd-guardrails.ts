@@ -165,3 +165,14 @@ export interface ContextToolOverheadStatus {
 	mitigation?: string;
 	status: GuardrailStatus;
 }
+
+export type ContextToolOverheadInput = Omit<ContextToolOverheadStatus, "status">;
+
+export function buildContextToolOverheadStatus(input: ContextToolOverheadInput): ContextToolOverheadStatus {
+	const high = input.inherited_context_risk === "high" || input.compaction_risk === "high";
+	const medium = input.inherited_context_risk === "medium" || input.compaction_risk === "medium";
+	let status: GuardrailStatus = "pass";
+	if (high) status = input.mitigation ? "warn" : "block";
+	else if (medium) status = "warn";
+	return { ...input, status };
+}
