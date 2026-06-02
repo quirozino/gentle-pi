@@ -554,6 +554,23 @@ async function run() {
 		await rm(sddAgentGuardCwd, { recursive: true, force: true });
 	}
 
+	const blockedRouteCwd = await tempWorkspace();
+	try {
+		await writeFile(
+			globalModelsPath,
+			JSON.stringify({ "sdd-apply": { model: "openai-codex/gpt-5.3-codex", thinking: "high" } }, null, 2),
+		);
+		const ctx = createCtx(blockedRouteCwd, false, "blocked-route-session");
+		const promptHook = hooks.get("before_agent_start")[0];
+		const blocked = await promptHook({ agentName: "sdd-apply", systemPrompt: "apply base" }, ctx);
+		assert.equal(blocked.block, true);
+		assert.match(blocked.reason, /RouteValidationRecord/);
+		assert.match(blocked.reason, /gpt-5\.3-codex/);
+	} finally {
+		await rm(blockedRouteCwd, { recursive: true, force: true });
+		await rm(globalModelsPath, { force: true });
+	}
+
 	const noUiSddAgentCwd = await tempWorkspace();
 	try {
 		const ctx = createCtx(noUiSddAgentCwd, false, "no-ui-sdd-agent-session");

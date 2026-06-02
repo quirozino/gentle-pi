@@ -21,6 +21,7 @@ import type {
 	ToolCallEventResult,
 } from "@earendil-works/pi-coding-agent";
 import { matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
+import { buildRouteRecord } from "../lib/sdd-guardrails.ts";
 import {
 	ensureSddPreflight,
 	getSddPreflightPreferences,
@@ -300,6 +301,40 @@ function readAgentStartNames(event: unknown): string[] {
 
 function isNamedAgentStartEvent(event: unknown): boolean {
 	return readAgentStartNames(event).length > 0;
+}
+
+function sddAgentNameFromStartEvent(event: unknown): SddAgentName | undefined {
+	const named = readAgentStartNames(event).find((value) => SDD_AGENT_NAME_SET.has(value));
+	if (named) return named as SddAgentName;
+	const systemPrompt = readStringPath(event, ["systemPrompt"]) ?? "";
+	return SDD_AGENT_NAMES.find((name) => {
+		const phase = name.replace(/^sdd-/, "");
+		return new RegExp(`\\bSDD ${phase} executor\\b`, "i").test(systemPrompt);
+	});
+}
+
+function blockedSddRouteReason(cwd: string, event: unknown): string | undefined {
+	const agent = sddAgentNameFromStartEvent(event);
+	if (!agent) return undefined;
+	const entry = readModelConfig(cwd)[agent];
+	const effective = entry?.model ?? "default";
+	const route = buildRouteRecord({
+		change: "unknown",
+		phase: agent.replace(/^sdd-/, ""),
+		agent,
+		intended_route: entry?.model ?? null,
+		intended_source: entry?.model ? "gentle:models" : "default",
+		effective_model: effective,
+		effective_thinking: entry?.thinking ?? null,
+		winning_source: entry?.model ? "gentle:models" : "default",
+		runtime_account_compatibility: /openai-codex\/gpt-5\.3-codex/.test(effective) ? "block" : "pass",
+		compatibility_detail: /openai-codex\/gpt-5\.3-codex/.test(effective)
+			? "gpt-5.3-codex is unsupported for the current Codex account route"
+			: undefined,
+		checked_at: new Date().toISOString(),
+	});
+	if (route.status !== "block") return undefined;
+	return `RouteValidationRecord blocked ${agent}: ${route.effective_model} (${route.compatibility_detail ?? "route validation failed"})`;
 }
 
 function evaluateDeniedCommand(
@@ -1600,6 +1635,8 @@ export default function gentleAi(pi: ExtensionAPI): void {
 		if (isSddAgent && !getSddPreflightPreferences(ctx)) {
 			await runSddPreflight(ctx);
 		}
+		const blockedRoute = isSddAgent ? blockedSddRouteReason(ctx.cwd, event) : undefined;
+		if (blockedRoute) return { block: true, reason: blockedRoute };
 		const prefs = getSddPreflightPreferences(ctx);
 		const sddPrompt =
 			prefs && (!isNamedAgent || isSddAgent)
