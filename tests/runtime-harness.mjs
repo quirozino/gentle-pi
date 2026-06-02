@@ -645,11 +645,13 @@ async function run() {
 	try {
 		const ctx = createCtx(contextGateCwd, false, "context-gate-session");
 		const promptHook = hooks.get("before_agent_start")[0];
-		const blocked = await promptHook({ agentName: "sdd-design", prompt: "context risk: high\ncompaction risk: high", systemPrompt: "design base" }, ctx);
+		const blocked = await promptHook({ agentName: "sdd-design", prompt: "ContextToolOverheadStatus\ninherited_context_risk: high\ncompaction_risk: high", systemPrompt: "design base" }, ctx);
 		assert.equal(blocked.block, true);
 		assert.match(blocked.reason, /ContextToolOverheadStatus/);
 		const warned = await promptHook({ agentName: "sdd-design", prompt: "context risk: medium\ncompaction risk: low", systemPrompt: "design base" }, ctx);
 		assert.match(warned.systemPrompt, /ContextToolOverheadStatus/);
+		const mitigated = await promptHook({ agentName: "sdd-design", prompt: "inherited_context_risk: high\ncompaction_risk: high\nOpenSpec handoff written", systemPrompt: "design base" }, ctx);
+		assert.match(mitigated.systemPrompt, /ContextToolOverheadStatus/);
 	} finally {
 		await rm(contextGateCwd, { recursive: true, force: true });
 	}

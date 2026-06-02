@@ -418,9 +418,9 @@ function blockedEngramPersistenceReason(content: string): string | undefined {
 function contextOverheadSignal(event: unknown): { block?: string; warning?: string } {
 	const prompt = readStringPath(event, ["prompt"]) ?? readStringPath(event, ["text"]) ?? "";
 	const risk = (label: string) => new RegExp(`\\b${label}\\s*:\\s*(low|medium|high|unknown)`, "i").exec(prompt)?.[1]?.toLowerCase() as "low" | "medium" | "high" | "unknown" | undefined;
-	const mitigation = /\bopenspec handoff\s*:\s*(yes|present|true)\b/i.test(prompt) ? "OpenSpec handoff present" : undefined;
-	const inherited_context_risk = risk("context risk");
-	const compaction_risk = risk("compaction risk");
+	const mitigation = /\bopenspec handoff\s*(?::\s*(yes|present|true)|written)\b/i.test(prompt) ? "OpenSpec handoff present" : undefined;
+	const inherited_context_risk = risk("inherited_context_risk") ?? risk("context risk");
+	const compaction_risk = risk("compaction_risk") ?? risk("compaction risk");
 	if (!inherited_context_risk && !compaction_risk) return {};
 	const record = buildContextToolOverheadStatus({
 		inherited_context_risk: inherited_context_risk ?? "unknown",
