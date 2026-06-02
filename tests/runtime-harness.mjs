@@ -648,8 +648,12 @@ async function run() {
 		const blocked = await promptHook({ agentName: "sdd-archive", prompt: "archive change close-me\nnon-trivial change: true", systemPrompt: "archive base" }, ctx);
 		assert.equal(blocked.block, true);
 		assert.match(blocked.reason, /ClosureGateRecord/);
-		const allowed = await promptHook({ agentName: "sdd-archive", prompt: "archive change close-me\nnon-trivial change: true\nfresh review: PASS", systemPrompt: "archive base" }, ctx);
+		const allowed = await promptHook({ agentName: "sdd-archive", prompt: "archive change close-me\nnon-trivial change: true\nfresh review: PASS\nno unresolved BLOCKER/HIGH", systemPrompt: "archive base" }, ctx);
 		assert.equal(allowed.block, undefined);
+		const unresolved = await promptHook({ agentName: "sdd-archive", prompt: "archive change close-me\nworkflow behavior\nfresh review: PASS\nunresolved HIGH", systemPrompt: "archive base" }, ctx);
+		assert.equal(unresolved.block, true);
+		const configBlocked = await promptHook({ agentName: "sdd-archive", prompt: "archive change close-me\nconfiguration", systemPrompt: "archive base" }, ctx);
+		assert.equal(configBlocked.block, true);
 	} finally {
 		await rm(closureGateCwd, { recursive: true, force: true });
 	}

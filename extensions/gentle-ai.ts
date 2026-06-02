@@ -417,18 +417,20 @@ function blockedEngramPersistenceReason(content: string): string | undefined {
 
 function blockedArchiveClosureReason(event: unknown): string | undefined {
 	const prompt = readStringPath(event, ["prompt"]) ?? readStringPath(event, ["text"]) ?? "";
-	const nonTrivial = /\bnon-trivial change\s*:\s*true\b/i.test(prompt) || /\b(prompts|validators|routing)\b/i.test(prompt);
+	const nonTrivial = /\bnon-trivial change\s*:\s*true\b/i.test(prompt) || /\b(workflow behavior|configuration|prompts?|validators?|routing)\b/i.test(prompt);
 	if (!nonTrivial) return undefined;
 	const reviewPass = /\bfresh review\s*:\s*pass\b/i.test(prompt);
-	const severe = /\b(BLOCKER|HIGH)\b/.test(prompt);
+	const cleanSevere = /\bno unresolved\s+(?:BLOCKER\/?HIGH|BLOCKER|HIGH)\b/i.test(prompt);
+	const unresolvedBlocker = /\bunresolved\s+BLOCKER\b/i.test(prompt) && !cleanSevere;
+	const unresolvedHigh = /\bunresolved\s+HIGH\b/i.test(prompt) && !cleanSevere;
 	const record = buildClosureGateRecord({
 		change: sddChangeName(prompt) ?? "unknown",
 		non_trivial_change: true,
 		verification_status: "pass",
 		fresh_review_required: true,
-		fresh_review_status: reviewPass && !severe ? "pass" : "not_run",
-		unresolved_blockers: /\bBLOCKER\b/.test(prompt) ? 1 : 0,
-		unresolved_highs: /\bHIGH\b/.test(prompt) ? 1 : 0,
+		fresh_review_status: reviewPass && !unresolvedBlocker && !unresolvedHigh ? "pass" : "not_run",
+		unresolved_blockers: unresolvedBlocker ? 1 : 0,
+		unresolved_highs: unresolvedHigh ? 1 : 0,
 	});
 	return record.status === "block"
 		? `ClosureGateRecord blocked sdd-archive for ${record.change}: fresh review PASS required and no unresolved BLOCKER/HIGH allowed.`
