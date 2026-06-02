@@ -69,6 +69,12 @@ test("sdd-sync declares canonical artifact and guardrail summary", () => {
 	assertGuardrailContract(prompt);
 });
 
+test("sdd-init declares canonical artifact and guardrail summary", () => {
+	const prompt = agentPrompt("sdd-init");
+	assert.match(prompt, /openspec\/config\.yaml/);
+	assertGuardrailContract(prompt);
+});
+
 test("SDD agent assets do not hardcode unsupported Codex routes", () => {
 	const dir = join(root, "assets", "agents");
 	for (const file of readdirSync(dir).filter((name) => name.startsWith("sdd-") && name.endsWith(".md"))) {

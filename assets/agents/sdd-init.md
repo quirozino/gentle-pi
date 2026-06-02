@@ -18,6 +18,14 @@ If skill paths are missing, explicit fallback loading is allowed only as degrade
 - Ensure `.atl/skill-registry.md` exists when skill registry data is available, or report that it is missing.
 - Do NOT launch child subagents. Parent/orchestrator owns delegation.
 - Return the standard phase envelope with status, executive_summary, artifacts, next_recommended, risks, and skill_resolution.
+
+## Artifact and Guardrail Contract
+
+- Write or validate the canonical project SDD artifact `openspec/config.yaml`.
+- Include project context, testing runner, strict TDD settings, phase rules, and skill registry status.
+- Return a concise `GuardrailStatusSummary` covering any parent-provided `RouteValidationRecord`, artifact write/validation status, and `EngramPersistenceStatus` or fallback reason.
+- Do not report `COMPLETED` if `openspec/config.yaml` is required but missing or invalid.
+
 ## Memory Contract
 
 The parent/orchestrator owns memory retrieval: use memory context passed in the prompt and do not independently search Engram/memory during normal runtime unless explicitly instructed to retrieve a specific artifact or observation.
