@@ -13,6 +13,17 @@ Include these fields when they apply:
 - `ClosureGateRecord`: fresh review evidence, verification commands, unresolved findings, and close/no-close status.
 - `ContextToolOverheadStatus`: context/tool overhead risk, mitigation, and status.
 
+## Runtime enforcement
+
+The parent/orchestrator enforces these guards around SDD phases:
+
+- block incompatible SDD model routes before phase startup;
+- block chat-only phase completion when the canonical OpenSpec artifact is missing;
+- block `sdd-apply` when `tasks.md` says `Decision needed before apply: Yes` or `400-line budget risk: High` unless the prompt includes an explicit `delivery decision:`, `approved delivery strategy:`, or `chain strategy:`;
+- block missing Engram fallback when `EngramPersistenceStatus` is required, unavailable, and `fallback_block_present: false`;
+- block `sdd-archive` for non-trivial changes unless `fresh review: PASS` is present and there are no unresolved `BLOCKER` / `HIGH` findings;
+- warn for medium/unknown `ContextToolOverheadStatus`, and block high context/compaction risk unless an OpenSpec handoff is written.
+
 ## Rule
 
 A phase must not report `COMPLETED` while any required guardrail record is `block` or while its canonical artifact is missing.
