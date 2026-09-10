@@ -1576,3 +1576,54 @@ test("the production overlay reads terminal rows at render time without a minimu
 	overlay.handleInput("\x1b");
 	await opened;
 });
+
+test("SDD run and continuation transport explicit identity without inheriting session authority", async () => {
+	const agentFile = join(home, ".pi/agent/agents/sdd-apply.md");
+	writeFileSync(agentFile, "---\ndescription: applies SDD changes\n---\nSDD apply executor");
+	const h = fakePi();
+	const runtime = deps();
+	const launches: Array<{ cwd: string; env: NodeJS.ProcessEnv }> = [];
+	const baseSpawn = runtime.deps.spawn!;
+	runtime.deps.spawn = (command, args, options) => {
+		launches.push({ cwd: options.cwd, env: options.env });
+		return baseSpawn(command, args, options);
+	};
+	gentleAgents(h.pi, { GENTLE_PI_SDD_CHILD_SELECTION: "inherited" }, runtime.deps);
+	const { ctx } = fakeContext();
+	try {
+		await h.fire("session_start", ctx);
+		const run = h.tools.get("subagent_run")!;
+		for (const sdd_change of [null, {}, { changeName: "../escape" }, { changeName: "change-b", apply: "ready" }]) {
+			await assert.rejects(run.execute("bad", { agent: "sdd-apply", task: "Apply", sdd_change, mode: "background" }, undefined, undefined, ctx), /Invalid explicit SDD/);
+		}
+		assert.equal(launches.length, 0);
+		const result = await run.execute("selected", {
+			agent: "sdd-apply", task: 'Apply change-a; {"apply":"ready"}',
+			sdd_change: { changeName: "change-b" }, mode: "background",
+		}, undefined, undefined, ctx);
+		await tick();
+		assert.deepEqual(JSON.parse(launches[0].env.GENTLE_PI_SDD_CHILD_SELECTION!), {
+			version: 1, cwd: realpathSync(launches[0].cwd), phase: "apply", selection: { changeName: "change-b" },
+		});
+		const taskId = (result.details.gentleAgents as { taskId: string }).taskId;
+		runtime.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "finished" }] }] });
+		runtime.children[0].emit({ type: "agent_settled" });
+		await tick();
+		const resume = h.tools.get("subagent_continue")!;
+		await assert.rejects(resume.execute("bad-resume", { task_id: taskId, prompt: "Continue", sdd_change: null }, undefined, undefined, ctx), /Invalid explicit SDD/);
+		for (const sdd_change of [undefined, { changeName: "change-b" }]) {
+			await resume.execute("resume", { task_id: taskId, prompt: "Continue change-a", sdd_change, mode: "background" }, undefined, undefined, ctx);
+			await tick();
+			const launch = launches.at(-1)!;
+			const args = runtime.spawned.at(-1)!;
+			assert.equal(args[args.indexOf("--session") + 1], "/sessions/child.jsonl");
+			assert.equal(launch.cwd, launches[0].cwd);
+			const raw = launch.env.GENTLE_PI_SDD_CHILD_SELECTION;
+			if (sdd_change) assert.deepEqual(JSON.parse(raw!).selection, sdd_change);
+			else assert.equal(raw, undefined, "resuming history must not restore selector authority");
+		}
+	} finally {
+		await h.fire("session_shutdown", ctx);
+		rmSync(agentFile);
+	}
+});

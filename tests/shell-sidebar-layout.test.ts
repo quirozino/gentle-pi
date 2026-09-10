@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { ScrollView, visibleWidth, type TUI } from "@earendil-works/pi-tui";
 import { renderLayoutFrame } from "@earendil-works/pi-tui/dist/layout.js";
-import { installSidebar } from "../lib/shell-sidebar-layout.ts";
+import { installSidebar, invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
 import { sidebarPart, sidebarState } from "../lib/shell-sidebar.ts";
 import { renderShellSidebarBar } from "../lib/shell-bar.ts";
 import { renderTodoCard, type TodoState } from "../lib/shell-todo.ts";
@@ -67,13 +67,14 @@ test("only fullscreen at 140 columns activates; shrinking restores bottom paint"
 	}
 });
 
-test("rail orders Status, changes, agents, TODO independent of registration order", (t) => {
+test("rail orders Status, changes, agents, TODO, then the unframed portrait", (t) => {
 	const f = fixture();
 	for (const key of ["todo", "agents", "changes"]) {
 		sidebarPart(f.tui, key, { render: () => [key, ""], invalidate() {} });
 	}
-	t.after(installSidebar(f.tui, theme));
-	assert.deepEqual(rail(f).render(50).map((line) => line.trim()), ["✿ Gentle-Pi ✿", "", "Status", "", "changes", "", "agents", "", "todo"]);
+	const portrait = { render: (width: number) => [`portrait-${width}`], invalidate() {} };
+	t.after(installSidebar(f.tui, theme, portrait));
+	assert.deepEqual(rail(f).render(50).map((line) => line.trim()), ["✿ Gentle-Pi ✿", "", "Status", "", "changes", "", "agents", "", "todo", "", "portrait-46"]);
 });
 
 test("branding belongs to scroll content before Status, never transcript or narrow bottom", (t) => {
@@ -191,6 +192,24 @@ test("real layout frames reuse unchanged sidebar output and invalidate at state 
 	const replaced = renderLayoutFrame(f.root, 140, 20, () => {});
 	assert.match(replaced.lines.join("\n"), /Todo replacement/);
 	assert.equal(replacementRenders, 1);
+});
+
+test("frame invalidation preserves rail scroll position and reports active transitions", () => {
+	const f = fixture();
+	const active: boolean[] = [];
+	const portrait = { render: () => Array.from({ length: 30 }, (_, index) => `portrait-${index}`), invalidate() {} };
+	const dispose = installSidebar(f.tui, theme, portrait, (value) => active.push(value));
+	const scroll = rail(f);
+	scroll.updateLayout(scroll.render(50).length, 8, () => {});
+	scroll.scrollBy(7);
+	const before = scroll.scrollTop;
+	invalidateSidebar(f.tui);
+	f.root[NODE]();
+	assert.equal(scroll.scrollTop, before);
+	f.host.terminal.columns = 139;
+	f.root[NODE]();
+	dispose();
+	assert.deepEqual(active, [true, false]);
 });
 
 test("cleanup restores the native layout and bottom paint without disposing widgets", () => {

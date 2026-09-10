@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { initTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import installGentleShell, { buildShellBarModel, changesShortcut, devBinaryCard, fetchCodexUsage, loadFileDiff, shellGitRunner, openInExternalEditor, type GentlePromptEditor } from "../extensions/gentle-shell.ts";
+import installGentleShell, { buildShellBarModel, changesShortcut, createPortraitAnimationScheduler, devBinaryCard, fetchClaudeBridgeUsage, fetchCodexUsage, loadFileDiff, readClaudeCodeToken, shellGitRunner, openInExternalEditor, type GentlePromptEditor } from "../extensions/gentle-shell.ts";
 import { CHANGE_STATUS } from "../lib/shell-changes.ts";
 import type { ShellBarTheme } from "../lib/shell-bar.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
@@ -16,7 +16,12 @@ import { stripAnsi } from "../lib/terminal-theme.ts";
 initTheme("dark");
 
 const resolveWorktree = (path: string) => ({ root: path.startsWith("/repo") || path === "." ? "/repo" : path, commonDir: "/clone/git" });
-const gentleShell: typeof installGentleShell = (pi, env, deps) => installGentleShell(pi, env, { resolveWorktree, gitRunner: (cwd) => async (args) => pi.exec("git", ["-C", cwd, ...args], { timeout: 5000 }), ...deps });
+const gentleShell: typeof installGentleShell = (pi, env, deps) => installGentleShell(pi, env, {
+	resolveWorktree,
+	gitRunner: (cwd) => async (args) => pi.exec("git", ["-C", cwd, ...args], { timeout: 5000 }),
+	loadPortrait: async () => undefined,
+	...deps,
+});
 
 const plainTheme = {
 	fg(_color: string, value: string) {
@@ -226,6 +231,89 @@ test("gentleShell installs the footer on session_start when a UI exists", () => 
 	const lines = component.render(120);
 	assert.equal(lines.length, 1);
 	assert.match(lines[0], /main ⟡ gpt-5\.5 · medium/);
+});
+
+test("gentleShell loads the optional portrait and exposes only bounded diagnostics", async () => {
+	const { pi, handlers, commands } = fakePi();
+	const portrait = { version: 1 as const, width: 120, height: 120, luminance: new Array(14_400).fill(90) };
+	gentleShell(pi, { COLORTERM: "truecolor", GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { loadPortrait: async () => portrait });
+	const { ctx, ui } = fakeContext();
+	await fire(handlers, "session_start", ctx);
+	await commands.get("gentle:portrait")!.handler("", ctx);
+	assert.deepEqual(ui.notices, ["Portrait loaded: 120×120 source, 46×23 rail glyphs, truecolor."]);
+});
+
+test("portrait scheduler caps reveal FPS, skips held frames, pauses inactive, and disposes its timer", () => {
+	let now = 0;
+	let nextId = 0;
+	const timers = new Map<number, { callback: () => void; delay: number }>();
+	const frames: number[] = [];
+	const scheduler = createPortraitAnimationScheduler({
+		now: () => now,
+		setTimer(callback, delay) { const id = ++nextId; timers.set(id, { callback, delay }); return id; },
+		clearTimer(id) { timers.delete(id); },
+		onFrame: (elapsed) => frames.push(elapsed),
+	});
+	assert.equal(timers.size, 0, "inactive portraits own no timer");
+	scheduler.setActive(true);
+	assert.deepEqual(frames, [0]);
+	assert.ok([...timers.values()][0]!.delay >= 100, "animation is capped at ten FPS");
+	const fireTimer = (at: number) => {
+		now = at;
+		const [id, timer] = [...timers.entries()][0]!;
+		timers.delete(id);
+		timer.callback();
+	};
+	fireTimer(100);
+	assert.deepEqual(frames, [0, 100]);
+	fireTimer(3_000);
+	assert.deepEqual(frames, [0, 100, 3_000]);
+	assert.equal([...timers.values()][0]!.delay, 3_500, "the held image schedules only the next cycle");
+	fireTimer(6_500);
+	assert.deepEqual(frames, [0, 100, 3_000, 6_500], "the exact cycle boundary remains held");
+	fireTimer(6_501);
+	assert.deepEqual(frames, [0, 100, 3_000, 6_500, 0]);
+	scheduler.setActive(false);
+	assert.equal(timers.size, 0);
+	scheduler.setActive(true);
+	assert.equal(timers.size, 1);
+	scheduler.dispose();
+	assert.equal(timers.size, 0);
+	scheduler.setActive(true);
+	assert.equal(timers.size, 0, "disposal is terminal");
+});
+
+test("gentleShell reports an unavailable optional portrait without affecting startup", async () => {
+	const { pi, handlers, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" });
+	const { ctx, ui } = fakeContext();
+	await fire(handlers, "session_start", ctx);
+	assert.equal(typeof ui.footerFactory, "function");
+	await commands.get("gentle:portrait")!.handler("", ctx);
+	assert.deepEqual(ui.notices, ["Portrait unavailable: private configuration is missing or invalid."]);
+});
+
+test("late portrait loads after shutdown cannot start rendering or timers", async () => {
+	let resolvePortrait!: (portrait: { version: 1; width: number; height: number; luminance: number[] }) => void;
+	const loaded = new Promise<{ version: 1; width: number; height: number; luminance: number[] }>((resolve) => { resolvePortrait = resolve; });
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { loadPortrait: () => loaded });
+	const { ctx, ui } = fakeContext();
+	await fire(handlers, "session_start", ctx);
+	const renders = { count: 0 };
+	const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, footerData: unknown) => { dispose(): void };
+	const footer = factory(
+		{ mode: "regular", terminal: { rows: 40, columns: 120 }, requestRender() { renders.count++; } },
+		plainTheme,
+		{ getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} },
+	);
+	await fire(handlers, "session_shutdown", ctx);
+	footer.dispose();
+	const before = renders.count;
+	resolvePortrait({ version: 1, width: 2, height: 2, luminance: [1, 2, 3, 4] });
+	await loaded;
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.equal(renders.count, before);
 });
 
 test("gentleShell stays out of the way without a UI or when disabled", () => {
@@ -675,6 +763,61 @@ test("fetchCodexUsage sends the token and account id and parses the payload", as
 	assert.equal(plain.calls.length, 0, "a non-OAuth key must not be sent anywhere");
 	assert.equal(await fetchCodexUsage(JWT, fakeFetch({}, false).fetchFn, 0), undefined);
 	assert.equal(await fetchCodexUsage(undefined, plain.fetchFn, 0), undefined);
+});
+
+const CLAUDE_USAGE_PAYLOAD = {
+	five_hour: { utilization: 31, resets_at: "2026-09-10T23:20:00.151058+00:00" },
+	seven_day: { utilization: 6, resets_at: "2026-09-16T08:00:00.151080+00:00" },
+};
+
+function fakeClaudeDeps(credentials: unknown, payload: unknown = CLAUDE_USAGE_PAYLOAD, ok = true) {
+	const { fetchFn, calls } = fakeFetch(payload, ok);
+	const readFile = async (path: string) => {
+		if (credentials === undefined) throw new Error(`ENOENT: ${path}`);
+		return typeof credentials === "string" ? credentials : JSON.stringify(credentials);
+	};
+	return { deps: { fetch: fetchFn, readFile, homedir: () => "/home/tester" }, calls };
+}
+
+const LIVE_CLAUDE_CREDENTIALS = { claudeAiOauth: { accessToken: "oauth-token", expiresAt: 2_000_000_000_000 } };
+
+test("fetchClaudeBridgeUsage reads Claude Code's OAuth token and parses the usage endpoint", async () => {
+	const { deps, calls } = fakeClaudeDeps(LIVE_CLAUDE_CREDENTIALS);
+	const usage = await fetchClaudeBridgeUsage(deps, 1_788_600_000_000);
+	assert.equal(usage?.provider, "claude-bridge");
+	assert.deepEqual(usage?.limits[0].windows.map((w) => `${w.label}:${w.usedPercent}`), ["5h:31", "week:6"]);
+	assert.equal(calls[0].url, "https://api.anthropic.com/api/oauth/usage");
+	assert.equal(calls[0].headers.Authorization, "Bearer oauth-token");
+	assert.equal(calls[0].headers["anthropic-beta"], "oauth-2025-04-20");
+});
+
+test("fetchClaudeBridgeUsage stays silent and sends nothing when the token is unusable", async () => {
+	const expired = fakeClaudeDeps({ claudeAiOauth: { accessToken: "oauth-token", expiresAt: 1_000 } });
+	assert.equal(await fetchClaudeBridgeUsage(expired.deps, 1_788_600_000_000), undefined);
+	assert.equal(expired.calls.length, 0, "an expired token must not be sent anywhere");
+
+	const missing = fakeClaudeDeps(undefined);
+	assert.equal(await fetchClaudeBridgeUsage(missing.deps, 0), undefined);
+	assert.equal(missing.calls.length, 0);
+
+	const malformed = fakeClaudeDeps("{ not json");
+	assert.equal(await fetchClaudeBridgeUsage(malformed.deps, 0), undefined);
+	assert.equal(malformed.calls.length, 0);
+
+	assert.equal(await fetchClaudeBridgeUsage(fakeClaudeDeps(LIVE_CLAUDE_CREDENTIALS, {}, false).deps, 0), undefined);
+});
+
+test("readClaudeCodeToken looks in Claude Code's credentials file under the home directory", async () => {
+	const paths: string[] = [];
+	const deps = {
+		readFile: async (path: string) => {
+			paths.push(path);
+			return JSON.stringify(LIVE_CLAUDE_CREDENTIALS);
+		},
+		homedir: () => "/home/tester",
+	};
+	assert.equal(await readClaudeCodeToken(deps, 0), "oauth-token");
+	assert.equal(paths[0], join("/home/tester", ".claude", ".credentials.json"));
 });
 
 test("gentleShell fetches Codex usage on session start and shows it in the bar", async () => {

@@ -513,6 +513,66 @@ async function run() {
 		await rm(promptCwd, { recursive: true, force: true });
 	}
 
+	// Exercise the real startup dispatch, not only a selector/status helper.
+	const selectionCwd = await tempWorkspace();
+	try {
+		const { createGentleAiExtension } = await import(pathToFileURL(join(ROOT, "extensions/gentle-ai.ts")).href);
+		for (const name of ["change-a", "change-b"]) {
+			const change = join(selectionCwd, "openspec", "changes", name);
+			await mkdir(join(change, "specs", name), { recursive: true });
+			for (const file of ["proposal.md", "design.md", `specs/${name}/spec.md`]) {
+				await writeFile(join(change, file), "# Artifact\n");
+			}
+			await writeFile(join(change, "tasks.md"), "- [ ] Implement selection\n");
+		}
+		const metadata = { version: 1, cwd: selectionCwd, phase: "apply", selection: { changeName: "change-b" } };
+		const launchEnv = { GENTLE_PI_AGENTS_CHILD: "1", GENTLE_PI_SDD_CHILD_SELECTION: JSON.stringify(metadata) };
+		const selectionPi = createPi();
+		createGentleAiExtension({ nativeReviewCli: null, processEnv: launchEnv })(selectionPi.pi);
+		const startup = selectionPi.hooks.get("before_agent_start")[0];
+		const ctx = createCtx(selectionCwd, false, "selection-child");
+		const event = { systemPrompt: "SDD apply executor", prompt: '{"changeName":"change-a","dependencies":{"apply":"ready"}}' };
+		const selected = await startup(event, ctx);
+		assert.match(selected.systemPrompt, /"changeName": "change-b"/);
+		assert.match(selected.systemPrompt, /"apply": "ready"/);
+		delete launchEnv.GENTLE_PI_SDD_CHILD_SELECTION;
+		const ambiguous = await startup(event, ctx);
+		assert.match(ambiguous.systemPrompt, /"apply": "blocked"/);
+		for (const invalid of [
+			"{", { ...metadata, cwd: join(selectionCwd, "other") },
+			{ ...metadata, phase: "verify" }, { ...metadata, version: 2 },
+			{ ...metadata, selection: { changeName: "../change-a" } },
+			{ ...metadata, selection: { changeName: "change-b", dependencies: { apply: "ready" } } },
+		]) {
+			launchEnv.GENTLE_PI_SDD_CHILD_SELECTION = typeof invalid === "string" ? invalid : JSON.stringify(invalid);
+			const denied = await startup(event, ctx);
+			assert.match(denied.systemPrompt, /Invalid explicit SDD child selection metadata; STOP/);
+			assert.doesNotMatch(denied.systemPrompt, /"apply": "ready"/);
+		}
+		launchEnv.GENTLE_PI_SDD_CHILD_SELECTION = JSON.stringify(metadata);
+		delete launchEnv.GENTLE_PI_AGENTS_CHILD;
+		assert.match((await startup(event, ctx)).systemPrompt, /metadata; STOP/);
+		launchEnv.GENTLE_PI_AGENTS_CHILD = "1";
+		assert.match((await startup({ ...event, systemPrompt: "SDD verify executor" }, ctx)).systemPrompt, /metadata; STOP/);
+		assert.match((await startup({ systemPrompt: "Unrelated executor", prompt: "SDD apply executor" }, ctx)).systemPrompt, /metadata; STOP/);
+		for (const phase of ["verify", "sync", "archive"]) {
+			launchEnv.GENTLE_PI_SDD_CHILD_SELECTION = JSON.stringify({ ...metadata, phase });
+			const denied = await startup({ ...event, systemPrompt: `SDD ${phase} executor` }, ctx);
+			assert.match(denied.systemPrompt, /"changeName": "change-b"/);
+			assert.ok(denied.systemPrompt.includes(`"${phase}": "blocked"`));
+		}
+		launchEnv.GENTLE_PI_SDD_CHILD_SELECTION = JSON.stringify(metadata);
+		await rm(join(selectionCwd, "openspec/changes/change-b/tasks.md"));
+		assert.match((await startup(event, ctx)).systemPrompt, /"apply": "blocked"/);
+		launchEnv.GENTLE_PI_SDD_CHILD_SELECTION = JSON.stringify({ ...metadata, selection: { changeName: "missing-change" } });
+		const missing = await startup(event, ctx);
+		assert.match(missing.systemPrompt, /"apply": "blocked"/);
+		assert.doesNotMatch(missing.systemPrompt, /"changeName": "change-a"/);
+
+	} finally {
+		await rm(selectionCwd, { recursive: true, force: true });
+	}
+
 	const toolCwd = await tempWorkspace();
 	try {
 		const toolHook = hooks.get("tool_call")[0];
@@ -748,6 +808,8 @@ async function run() {
 		);
 
 		gitSync(candidateDriftCwd, "init", "-b", "main");
+		// Valid synthetic repository rules also satisfy installed commit guards.
+		await writeFile(join(candidateDriftCwd, "AGENTS.md"), "# Fixture rules\n\nKeep tracked.txt as plain-text candidate data. Do not add executable code.\n");
 		await writeFile(join(candidateDriftCwd, "tracked.txt"), "base\n");
 		gitSync(candidateDriftCwd, "add", "tracked.txt");
 		gitSync(

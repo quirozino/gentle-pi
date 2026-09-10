@@ -11,10 +11,23 @@ import { SessionWorktreeRegistry, SESSION_WORKTREE_CHANGED, resolveSessionWorktr
 import { CARD_TONE, renderCard, type Card, type CardTheme } from "../lib/shell-card.ts";
 import { GentleAiDevBinaryOverrideError, resolveGentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
 import { framePromptLines, PROMPT_HINT, PROMPT_STATE, withPromptHint, type PromptState } from "../lib/shell-prompt.ts";
-import { accountIdFromToken, CODEX_PROVIDER, CODEX_USAGE_URL, parseCodexUsage, parseUsageHeaders, UsageStore, type ProviderUsage } from "../lib/shell-usage.ts";
+import {
+	accountIdFromToken,
+	ANTHROPIC_OAUTH_BETA,
+	ANTHROPIC_USAGE_URL,
+	CLAUDE_BRIDGE_PROVIDER,
+	CODEX_PROVIDER,
+	CODEX_USAGE_URL,
+	parseAnthropicOauthUsage,
+	parseCodexUsage,
+	parseUsageHeaders,
+	UsageStore,
+	type ProviderUsage,
+} from "../lib/shell-usage.ts";
 import { UsageView } from "../lib/shell-usage-view.ts";
 import { sidebarPart } from "../lib/shell-sidebar.ts";
 import { installSidebar, invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
+import { detectPortraitColorMode, loadSidebarPortrait, PORTRAIT_CYCLE_MS, portraitRenderDimensions, renderSidebarPortraitFrame, type SidebarPortrait } from "../lib/shell-sidebar-portrait.ts";
 
 // Gentle Shell: the visual layer gentle-pi puts on top of pi. It installs the
 // status bar, the petal prompt, the working-tree changes widget and overlay,
@@ -52,6 +65,9 @@ export interface ShellDeps {
 	devBinary(): DevBinaryNotice | undefined;
 	resolveWorktree: WorktreeResolver;
 	gitRunner(cwd: string): GitRunner;
+	loadPortrait(): Promise<SidebarPortrait | undefined>;
+	readFile(path: string, encoding: "utf8"): Promise<string>;
+	homedir(): string;
 }
 
 function ambientDevBinary(): DevBinaryNotice | undefined {
@@ -64,7 +80,16 @@ function ambientDevBinary(): DevBinaryNotice | undefined {
 	}
 }
 
-const defaultShellDeps: ShellDeps = { fetch: (...args) => globalThis.fetch(...args), now: () => Date.now(), devBinary: ambientDevBinary, resolveWorktree: resolveSessionWorktree, gitRunner: shellGitRunner };
+const defaultShellDeps: ShellDeps = {
+	fetch: (...args) => globalThis.fetch(...args),
+	now: () => Date.now(),
+	devBinary: ambientDevBinary,
+	resolveWorktree: resolveSessionWorktree,
+	gitRunner: shellGitRunner,
+	loadPortrait: () => loadSidebarPortrait(),
+	readFile: (path, encoding) => readFile(path, encoding),
+	homedir: () => os.homedir(),
+};
 
 interface AssistantUsageEntry {
 	type: string;
@@ -115,6 +140,71 @@ export function buildShellBarModel(
 		subscription: model ? ctx.modelRegistry.isUsingOAuth(model) : false,
 		usage: options.usage,
 		statuses,
+	};
+}
+
+const PORTRAIT_FRAME_MS = 100;
+const PORTRAIT_REVEAL_RENDER_MS = 3_000;
+
+type PortraitTimer = ReturnType<typeof setTimeout> | number;
+
+export interface PortraitAnimationScheduler {
+	setActive(active: boolean): void;
+	dispose(): void;
+}
+
+export function createPortraitAnimationScheduler(deps: {
+	now(): number;
+	onFrame(elapsed: number): void;
+	setTimer?(callback: () => void, delay: number): PortraitTimer;
+	clearTimer?(timer: PortraitTimer): void;
+}): PortraitAnimationScheduler {
+	const setTimer = deps.setTimer ?? ((callback, delay) => {
+		const timer = setTimeout(callback, delay);
+		timer.unref();
+		return timer;
+	});
+	const clearTimer = deps.clearTimer ?? ((timer) => clearTimeout(timer as ReturnType<typeof setTimeout>));
+	let timer: PortraitTimer | undefined;
+	let cycleStarted = 0;
+	let active = false;
+	let disposed = false;
+	const stopTimer = () => {
+		if (timer !== undefined) clearTimer(timer);
+		timer = undefined;
+	};
+	const schedule = (delay: number) => {
+		stopTimer();
+		timer = setTimer(tick, delay);
+	};
+	const tick = () => {
+		timer = undefined;
+		if (!active || disposed) return;
+		const elapsed = deps.now() - cycleStarted;
+		if (elapsed > PORTRAIT_CYCLE_MS) {
+			cycleStarted = deps.now();
+			deps.onFrame(0);
+			schedule(PORTRAIT_FRAME_MS);
+			return;
+		}
+		deps.onFrame(elapsed);
+		schedule(elapsed >= PORTRAIT_REVEAL_RENDER_MS ? Math.max(1, PORTRAIT_CYCLE_MS - elapsed) : PORTRAIT_FRAME_MS);
+	};
+	return {
+		setActive(next) {
+			if (disposed || active === next) return;
+			active = next;
+			stopTimer();
+			if (!active) return;
+			cycleStarted = deps.now();
+			deps.onFrame(0);
+			schedule(PORTRAIT_FRAME_MS);
+		},
+		dispose() {
+			disposed = true;
+			active = false;
+			stopTimer();
+		},
 	};
 }
 
@@ -449,6 +539,36 @@ export async function fetchCodexUsage(token: string | undefined, fetchFn: typeof
 	}
 }
 
+// The bridge authenticates as Claude Code, so its subscription windows live
+// behind Claude Code's own OAuth token rather than anything pi holds. An
+// expired token is left alone: refreshing it is Claude Code's job, and racing
+// it here would invalidate the session it is still using.
+export async function readClaudeCodeToken(deps: Pick<ShellDeps, "readFile" | "homedir">, now: number): Promise<string | undefined> {
+	try {
+		const raw = await deps.readFile(join(deps.homedir(), ".claude", ".credentials.json"), "utf8");
+		const oauth = (JSON.parse(raw) as { claudeAiOauth?: { accessToken?: unknown; expiresAt?: unknown } }).claudeAiOauth;
+		if (typeof oauth?.accessToken !== "string" || oauth.accessToken.length === 0) return undefined;
+		if (typeof oauth.expiresAt === "number" && oauth.expiresAt <= now) return undefined;
+		return oauth.accessToken;
+	} catch {
+		return undefined;
+	}
+}
+
+export async function fetchClaudeBridgeUsage(deps: Pick<ShellDeps, "readFile" | "homedir" | "fetch">, now: number): Promise<ProviderUsage | undefined> {
+	const token = await readClaudeCodeToken(deps, now);
+	if (!token) return undefined;
+	try {
+		const response = await deps.fetch(ANTHROPIC_USAGE_URL, {
+			headers: { Authorization: `Bearer ${token}`, "anthropic-beta": ANTHROPIC_OAUTH_BETA, "User-Agent": "gentle-pi" },
+		});
+		if (!response.ok) return undefined;
+		return parseAnthropicOauthUsage(await response.json(), now);
+	} catch {
+		return undefined;
+	}
+}
+
 export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = process.env, overrides: Partial<ShellDeps> = {}): void {
 	if (!shellEnabled(env)) return;
 	const deps: ShellDeps = { ...defaultShellDeps, ...overrides };
@@ -457,12 +577,17 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	let usageFetchedAt = 0;
 	const refreshUsage = async (ctx: ExtensionContext, force: boolean) => {
 		const provider = ctx.model?.provider;
-		if (provider !== CODEX_PROVIDER) return;
+		if (provider !== CODEX_PROVIDER && provider !== CLAUDE_BRIDGE_PROVIDER) return;
 		const now = deps.now();
 		if (!force && now - usageFetchedAt < USAGE_REFRESH_MS) return;
 		usageFetchedAt = now;
-		const token = await ctx.modelRegistry.getApiKeyForProvider(CODEX_PROVIDER).catch(() => undefined);
-		const fetched = await fetchCodexUsage(token, deps.fetch, deps.now());
+		let fetched: ProviderUsage | undefined;
+		if (provider === CLAUDE_BRIDGE_PROVIDER) {
+			fetched = await fetchClaudeBridgeUsage(deps, deps.now());
+		} else {
+			const token = await ctx.modelRegistry.getApiKeyForProvider(CODEX_PROVIDER).catch(() => undefined);
+			fetched = await fetchCodexUsage(token, deps.fetch, deps.now());
+		}
 		if (!fetched) return;
 		usage.record(fetched);
 		renderHost?.invalidateSidebar?.();
@@ -499,6 +624,22 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		},
 	});
 	let prompt: GentlePromptEditor | undefined;
+	let portrait: SidebarPortrait | undefined;
+	let portraitElapsed = 0;
+	let sidebarActive = false;
+	let portraitScheduler: PortraitAnimationScheduler | undefined;
+	const portraitMode = detectPortraitColorMode(env);
+	pi.registerCommand("gentle:portrait", {
+		description: "Report whether the private sidebar portrait loaded, without displaying its content.",
+		handler: async (_args, ctx) => {
+			if (!portrait) {
+				ctx.ui.notify("Portrait unavailable: private configuration is missing or invalid.", "info");
+				return;
+			}
+			const dimensions = portraitRenderDimensions(portrait, 46);
+			ctx.ui.notify(`Portrait loaded: ${portrait.width}×${portrait.height} source, ${dimensions.width}×${dimensions.height} rail glyphs, ${portraitMode}.`, "info");
+		},
+	});
 	let changes: WorktreeChangesTracker | undefined;
 	let registry: SessionWorktreeRegistry | undefined;
 	let currentContext: ExtensionContext | undefined;
@@ -544,21 +685,54 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		pendingTools.clear();
 		currentContext = ctx;
 		changes = undefined;
+		portrait = undefined;
+		portraitElapsed = 0;
+		sidebarActive = false;
+		portraitScheduler?.dispose();
+		portraitScheduler = undefined;
 		registry = new SessionWorktreeRegistry(pi, ctx.sessionManager, ctx.cwd, deps.resolveWorktree);
 		registry.start();
 		const sessionRegistry = registry;
 		if (!ctx.hasUI) return;
+		const portraitComponent = {
+			render: (width: number) => portrait ? renderSidebarPortraitFrame(portrait, width, portraitMode, portraitElapsed) : [],
+			invalidate() {},
+		};
+		void deps.loadPortrait().then((loaded) => {
+			if (currentContext !== ctx || registry?.sessionId !== sessionRegistry.sessionId) return;
+			portrait = loaded;
+			portraitScheduler?.setActive(sidebarActive && !!portrait);
+			renderHost?.invalidateSidebar?.();
+			renderHost?.requestRender();
+		}).catch(() => {});
 		changes = new WorktreeChangesTracker(deps.gitRunner(ctx.cwd), deps.gitRunner, lineCounter, () => sessionRegistry.roots());
 		const tracker = changes;
 		ctx.ui.setFooter((tui, theme, footerData) => {
 			renderHost = { requestRender: () => tui.requestRender(), invalidateSidebar: () => invalidateSidebar(tui) };
+			const scheduler = createPortraitAnimationScheduler({
+				now: deps.now,
+				onFrame(elapsed) {
+					portraitElapsed = elapsed;
+					invalidateSidebar(tui);
+					tui.requestRender();
+				},
+			});
+			portraitScheduler = scheduler;
 			const bottom = createShellBarComponent(pi, ctx, renderHost, theme, footerData, () => tracker.model.files.length, () => usage.get(ctx.model?.provider ?? ""));
 			const part = sidebarPart(tui, "footer", bottom, {
 				render: (width) => renderShellSidebarBar(buildShellBarModel(pi, ctx, footerData, { dirty: tracker.model.files.length, usage: usage.get(ctx.model?.provider ?? "") }), theme, width),
 				invalidate() {},
 			});
-			const uninstall = installSidebar(tui, theme);
-			return { ...part, dispose() { uninstall(); part.dispose(); } };
+			const uninstall = installSidebar(tui, theme, portraitComponent, (active) => {
+				sidebarActive = active;
+				scheduler.setActive(active && !!portrait);
+			});
+			return { ...part, dispose() {
+				scheduler.dispose();
+				if (portraitScheduler === scheduler) portraitScheduler = undefined;
+				uninstall();
+				part.dispose();
+			} };
 		});
 		void refreshUsage(ctx, true);
 		installPrompt(ctx, (created) => {
@@ -589,6 +763,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		registry?.close();
 		registry = undefined;
 		changes = undefined;
+		portrait = undefined;
+		portraitScheduler?.dispose();
+		portraitScheduler = undefined;
+		sidebarActive = false;
 		currentContext = undefined;
 		pendingTools.clear();
 		unsubscribeWorktrees();

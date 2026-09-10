@@ -1,4 +1,5 @@
 import type { Duplex, Readable, Writable } from "node:stream";
+import { SDD_CHILD_SELECTION_ENV, sddChildSelectionMetadata, type RequestedSddChange } from "./sdd-child-selection.ts";
 import { AGENT_MODE, formatModelRef, type AgentDefinition, type AgentMode, type ModelRef } from "./agents-config.ts";
 import { CHILD_QUERY_MAX_INFLIGHT, CHILD_QUERY_TIMEOUT_MS, parseChildFrame, validChildMessage, validChildQueryId } from "./agents-messaging.ts";
 import { ParentStandingReviewPermissionBroker } from "./review-session-standing-permission-ipc.ts";
@@ -89,6 +90,7 @@ export interface TaskRequest {
 	thinking: string | undefined;
 	sessionDir: string;
 	resumeSessionPath: string | undefined;
+	requestedSddChange?: RequestedSddChange;
 	env: NodeJS.ProcessEnv;
 	// Captures the originating session; invoked only after successful OS spawn.
 	onLaunch?: () => void;
@@ -360,8 +362,13 @@ export class AgentRunner {
 			[IPC_MARKER]: `${this.deps.now()}-${Math.random().toString(36).slice(2)}`,
 			...(hasParentPermissionChannel ? { GENTLE_PI_AGENTS_PARENT_PERMISSION_FD: "3" } : {}),
 		};
+		// Every launch clears inherited selection, including unrelated/nested work.
+		delete env[SDD_CHILD_SELECTION_ENV];
 		let child: ChildLike;
 		try {
+			if (request.requestedSddChange !== undefined) {
+				env[SDD_CHILD_SELECTION_ENV] = sddChildSelectionMetadata(request.requestedSddChange, request.cwd, request.agent.name);
+			}
 			child = this.deps.spawn(this.deps.pi.command, [...this.deps.pi.args, ...childArguments(request)], {
 				cwd: request.cwd,
 				env,

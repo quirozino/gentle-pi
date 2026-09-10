@@ -56,6 +56,12 @@ interface RawCodexUsage {
 
 export const CODEX_PROVIDER = "openai-codex";
 export const ANTHROPIC_PROVIDER = "anthropic";
+// pi-claude-bridge reaches Claude through the Agent SDK subprocess, so no
+// Anthropic response headers ever reach pi; its windows come from the OAuth
+// usage endpoint the Claude Code binary itself reads.
+export const CLAUDE_BRIDGE_PROVIDER = "claude-bridge";
+export const ANTHROPIC_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
+export const ANTHROPIC_OAUTH_BETA = "oauth-2025-04-20";
 const ANTHROPIC_MAIN_LIMIT = "claude";
 const ANTHROPIC_PREFIX = "anthropic-ratelimit-unified-";
 const ANTHROPIC_WINDOWS: ReadonlyArray<[key: string, seconds: number]> = [
@@ -81,10 +87,11 @@ const ROLE = {
 	SEPARATOR: "muted",
 } as const;
 export const USAGE_EMPTY_MESSAGE = "No subscription usage yet. Usage arrives with the next response, or press r to fetch it.";
-export const SUPPORTED_USAGE_PROVIDERS: readonly string[] = [CODEX_PROVIDER, ANTHROPIC_PROVIDER];
+export const SUPPORTED_USAGE_PROVIDERS: readonly string[] = [CODEX_PROVIDER, ANTHROPIC_PROVIDER, CLAUDE_BRIDGE_PROVIDER];
 const PENDING_NOTE: Record<string, string> = {
 	[CODEX_PROVIDER]: "no usage yet · r to fetch",
 	[ANTHROPIC_PROVIDER]: "usage arrives with the first response",
+	[CLAUDE_BRIDGE_PROVIDER]: "no usage yet · r to fetch",
 };
 const UNSUPPORTED_NOTE = "no subscription usage for this provider";
 const ACTIVE_MARK = "✿";
@@ -172,6 +179,27 @@ export function parseAnthropicHeaders(headers: Record<string, string>, now: numb
 
 export function parseUsageHeaders(headers: Record<string, string>, now: number): ProviderUsage | undefined {
 	return parseCodexHeaders(headers, now) ?? parseAnthropicHeaders(headers, now);
+}
+
+interface RawOauthWindow {
+	utilization?: number;
+	resets_at?: string | null;
+}
+
+// The endpoint reports utilization already as a percentage and reset times as
+// ISO strings, and sends null for every window the plan does not have.
+export function parseAnthropicOauthUsage(payload: unknown, now: number): ProviderUsage | undefined {
+	const raw = (payload ?? {}) as Record<string, RawOauthWindow | null>;
+	const windows: UsageWindow[] = [];
+	for (const [key, seconds] of [["five_hour", 18_000], ["seven_day", WEEK]] as const) {
+		const entry = raw[key];
+		if (!entry || typeof entry.utilization !== "number") continue;
+		const reset = typeof entry.resets_at === "string" ? Date.parse(entry.resets_at) : Number.NaN;
+		windows.push({ label: windowLabel(seconds), usedPercent: entry.utilization, windowSeconds: seconds, resetAt: Number.isFinite(reset) ? reset : null });
+	}
+	if (windows.length === 0) return undefined;
+	const limitReached = windows.some((window) => window.usedPercent >= 100);
+	return { provider: CLAUDE_BRIDGE_PROVIDER, plan: undefined, limits: [{ name: ANTHROPIC_MAIN_LIMIT, windows, limitReached }], fetchedAt: now };
 }
 
 export function accountIdFromToken(token: string): string | undefined {

@@ -21,6 +21,7 @@ type PreparedRail = {
 	root: LayoutRoot;
 	theme: ShellBarTheme;
 	parts: Array<[string, Component]>;
+	portrait: Component | undefined;
 	active: boolean;
 	lines: string[];
 };
@@ -36,7 +37,7 @@ export function invalidateSidebar(tui: TUI): void {
 	if (tui.terminal) sidebarCache(tui).revision++;
 }
 
-export function installSidebar(tui: TUI, theme: ShellBarTheme): () => void {
+export function installSidebar(tui: TUI, theme: ShellBarTheme, portrait?: Component, onActiveChange?: (active: boolean) => void): () => void {
 	if (!tui.terminal) return () => {};
 	const host = tui as Host;
 	const state = sidebarState(tui);
@@ -48,6 +49,11 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme): () => void {
 	let railLines: string[] = [];
 	let prepared: PreparedRail | undefined;
 	state.active = false;
+	const setActive = (active: boolean) => {
+		if (state.active === active) return;
+		state.active = active;
+		onActiveChange?.(active);
+	};
 	state.ownsHost = () => !stopped && host.mode === "fullscreen" && !!host.layoutRoot && roots.has(host.layoutRoot);
 	const rail: Component = {
 		render: () => railLines,
@@ -77,18 +83,18 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme): () => void {
 		};
 	};
 	const prepare = (width: number, root: LayoutRoot): boolean => {
-		state.active = false;
 		if (stopped || failed || host.mode !== "fullscreen" || width < SIDEBAR_BREAKPOINT) {
 			prepared = undefined;
+			setActive(false);
 			return false;
 		}
 		const parts = [...state.parts.entries()];
 		const unchanged = prepared?.revision === cache.revision &&
 			prepared.width === width && prepared.mode === host.mode && prepared.root === root && prepared.theme === theme &&
-			prepared.parts.length === parts.length && prepared.parts.every(([key, part], index) => parts[index]?.[0] === key && parts[index]?.[1] === part);
+			prepared.portrait === portrait && prepared.parts.length === parts.length && prepared.parts.every(([key, part], index) => parts[index]?.[0] === key && parts[index]?.[1] === part);
 		if (unchanged) {
 			railLines = prepared.lines;
-			state.active = prepared.active;
+			setActive(prepared.active);
 			return prepared.active;
 		}
 		try {
@@ -98,6 +104,9 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme): () => void {
 				while (lines.length && lines[lines.length - 1]?.trim() === "") lines.pop();
 				return lines;
 			}).filter((lines) => lines.length > 0);
+			// Leave one quiet column so a square source lands near 46×23 in the 47-column rail content.
+			const portraitLines = portrait?.render(Math.max(1, contentWidth - RAIL_PADDING * 2 - 1)) ?? [];
+			if (portraitLines.length > 0) sections.push(portraitLines);
 			const branding = renderSidebarBanner(theme, contentWidth - RAIL_PADDING * 2);
 			if (sections.length && branding.length) sections.unshift(branding);
 			railLines = sections.flatMap((lines, index) => [
@@ -106,17 +115,18 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme): () => void {
 			]);
 			// Height is owned by the native ScrollView, never by the transcript.
 			const active = railLines.length > 0 && railLines.every((line) => visibleWidth(line) <= contentWidth);
-			prepared = { revision: cache.revision, width, mode: host.mode, root, theme, parts, active, lines: railLines };
-			state.active = active;
+			prepared = { revision: cache.revision, width, mode: host.mode, root, theme, parts, portrait, active, lines: railLines };
+			setActive(active);
 			return active;
 		} catch {
 			failed = true;
+			setActive(false);
 			return false;
 		}
 	};
 	const attach = () => {
 		if (stopped || failed) return;
-		if (host.mode !== "fullscreen") { state.active = false; return; }
+		if (host.mode !== "fullscreen") { setActive(false); return; }
 		try {
 			const root = host.layoutRoot;
 			if (!root || typeof root[NODE] !== "function") { state.active = false; return; }
@@ -140,7 +150,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme): () => void {
 			});
 		} catch {
 			failed = true;
-			state.active = false;
+			setActive(false);
 		}
 	};
 	attach();
@@ -150,7 +160,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme): () => void {
 	timer.unref();
 	return () => {
 		stopped = true;
-		state.active = false;
+		setActive(false);
 		clearInterval(timer);
 		scroll.hideTransientScrollbar();
 		for (const cleanup of cleanups.reverse()) cleanup();

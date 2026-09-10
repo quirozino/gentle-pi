@@ -5,6 +5,7 @@ import {
 	accountIdFromToken,
 	formatReset,
 	parseAnthropicHeaders,
+	parseAnthropicOauthUsage,
 	parseCodexHeaders,
 	parseUsageHeaders,
 	parseCodexUsage,
@@ -188,6 +189,34 @@ test("parseAnthropicHeaders turns the unified utilization fractions into 5h and 
 	assert.equal(usage.limits[0].limitReached, false);
 	assert.equal(parseAnthropicHeaders({ ...headers, "anthropic-ratelimit-unified-status": "rejected" }, NOW)?.limits[0].limitReached, true);
 	assert.equal(parseAnthropicHeaders({ "anthropic-ratelimit-requests-remaining": "99" }, NOW), undefined);
+});
+
+test("parseAnthropicOauthUsage reads the bridge's 5h and weekly windows from the OAuth usage endpoint", () => {
+	const payload = {
+		five_hour: { utilization: 31, resets_at: "2026-09-10T23:20:00.151058+00:00" },
+		seven_day: { utilization: 6, resets_at: "2026-09-16T08:00:00.151080+00:00" },
+		seven_day_opus: null,
+	};
+	const usage = parseAnthropicOauthUsage(payload, NOW);
+	assert.ok(usage);
+	assert.equal(usage.provider, "claude-bridge");
+	assert.deepEqual(usage.limits.map((limit) => limit.name), ["claude"]);
+	assert.deepEqual(usage.limits[0].windows.map((w) => `${w.label}:${w.usedPercent}`), ["5h:31", "week:6"]);
+	assert.equal(usage.limits[0].windows[0].resetAt, Date.parse("2026-09-10T23:20:00.151058+00:00"));
+	assert.equal(usage.limits[0].limitReached, false);
+});
+
+test("parseAnthropicOauthUsage keeps the windows it can read and drops the rest", () => {
+	const partial = parseAnthropicOauthUsage({ five_hour: { utilization: 12, resets_at: null }, seven_day: null }, NOW);
+	assert.deepEqual(partial?.limits[0].windows.map((w) => `${w.label}:${w.usedPercent}:${w.resetAt}`), ["5h:12:null"]);
+	assert.equal(parseAnthropicOauthUsage({ five_hour: { resets_at: "2026-09-10T23:20:00Z" } }, NOW), undefined);
+	assert.equal(parseAnthropicOauthUsage({}, NOW), undefined);
+	assert.equal(parseAnthropicOauthUsage(null, NOW), undefined);
+});
+
+test("parseAnthropicOauthUsage marks the limit reached once a window is exhausted", () => {
+	const usage = parseAnthropicOauthUsage({ five_hour: { utilization: 100, resets_at: null } }, NOW);
+	assert.equal(usage?.limits[0].limitReached, true);
 });
 
 test("parseUsageHeaders picks whichever provider the headers belong to", () => {

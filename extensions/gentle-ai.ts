@@ -1,5 +1,6 @@
 import { consumeReviewMutation, pendingReviewMutation, recordReviewMutation } from "../lib/review-reminder-receipt.ts";
 import { resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
+import { readSddChildSelection } from "../lib/sdd-child-selection.ts";
 import { resolveResearchCapabilities, renderResearchCapabilities } from "../lib/sdd-research-capabilities.ts";
 import { declareReviewRelayHandshake } from "../lib/review-relay-contract.ts";
 import { execFileSync } from "node:child_process";
@@ -6869,6 +6870,14 @@ function createGentleAiExtensionForTesting(
 	pi.on("before_agent_start", async (event, ctx) => {
 		const isSddAgent = isSddAgentStartEvent(event);
 		const isNamedAgent = isNamedAgentStartEvent(event);
+		const phase = isSddAgent ? sddPhaseFromAgentStartEvent(event) : undefined;
+		let selection;
+		try {
+			selection = readSddChildSelection(dependencies.processEnv ?? process.env, ctx.cwd, phase);
+		} catch (error) {
+			// Pi continues after thrown startup hooks, so return the blocking gate.
+			return { systemPrompt: `${event.systemPrompt}\n\n${error instanceof Error ? error.message : String(error)}` };
+		}
 		const subagentDepthKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
 		if (isSddAgent || isNamedAgent) {
 			processAgentEndSubagentDepth.set(subagentDepthKey, (processAgentEndSubagentDepth.get(subagentDepthKey) ?? 0) + 1);
@@ -6909,11 +6918,10 @@ function createGentleAiExtensionForTesting(
 			prefs && (!isNamedAgent || isSddAgent)
 				? `\n\n${renderSddPreflightPrompt(prefs)}`
 				: "";
-		const phase = isSddAgent ? sddPhaseFromAgentStartEvent(event) : undefined;
 		const nativeStatusPrompt = phase
 			? `\n\n${renderNativeSddPhasePrompt(resolveStartupControllerSddStatus(
 				ctx.cwd,
-				undefined,
+				selection?.changeName,
 				true,
 				prefs?.artifactStore,
 			), phase)}`

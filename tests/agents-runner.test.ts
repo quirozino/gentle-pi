@@ -600,3 +600,36 @@ for (const lateEvents of [false, true]) test(`AgentRunner releases quarantined c
 	assert.deepEqual(finishes, [first.id], "cleanup must not finish the quarantined task twice");
 	assert.deepEqual(store.get(first.id), finished);
 });
+
+for (const resumeSessionPath of [undefined, "/sessions/previous.jsonl"]) {
+	test(`SDD transport clears inheritance and binds explicit identity on ${resumeSessionPath ? "resume" : "launch"}`, async () => {
+		for (const requestedSddChange of [undefined, { changeName: "change-b" }]) {
+			const h = harness();
+			const task = h.runner.run(request({
+				agent: { ...explorer, name: "sdd-apply" }, cwd: process.cwd(), resumeSessionPath,
+				requestedSddChange, env: { GENTLE_PI_SDD_CHILD_SELECTION: "inherited-untrusted" },
+			}));
+			await tick();
+			const raw = h.spawnOptions[0].env.GENTLE_PI_SDD_CHILD_SELECTION;
+			if (!requestedSddChange) assert.equal(raw, undefined);
+			else assert.deepEqual(JSON.parse(raw!), {
+				version: 1, cwd: process.cwd(), phase: "apply", selection: requestedSddChange,
+			});
+			h.runner.cancel(task.id);
+		}
+	});
+}
+
+test("unrelated children clear inherited selection and reject explicit SDD authority", async () => {
+	const h = harness();
+	const ordinary = h.runner.run(request({ env: { GENTLE_PI_SDD_CHILD_SELECTION: "inherited" } }));
+	await tick();
+	assert.equal(h.spawnOptions[0].env.GENTLE_PI_SDD_CHILD_SELECTION, undefined);
+	h.runner.cancel(ordinary.id);
+	for (const selection of [{ changeName: "change-b" }, { changeName: "../escape" }]) {
+		const denied = h.runner.run(request({ cwd: process.cwd(), requestedSddChange: selection }));
+		await tick();
+		assert.equal(h.store.get(denied.id)?.status, TASK_STATUS.FAILED);
+	}
+	assert.equal(h.spawnOptions.length, 1, "invalid requests never spawn");
+});
