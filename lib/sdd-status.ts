@@ -1,5 +1,8 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join, relative, resolve } from "node:path";
+import { resolveGentleAiBinary } from "./gentle-ai-binary.ts";
+import { parseRequirementBlocks } from "./openspec-deltas.ts";
 import {
 	detectActiveDomainCollisions,
 	detectLegacyFlatSpec,
@@ -242,6 +245,11 @@ function countTasks(tasksPath: string | undefined): SddTaskAccounting {
 	};
 }
 
+/**
+ * Narrative reading for the sync report, which has no structured envelope of its
+ * own. The verify report does not use this: it is admitted by the native
+ * validator, which reads the current envelope instead of scanning the whole file.
+ */
 function reportIsClearlyPassing(path: string | undefined): boolean {
 	if (!path || !hasContent(path)) return false;
 	const text = safeRead(path);
@@ -256,6 +264,79 @@ function reportIsClearlyPassing(path: string | undefined): boolean {
 			/^sync completed?\.?$/i.test(line),
 		);
 	return hasPassSignal && !hasBlocker;
+}
+
+const VERIFY_VALIDATOR_TIMEOUT_MS = 3_000;
+const VERIFY_VALIDATOR_MAX_BUFFER_BYTES = 1024 * 1024;
+const PASSING_VERIFY_VERDICTS = new Set(["pass", "pass_with_warnings"]);
+const SCENARIO_HEADING = /^#### Scenario:/gm;
+
+const SDD_VERIFY_REPORT_NOT_ADMITTED =
+	"verify-report.md is not an admitted gentle-ai.verify-result/v1 passing envelope.";
+const SDD_VERIFY_VALIDATOR_UNAVAILABLE =
+	"verify-report.md could not be admitted: the gentle-ai validator did not answer.";
+
+interface SpecCoverage {
+	requirements: number;
+	scenarios: number;
+}
+
+/**
+ * The authoritative requirement/scenario totals, counted from the delta specs
+ * themselves. The envelope's own `requirements:`/`scenarios:` counts are the
+ * claim under test, so they can never be the number we check that claim against.
+ */
+function countSpecCoverage(specPaths: string[]): SpecCoverage {
+	let requirements = 0;
+	let scenarios = 0;
+	for (const path of specPaths) {
+		const source = safeRead(path);
+		requirements += parseRequirementBlocks(source).length;
+		scenarios += source.match(SCENARIO_HEADING)?.length ?? 0;
+	}
+	return { requirements, scenarios };
+}
+
+type VerifyAdmission = "admitted" | "denied" | "unavailable";
+
+/**
+ * Ask the native validator whether the report's CURRENT envelope is admitted and
+ * passing. gentle-ai owns the envelope grammar, so we invoke it rather than
+ * re-implementing a YAML reader here. Deliberately uncached: the answer depends
+ * both on the report's bytes and on which validator answered, and neither is
+ * captured by any key cheap enough to be worth trusting a stale admission for.
+ * "unavailable" is not a pass either; it only earns an honest blocked reason.
+ */
+function verifyReportAdmission(reportPath: string | undefined, coverage: SpecCoverage): VerifyAdmission {
+	if (!reportPath || !hasContent(reportPath)) return "denied";
+	let executable: string;
+	try {
+		executable = resolveGentleAiBinary();
+	} catch {
+		return "unavailable";
+	}
+	const result = spawnSync(
+		executable,
+		["sdd-verify-validate", "--input", reportPath, "--requirements", String(coverage.requirements), "--scenarios", String(coverage.scenarios)],
+		{
+			encoding: "utf8",
+			shell: false,
+			windowsHide: true,
+			timeout: VERIFY_VALIDATOR_TIMEOUT_MS,
+			maxBuffer: VERIFY_VALIDATOR_MAX_BUFFER_BYTES,
+		},
+	);
+	if (result.error || result.signal !== null) return "unavailable";
+	if (result.status !== 0) return "denied";
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(result.stdout);
+	} catch {
+		return "unavailable";
+	}
+	const admission = parsed as { valid?: unknown; verdict?: unknown } | null;
+	if (typeof admission !== "object" || admission === null || typeof admission.verdict !== "string") return "unavailable";
+	return admission.valid === true && PASSING_VERIFY_VERDICTS.has(admission.verdict) ? "admitted" : "denied";
 }
 
 function emptyStatus(cwd: string, changeName: string | null, blockedReasons: string[], artifactStore: SddArtifactStore = "openspec", isNonAuthoritative = false): SddStatus {
@@ -574,7 +655,9 @@ export function resolveSddStatus(options: ResolveSddStatusOptions): SddStatus {
 		: taskProgress.remaining === 0
 			? "all_done"
 			: "ready";
-	const verifyClean = reportIsClearlyPassing(artifactPaths.verifyReport[0]);
+	const verifyAdmission = verifyReportAdmission(artifactPaths.verifyReport[0], countSpecCoverage(specFiles));
+	const verifyClean = verifyAdmission === "admitted";
+	if (artifacts.verifyReport !== "missing" && !verifyClean) blockedReasons.push(verifyAdmission === "unavailable" ? SDD_VERIFY_VALIDATOR_UNAVAILABLE : SDD_VERIFY_REPORT_NOT_ADMITTED);
 	const syncClean = reportIsClearlyPassing(artifactPaths.syncReport[0]);
 	const syncPrerequisitesReady = coreArtifactsReady && verifyClean && collisions.length === 0 && !flatOnly;
 	const syncState: DependencyState = syncPrerequisitesReady

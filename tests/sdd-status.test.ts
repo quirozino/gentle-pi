@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, mkdirSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
+import { delimiter, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
 import test from "node:test";
+import { GENTLE_AI_VERSION, gentleAiBinaryPath, setGentleAiDevBinaryEnvironmentForTesting } from "../lib/gentle-ai-binary.ts";
 import {
 	isNonAuthoritativeStatus,
 	listActiveOpenSpecChanges,
@@ -38,6 +40,105 @@ function seedChange(cwd: string, change = "add-auth"): string {
 `,
 	);
 	return root;
+}
+
+const DIGEST = `sha256:${"0".repeat(64)}`;
+
+/** Narrative that the retired global keyword scan always rejected, whatever the envelope said. */
+const HISTORICAL_FAILURE_NARRATIVE =
+	"\n## Attempt history\n\nAttempt 1: FAIL — 2 CRITICAL findings, verification blockers unresolved.\nAttempt 2: BLOCKED — TODO: tests not run, PENDING review.\nStatus: not passed\n";
+
+/** The canonical `gentle-ai.verify-result/v1` envelope as the first non-empty content. */
+function verifyEnvelope(overrides: { verdict?: string; requirements?: string; scenarios?: string } = {}): string {
+	return `\`\`\`yaml
+schema: gentle-ai.verify-result/v1
+evidence_revision: ${DIGEST}
+verdict: ${overrides.verdict ?? "pass"}
+blockers: 0
+critical_findings: 0
+requirements: ${overrides.requirements ?? "0/0"}
+scenarios: ${overrides.scenarios ?? "0/0"}
+test_command: node --test
+test_exit_code: 0
+test_output_hash: ${DIGEST}
+build_command: not configured
+build_exit_code: 0
+build_output_hash: ${DIGEST}
+\`\`\`
+`;
+}
+
+/** A delta spec carrying exactly `requirements` requirements and `scenarios` scenarios. */
+function specWithCoverage(requirements: number, scenarios: number): string {
+	return [
+		"# Spec\n\n## ADDED Requirements\n",
+		...Array.from({ length: requirements }, (_, index) => `### Requirement: Requirement ${index + 1}\n\nThe system MUST do the thing.\n`),
+		...Array.from({ length: scenarios }, (_, index) => `#### Scenario: scenario ${index + 1}\n\n- WHEN it happens\n- THEN it holds\n`),
+	].join("\n");
+}
+
+/** Writes an executable stub standing in for `gentle-ai sdd-verify-validate`. */
+function writeValidatorStub(cwd: string, name: string, body: string): string {
+	const path = join(cwd, `${name}.mjs`);
+	write(path, `#!/usr/bin/env node\n${body}\n`);
+	chmodSync(path, 0o755);
+	return path;
+}
+
+/** A stub that admits any report, for tests whose subject is routing, not admission. */
+function admittingValidatorStub(cwd: string): string {
+	return writeValidatorStub(cwd, "admitting", `process.stdout.write(JSON.stringify({ valid: true, verdict: "pass" }));`);
+}
+
+/** A stub that answers from the report's own `verdict:` line, as the real validator does. */
+function readingValidatorStub(cwd: string): string {
+	return writeValidatorStub(cwd, "reading", `import { readFileSync } from "node:fs";\nconst verdict = /^verdict: (\\w+)$/m.exec(readFileSync(process.argv[4], "utf8"))?.[1] ?? "fail";\nprocess.stdout.write(JSON.stringify({ valid: true, verdict }));`);
+}
+
+/**
+ * Runs `run` with the validator resolved to `executable`. Passing `undefined`
+ * leaves no dev-binary override and no registration, so resolution falls through
+ * to the package-local pinned binary — absent in a source checkout.
+ */
+function withValidator<T>(executable: string | undefined, run: () => T): T {
+	setGentleAiDevBinaryEnvironmentForTesting({
+		env: executable ? { GENTLE_PI_GENTLE_AI_DEV_BINARY: executable } : {},
+		home: join(tmpdir(), "gentle-pi-absent-config-home"),
+	});
+	try {
+		return run();
+	} finally {
+		setGentleAiDevBinaryEnvironmentForTesting(undefined);
+	}
+}
+
+/** The version a candidate binary reports, or "" when it is absent or unrunnable. */
+function reportedValidatorVersion(candidate: string): string {
+	const probe = spawnSync(candidate, ["--version"], { encoding: "utf8", shell: false, timeout: 3_000 });
+	return probe.status === 0 ? (probe.stdout.trim().split(/\s+/).pop() ?? "") : "";
+}
+
+/**
+ * The gentle-ai binary that actually reports the pinned version. Deliberately
+ * not resolveGentleAiBinary(): that honours the maintainer's dev-binary
+ * override, so it would prove the contract against an unreleased main build
+ * while the test name claimed the release. Stubs prove how we read the
+ * validator's answers; only the pinned binary proves the contract itself.
+ */
+function discoverRealValidator(): string | undefined {
+	const candidates = [gentleAiBinaryPath()];
+	for (const directory of (process.env.PATH ?? "").split(delimiter)) {
+		if (directory) candidates.push(join(directory, "gentle-ai"));
+	}
+	return candidates.find((candidate) => reportedValidatorVersion(candidate) === GENTLE_AI_VERSION);
+}
+
+const REAL_VALIDATOR = discoverRealValidator();
+
+/** Fails loudly rather than skipping: a native contract left unproven is not a pass. */
+function requireRealValidator(): string {
+	assert.ok(REAL_VALIDATOR, `these tests prove the gentle-ai v${GENTLE_AI_VERSION} contract and need that binary installed in this package or on PATH; none was found`);
+	return REAL_VALIDATOR;
 }
 
 test("listActiveOpenSpecChanges excludes archive and sorts active changes", async () => {
@@ -96,10 +197,12 @@ test("resolveSddStatus routes completed implementation through archive without R
 	const cwd = await workspace();
 	const root = seedChange(cwd);
 	write(join(root, "tasks.md"), "# Tasks\n\n- [x] 1.1 Done\n");
-	write(join(root, "verify-report.md"), "# Verify\n\nPASS\n");
+	write(join(root, "verify-report.md"), verifyEnvelope());
 	write(join(root, "sync-report.md"), "# Sync\n\nPASS\n");
 
-	const status = resolveSddStatus({ cwd, changeName: "add-auth" });
+	const status = withValidator(admittingValidatorStub(cwd), () =>
+		resolveSddStatus({ cwd, changeName: "add-auth" }),
+	);
 
 	assert.equal(status.applyState, "all_done");
 	assert.equal(status.dependencies.verify, "all_done");
@@ -202,6 +305,201 @@ test("resolveSddStatus blocks sync when verify report contains critical text", a
 
 	assert.equal(status.dependencies.sync, "blocked");
 	assert.equal(status.dependencies.archive, "blocked");
+});
+
+// --- gentle-ai.verify-result/v1: only the CURRENT envelope decides -------------
+
+/** Seeds a completed change whose verify report is `report`. */
+function seedVerified(cwd: string, report: string, spec?: string): string {
+	const root = seedChange(cwd);
+	if (spec) write(join(root, "specs", "auth", "spec.md"), spec);
+	write(join(root, "tasks.md"), "# Tasks\n\n- [x] 1.1 Done\n");
+	write(join(root, "verify-report.md"), report);
+	write(join(root, "sync-report.md"), "# Sync\n\nPASS\n");
+	return root;
+}
+
+/** Seeds a fresh completed change and resolves its status under `validator`. */
+async function statusFor(report: string, validator: string | undefined, spec?: string): Promise<ReturnType<typeof resolveSddStatus>> {
+	const cwd = await workspace();
+	seedVerified(cwd, report, spec);
+	return withValidator(validator, () => resolveSddStatus({ cwd, changeName: "add-auth" }));
+}
+
+test("the native contract tests run against the pinned gentle-ai release, not a dev build", () => {
+	const validator = requireRealValidator();
+
+	assert.equal(spawnSync(validator, ["--version"], { encoding: "utf8" }).stdout.trim(), `gentle-ai ${GENTLE_AI_VERSION}`);
+});
+
+test("a current PASS envelope admits sync and archive despite retained historical FAIL narrative", async () => {
+	const status = await statusFor(verifyEnvelope() + HISTORICAL_FAILURE_NARRATIVE, requireRealValidator());
+
+	assert.equal(status.dependencies.verify, "all_done");
+	assert.equal(status.dependencies.sync, "all_done");
+	assert.equal(status.dependencies.archive, "ready");
+	assert.equal(status.nextRecommended, "sdd-archive");
+});
+
+test("a current FAIL envelope blocks and no historical PASS narrative rescues it", async () => {
+	const status = await statusFor(`${verifyEnvelope({ verdict: "fail" })}\n## History\n\nPASS\nAll checks passed.\nReady for archive.\n`, requireRealValidator());
+
+	assert.equal(status.dependencies.sync, "blocked");
+	assert.equal(status.dependencies.archive, "blocked");
+	assert.notEqual(status.nextRecommended, "sdd-archive");
+});
+
+test("a malformed structured report never falls through to the legacy narrative reading", async () => {
+	const validator = requireRealValidator();
+	const preamble = `Intro before the fence.\n\n${verifyEnvelope()}`;
+	const misplacedFence = verifyEnvelope().replace(/```/g, "~~~");
+	const duplicateCritical = verifyEnvelope().replace("critical_findings: 0", "critical_findings: 0\ncritical_findings: 0");
+	const missingField = verifyEnvelope().replace(`evidence_revision: ${DIGEST}\n`, "");
+	for (const [label, report] of [
+		["content before the fence", preamble],
+		["misplaced fence", misplacedFence],
+		["duplicate critical field", duplicateCritical],
+		["missing required field", missingField],
+	] as const) {
+		const status = await statusFor(`${report}\n## Body\n\nPASS\nAll checks passed.\n`, validator);
+
+		assert.equal(status.dependencies.sync, "blocked", label);
+		assert.equal(status.dependencies.archive, "blocked", label);
+	}
+});
+
+test("verify admission counts the actual spec requirements and scenarios, not the self-declared totals", async () => {
+	const status = await statusFor(verifyEnvelope({ requirements: "9/9", scenarios: "9/9" }), requireRealValidator(), specWithCoverage(1, 1));
+
+	assert.equal(status.dependencies.sync, "blocked");
+	assert.equal(status.dependencies.archive, "blocked");
+	assert.match(status.blockedReasons.join("\n"), /is not an admitted/i);
+});
+
+test("verify admission accepts an envelope whose totals match the real spec coverage", async () => {
+	const status = await statusFor(verifyEnvelope({ requirements: "2/2", scenarios: "3/3" }), requireRealValidator(), specWithCoverage(2, 3));
+
+	assert.equal(status.dependencies.verify, "all_done");
+	assert.equal(status.dependencies.archive, "ready");
+});
+
+// --- fail-closed handling of the validator's own answers -----------------------
+// These stubs prove how we read the validator, not that the validator is correct.
+
+test("verify admission fails closed when the validator binary cannot be resolved", async () => {
+	const status = await statusFor(verifyEnvelope(), undefined);
+
+	assert.equal(status.dependencies.sync, "blocked");
+	assert.equal(status.dependencies.archive, "blocked");
+	assert.match(status.blockedReasons.join("\n"), /validator did not answer/i);
+});
+
+test("verify admission is re-derived per resolution, so neither the report nor the validator goes stale", async () => {
+	const cwd = await workspace();
+	const report = join(seedVerified(cwd, verifyEnvelope()), "verify-report.md");
+	const reading = readingValidatorStub(cwd);
+	const archiveWith = (validator: string | undefined) =>
+		withValidator(validator, () => resolveSddStatus({ cwd, changeName: "add-auth" })).dependencies.archive;
+	assert.equal(archiveWith(reading), "ready");
+
+	// Rewritten as FAIL at an identical size with its mtime restored: nothing a
+	// stat-keyed cache could notice, so only re-reading the bytes can reject it.
+	const stamps = statSync(report);
+	write(report, verifyEnvelope({ verdict: "fail" }));
+	assert.equal(statSync(report).size, stamps.size);
+	utimesSync(report, stamps.atime, stamps.mtime);
+	assert.equal(archiveWith(reading), "blocked");
+
+	// The same untouched report, re-judged when the validator identity changes.
+	write(report, verifyEnvelope());
+	assert.equal(archiveWith(reading), "ready");
+	assert.equal(archiveWith(undefined), "blocked");
+	assert.equal(archiveWith(reading), "ready");
+});
+
+test("verify admission fails closed on validator denial, unreadable output, or an unclean exit", async () => {
+	const cwd = await workspace();
+	seedVerified(cwd, verifyEnvelope());
+	const stubs = {
+		denied: writeValidatorStub(cwd, "denied", `process.stderr.write("Error: admission denied\\n");\nprocess.exit(1);`),
+		unreadable: writeValidatorStub(cwd, "unreadable", `process.stdout.write("not json at all");`),
+		unclean: writeValidatorStub(cwd, "unclean", `process.kill(process.pid, "SIGKILL");`),
+		wrongShape: writeValidatorStub(cwd, "wrong-shape", `process.stdout.write(JSON.stringify({ ok: true }));`),
+	};
+
+	for (const [label, stub] of Object.entries(stubs)) {
+		const status = withValidator(stub, () => resolveSddStatus({ cwd, changeName: "add-auth" }));
+
+		assert.equal(status.dependencies.sync, "blocked", label);
+		assert.equal(status.dependencies.archive, "blocked", label);
+	}
+});
+
+test("verify admission permits only passing verdicts from a valid admission", async () => {
+	const cwd = await workspace();
+	seedVerified(cwd, verifyEnvelope());
+	const verdicts = [
+		["pass", "ready"],
+		["pass_with_warnings", "ready"],
+		["fail", "blocked"],
+	] as const;
+
+	for (const [verdict, archive] of verdicts) {
+		const stub = writeValidatorStub(
+			cwd,
+			`verdict-${verdict}`,
+			`process.stdout.write(JSON.stringify({ valid: true, verdict: ${JSON.stringify(verdict)} }));`,
+		);
+
+		const status = withValidator(stub, () => resolveSddStatus({ cwd, changeName: "add-auth" }));
+
+		assert.equal(status.dependencies.archive, archive, verdict);
+	}
+});
+
+test("verify admission passes the report path and the actual counts to the validator", async () => {
+	const cwd = await workspace();
+	const root = seedVerified(cwd, verifyEnvelope(), specWithCoverage(2, 3));
+	const recorded = join(cwd, "argv.json");
+	const stub = writeValidatorStub(
+		cwd,
+		"recorder",
+		`import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(recorded)}, JSON.stringify(process.argv.slice(2)));\nprocess.stdout.write(JSON.stringify({ valid: true, verdict: "pass" }));`,
+	);
+
+	withValidator(stub, () => resolveSddStatus({ cwd, changeName: "add-auth" }));
+
+	const argv = JSON.parse(readFileSync(recorded, "utf8")) as string[];
+	assert.deepEqual(argv, [
+		"sdd-verify-validate",
+		"--input",
+		join(root, "verify-report.md"),
+		"--requirements",
+		"2",
+		"--scenarios",
+		"3",
+	]);
+});
+
+// --- sync-report keeps its separate narrative contract -------------------------
+
+test("sync-report stays on the narrative contract and needs no verify envelope", async () => {
+	const cwd = await workspace();
+	const root = seedVerified(cwd, verifyEnvelope());
+	const stub = admittingValidatorStub(cwd);
+
+	const clean = withValidator(stub, () => resolveSddStatus({ cwd, changeName: "add-auth" }));
+	assert.equal(clean.dependencies.sync, "all_done");
+	assert.equal(clean.dependencies.archive, "ready");
+
+	write(join(root, "sync-report.md"), "# Sync\n\nSync completed.\n");
+	const phrased = withValidator(stub, () => resolveSddStatus({ cwd, changeName: "add-auth" }));
+	assert.equal(phrased.dependencies.sync, "all_done");
+
+	write(join(root, "sync-report.md"), "# Sync\n\nCRITICAL: merge conflict\n");
+	const dirty = withValidator(stub, () => resolveSddStatus({ cwd, changeName: "add-auth" }));
+	assert.equal(dirty.dependencies.sync, "ready");
+	assert.equal(dirty.dependencies.archive, "blocked");
 });
 
 test("resolveSddStatus reports same-domain collisions", async () => {
@@ -322,10 +620,12 @@ test("resolveSddStatus marks archive ready only after clean verify, sync, and co
 	const cwd = await workspace();
 	const root = seedChange(cwd);
 	write(join(root, "tasks.md"), "# Tasks\n\n- [x] 1.1 Done\n");
-	write(join(root, "verify-report.md"), "# Verify\n\nPASS\n");
+	write(join(root, "verify-report.md"), verifyEnvelope());
 	write(join(root, "sync-report.md"), "# Sync\n\nPASS\n");
 
-	const status = resolveSddStatus({ cwd, changeName: "add-auth" });
+	const status = withValidator(admittingValidatorStub(cwd), () =>
+		resolveSddStatus({ cwd, changeName: "add-auth" }),
+	);
 
 	assert.equal(status.dependencies.archive, "ready");
 	assert.equal(status.nextRecommended, "sdd-archive");
