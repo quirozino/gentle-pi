@@ -219,12 +219,16 @@ test("parseAnthropicOauthUsage marks the limit reached once a window is exhauste
 	assert.equal(usage?.limits[0].limitReached, true);
 });
 
-test("getAntigravityModelTier identifies flash, pro, and claude tiers", () => {
+test("getAntigravityModelTier identifies flash, pro, claude, and gpt tiers", () => {
 	assert.equal(getAntigravityModelTier("gemini-3.8-flash").plan, "flash");
 	assert.equal(getAntigravityModelTier("gemini-3-8-flash").maxTokens, 10_000_000);
+	assert.equal(getAntigravityModelTier("gemini-3-8-flash").limitName, "gemini");
 	assert.equal(getAntigravityModelTier("gemini-3.1-pro").plan, "pro");
 	assert.equal(getAntigravityModelTier("gemini-3-1-pro").maxTokens, 2_000_000);
 	assert.equal(getAntigravityModelTier("claude-sonnet-4-6").plan, "claude");
+	assert.equal(getAntigravityModelTier("claude-sonnet-4-6").limitName, "claude");
+	assert.equal(getAntigravityModelTier("gpt-oss-120b-medium").plan, "gpt-oss");
+	assert.equal(getAntigravityModelTier("gpt-oss-120b-medium").limitName, "gpt-oss");
 });
 
 test("calculateAntigravityUsage generates ProviderUsage and renders in gauge", () => {
@@ -238,4 +242,13 @@ test("calculateAntigravityUsage generates ProviderUsage and renders in gauge", (
 	assert.equal(usage.limits[0].windows[0].usedPercent, 25);
 	assert.equal(usage.limits[0].windows[0].label, "1d");
 	assert.equal(renderUsageBar(usage, plainTheme), "gemini 1d ▰▰▱▱▱▱▱▱ 25%");
+
+	const claudeUsage = calculateAntigravityUsage({
+		modelId: "claude-sonnet-4-6",
+		sessionTokens: 150_000,
+		now: NOW,
+	});
+	assert.equal(claudeUsage.limits[0].name, "claude");
+	assert.equal(claudeUsage.limits[0].windows[0].label, "5h");
+	assert.equal(renderUsageBar(claudeUsage, plainTheme), "claude 5h ▰▰▰▰▱▱▱▱ 50%");
 });

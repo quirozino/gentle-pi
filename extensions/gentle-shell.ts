@@ -17,6 +17,7 @@ import {
 	ANTHROPIC_USAGE_URL,
 	ANTIGRAVITY_PROVIDER,
 	calculateAntigravityUsage,
+	getAntigravityModelTier,
 	CLAUDE_BRIDGE_PROVIDER,
 	CODEX_PROVIDER,
 	CODEX_USAGE_URL,
@@ -94,6 +95,8 @@ interface AssistantUsageEntry {
 	type: string;
 	message?: {
 		role?: string;
+		model?: string;
+		provider?: string;
 		usage?: {
 			input?: number;
 			output?: number;
@@ -123,6 +126,25 @@ export function sessionTotalTokens(ctx: ExtensionContext): number {
 	let total = 0;
 	for (const entry of ctx.sessionManager.getEntries() as AssistantUsageEntry[]) {
 		if (entry.type !== "message" || entry.message?.role !== "assistant") continue;
+		const u = entry.message.usage;
+		if (!u) continue;
+		total += (u.totalTokens ?? (u.input ?? 0) + (u.output ?? 0));
+	}
+	return total;
+}
+
+export function antigravityTierTokens(ctx: ExtensionContext, targetModelId: string): number {
+	const targetTier = getAntigravityModelTier(targetModelId);
+	let total = 0;
+	for (const entry of ctx.sessionManager.getEntries() as AssistantUsageEntry[]) {
+		if (entry.type !== "message" || entry.message?.role !== "assistant") continue;
+		// If the entry explicitly mentions provider, ensure it's antigravity
+		if (entry.message.provider && entry.message.provider !== ANTIGRAVITY_PROVIDER) continue;
+		// If entry has a model, filter by matching model tier family
+		if (entry.message.model) {
+			const entryTier = getAntigravityModelTier(entry.message.model);
+			if (entryTier.tierKey !== targetTier.tierKey) continue;
+		}
 		const u = entry.message.usage;
 		if (!u) continue;
 		total += (u.totalTokens ?? (u.input ?? 0) + (u.output ?? 0));
@@ -529,7 +551,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 
 		if (provider === ANTIGRAVITY_PROVIDER) {
 			const modelId = ctx.model?.id ?? "gemini-3.8-flash";
-			const tokens = sessionTotalTokens(ctx);
+			const tokens = antigravityTierTokens(ctx, modelId);
 			const usageModel = calculateAntigravityUsage({
 				modelId,
 				sessionTokens: tokens,
@@ -556,6 +578,13 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		renderHost?.invalidateSidebar?.();
 		renderHost?.requestRender();
 	};
+	pi.on("model_select", (_event, ctx) => {
+		renderHost?.invalidateSidebar?.();
+		renderHost?.requestRender();
+		if (ctx && ctx.model?.provider === ANTIGRAVITY_PROVIDER) {
+			void refreshUsage(ctx, true);
+		}
+	});
 	pi.on("after_provider_response", (event, ctx) => {
 		if (ctx && ctx.model?.provider === ANTIGRAVITY_PROVIDER) {
 			void refreshUsage(ctx, true);

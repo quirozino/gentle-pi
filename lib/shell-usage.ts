@@ -212,27 +212,37 @@ export interface AntigravityUsageParams {
 	now: number;
 }
 
+export interface AntigravityModelTier {
+	tierKey: string;
+	label: string;
+	maxTokens: number;
+	plan: string;
+	limitName: string;
+}
+
 /**
- * Antigravity / Gemini model limit specs.
- * Default daily/session token limits per model tier based on Google subscription quotas.
+ * Antigravity model limit specs.
+ * Default token limits per model tier based on Google Antigravity subscription quotas.
  */
-const ANTIGRAVITY_TIER_LIMITS: Record<string, { label: string; maxTokens: number; plan: string }> = {
-	flash: { label: "1d", maxTokens: 10_000_000, plan: "flash" },
-	pro: { label: "1d", maxTokens: 2_000_000, plan: "pro" },
-	claude: { label: "5h", maxTokens: 300_000, plan: "claude" },
-	default: { label: "1d", maxTokens: 4_000_000, plan: "subscription" },
+const ANTIGRAVITY_TIER_LIMITS: Record<string, AntigravityModelTier> = {
+	flash: { tierKey: "flash", label: "1d", maxTokens: 10_000_000, plan: "flash", limitName: "gemini" },
+	pro: { tierKey: "pro", label: "1d", maxTokens: 2_000_000, plan: "pro", limitName: "gemini" },
+	claude: { tierKey: "claude", label: "5h", maxTokens: 300_000, plan: "claude", limitName: "claude" },
+	gpt: { tierKey: "gpt", label: "5h", maxTokens: 500_000, plan: "gpt-oss", limitName: "gpt-oss" },
+	default: { tierKey: "default", label: "1d", maxTokens: 4_000_000, plan: "subscription", limitName: "gemini" },
 };
 
-export function getAntigravityModelTier(modelId: string): { label: string; maxTokens: number; plan: string } {
+export function getAntigravityModelTier(modelId: string): AntigravityModelTier {
 	const id = modelId.toLowerCase();
 	if (id.includes("pro")) return ANTIGRAVITY_TIER_LIMITS.pro;
 	if (id.includes("flash")) return ANTIGRAVITY_TIER_LIMITS.flash;
 	if (id.includes("claude") || id.includes("opus") || id.includes("sonnet")) return ANTIGRAVITY_TIER_LIMITS.claude;
+	if (id.includes("gpt")) return ANTIGRAVITY_TIER_LIMITS.gpt;
 	return ANTIGRAVITY_TIER_LIMITS.default;
 }
 
 /**
- * Derives a ProviderUsage model for Antigravity (Gemini) based on current model and session tokens.
+ * Derives a ProviderUsage model for Antigravity based on current model and session tokens.
  * Zero token cost overhead: computed purely from local session telemetry.
  */
 export function calculateAntigravityUsage(params: AntigravityUsageParams): ProviderUsage {
@@ -255,7 +265,7 @@ export function calculateAntigravityUsage(params: AntigravityUsageParams): Provi
 		plan: tier.plan,
 		limits: [
 			{
-				name: ANTIGRAVITY_MAIN_LIMIT,
+				name: tier.limitName,
 				windows,
 				limitReached: usedPercent >= 100,
 			},
