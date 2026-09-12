@@ -24,7 +24,29 @@ import {
 	type DoubleEscCancelPolicy,
 	type DoubleEscCancelResolution,
 } from "../lib/double-esc-cancel-policy.ts";
-import { accountIdFromToken, CODEX_PROVIDER, CODEX_USAGE_URL, NAN_PROVIDER, NAN_QUOTA_URL, parseCodexUsage, parseNanQuota, parseProviderUsage, parseUsageHeaders, parseUsageSource, UsageSourceRegistry, UsageStore, USAGE_SOURCE_EVENT, type ProviderUsage, type UsageSource } from "../lib/shell-usage.ts";
+import {
+	accountIdFromToken,
+	ANTHROPIC_OAUTH_BETA,
+	ANTHROPIC_USAGE_URL,
+	ANTIGRAVITY_PROVIDER,
+	calculateAntigravityUsage,
+	CLAUDE_BRIDGE_PROVIDER,
+	CODEX_PROVIDER,
+	CODEX_USAGE_URL,
+	NAN_PROVIDER,
+	NAN_QUOTA_URL,
+	parseAnthropicOauthUsage,
+	parseCodexUsage,
+	parseNanQuota,
+	parseProviderUsage,
+	parseUsageHeaders,
+	parseUsageSource,
+	UsageSourceRegistry,
+	UsageStore,
+	USAGE_SOURCE_EVENT,
+	type ProviderUsage,
+	type UsageSource,
+} from "../lib/shell-usage.ts";
 import { UsageView } from "../lib/shell-usage-view.ts";
 import { sidebarHeader, sidebarPart } from "../lib/shell-sidebar.ts";
 import { installSidebar, invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
@@ -69,6 +91,8 @@ export interface ShellDeps {
 	devBinary(): DevBinaryNotice | undefined;
 	resolveWorktree: WorktreeResolver;
 	gitRunner(cwd: string): GitRunner;
+	readFile(path: string, encoding: "utf8"): Promise<string>;
+	homedir(): string;
 }
 
 // The rail digest runs every frame. Cache parsing by file identity and metadata,
@@ -106,13 +130,26 @@ function ambientDevBinary(): DevBinaryNotice | undefined {
 	}
 }
 
-const defaultShellDeps: Omit<ShellDeps, "activeProfile"> = { fetch: (...args) => globalThis.fetch(...args), now: () => Date.now(), devBinary: ambientDevBinary, resolveWorktree: resolveSessionWorktree, gitRunner: shellGitRunner };
+const defaultShellDeps: Omit<ShellDeps, "activeProfile"> = {
+	fetch: (...args) => globalThis.fetch(...args),
+	now: () => Date.now(),
+	devBinary: ambientDevBinary,
+	resolveWorktree: resolveSessionWorktree,
+	gitRunner: shellGitRunner,
+	readFile: (path, encoding) => readFile(path, encoding),
+	homedir: () => os.homedir(),
+};
 
 interface AssistantUsageEntry {
 	type: string;
 	message?: {
 		role?: string;
 		usage?: {
+			input?: number;
+			output?: number;
+			cacheRead?: number;
+			cacheWrite?: number;
+			totalTokens?: number;
 			cost?: { total?: number };
 		};
 	};
@@ -128,6 +165,17 @@ function sessionCost(ctx: ExtensionContext): number {
 	for (const entry of ctx.sessionManager.getEntries() as AssistantUsageEntry[]) {
 		if (entry.type !== "message" || entry.message?.role !== "assistant") continue;
 		total += entry.message.usage?.cost?.total ?? 0;
+	}
+	return total;
+}
+
+export function sessionTotalTokens(ctx: ExtensionContext): number {
+	let total = 0;
+	for (const entry of ctx.sessionManager.getEntries() as AssistantUsageEntry[]) {
+		if (entry.type !== "message" || entry.message?.role !== "assistant") continue;
+		const u = entry.message.usage;
+		if (!u) continue;
+		total += (u.totalTokens ?? (u.input ?? 0) + (u.output ?? 0));
 	}
 	return total;
 }
@@ -770,6 +818,32 @@ async function fetchFromSource(source: UsageSource, apiKey: string | undefined, 
 	}
 }
 
+export async function readClaudeCodeToken(deps: Pick<ShellDeps, "readFile" | "homedir">, now: number): Promise<string | undefined> {
+	try {
+		const raw = await deps.readFile(join(deps.homedir(), ".claude", ".credentials.json"), "utf8");
+		const oauth = (JSON.parse(raw) as { claudeAiOauth?: { accessToken?: unknown; expiresAt?: unknown } }).claudeAiOauth;
+		if (typeof oauth?.accessToken !== "string" || oauth.accessToken.length === 0) return undefined;
+		if (typeof oauth.expiresAt === "number" && oauth.expiresAt <= now) return undefined;
+		return oauth.accessToken;
+	} catch {
+		return undefined;
+	}
+}
+
+export async function fetchClaudeBridgeUsage(deps: Pick<ShellDeps, "readFile" | "homedir" | "fetch">, now: number): Promise<ProviderUsage | undefined> {
+	const token = await readClaudeCodeToken(deps, now);
+	if (!token) return undefined;
+	try {
+		const response = await deps.fetch(ANTHROPIC_USAGE_URL, {
+			headers: { Authorization: `Bearer ${token}`, "anthropic-beta": ANTHROPIC_OAUTH_BETA, "User-Agent": "gentle-pi" },
+		});
+		if (!response.ok) return undefined;
+		return parseAnthropicOauthUsage(await response.json(), now);
+	} catch {
+		return undefined;
+	}
+}
+
 export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = process.env, overrides: Partial<ShellDeps> = {}): void {
 	installSessionChangeCapture(pi, env, overrides.resolveWorktree ?? resolveSessionWorktree);
 	if (!shellEnabled(env)) return;
@@ -787,16 +861,37 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		const provider = ctx.model?.provider;
 		if (!provider) return;
 		const source = usageSources.get(provider);
-		if (!source && provider !== CODEX_PROVIDER && provider !== NAN_PROVIDER) return;
+		if (!source && provider !== CODEX_PROVIDER && provider !== NAN_PROVIDER && provider !== CLAUDE_BRIDGE_PROVIDER && provider !== ANTIGRAVITY_PROVIDER) return;
 		const now = deps.now();
+
+		if (provider === ANTIGRAVITY_PROVIDER) {
+			const modelId = ctx.model?.id ?? "gemini-3.8-flash";
+			const tokens = sessionTotalTokens(ctx);
+			const usageModel = calculateAntigravityUsage({
+				modelId,
+				sessionTokens: tokens,
+				contextWindow: ctx.model?.contextWindow,
+				now,
+			});
+			usage.record(usageModel);
+			renderHost?.invalidateSidebar?.();
+			renderHost?.requestRender();
+			return;
+		}
+
 		if (!force && now - (usageFetchedAt.get(provider) ?? 0) < USAGE_REFRESH_MS) return;
 		usageFetchedAt.set(provider, now);
 		const apiKey = await ctx.modelRegistry.getApiKeyForProvider(provider).catch(() => undefined);
-		const fetched = source
-			? await fetchFromSource(source, apiKey, deps.fetch, deps.now())
-			: provider === NAN_PROVIDER
-				? await fetchNanUsage(apiKey, deps.fetch, deps.now())
-				: await fetchCodexUsage(apiKey, deps.fetch, deps.now());
+		let fetched: ProviderUsage | undefined;
+		if (provider === CLAUDE_BRIDGE_PROVIDER) {
+			fetched = await fetchClaudeBridgeUsage(deps, deps.now());
+		} else if (source) {
+			fetched = await fetchFromSource(source, apiKey, deps.fetch, deps.now());
+		} else if (provider === NAN_PROVIDER) {
+			fetched = await fetchNanUsage(apiKey, deps.fetch, deps.now());
+		} else {
+			fetched = await fetchCodexUsage(apiKey, deps.fetch, deps.now());
+		}
 		if (!fetched) return;
 		// A registered source can be replaced while its own fetch is still in
 		// flight; the identity captured above is this call's source, so a stale
@@ -819,7 +914,11 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		usageSources.register(source);
 		if (currentContext?.model?.provider === source.provider) void refreshUsage(currentContext, true);
 	});
-	pi.on("after_provider_response", (event) => {
+	pi.on("after_provider_response", (event, ctx) => {
+		if (ctx && ctx.model?.provider === ANTIGRAVITY_PROVIDER) {
+			void refreshUsage(ctx, true);
+			return;
+		}
 		const parsed = parseUsageHeaders(event.headers, deps.now());
 		if (!parsed) return;
 		usage.record(parsed);
