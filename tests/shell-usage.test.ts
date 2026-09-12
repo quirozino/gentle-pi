@@ -3,8 +3,11 @@ import test from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import {
 	accountIdFromToken,
+	calculateAntigravityUsage,
 	formatReset,
+	getAntigravityModelTier,
 	parseAnthropicHeaders,
+	parseAnthropicOauthUsage,
 	parseCodexHeaders,
 	parseUsageHeaders,
 	parseCodexUsage,
@@ -194,4 +197,45 @@ test("parseUsageHeaders picks whichever provider the headers belong to", () => {
 	assert.equal(parseUsageHeaders({ "x-codex-primary-used-percent": "10", "x-codex-primary-window-minutes": "300" }, NOW)?.provider, "openai-codex");
 	assert.equal(parseUsageHeaders({ "anthropic-ratelimit-unified-5h-utilization": "0.1" }, NOW)?.provider, "anthropic");
 	assert.equal(parseUsageHeaders({ "content-type": "application/json" }, NOW), undefined);
+});
+
+test("parseAnthropicOauthUsage reads the bridge's 5h and weekly windows from the OAuth usage endpoint", () => {
+	const payload = {
+		five_hour: { utilization: 31, resets_at: "2026-09-10T23:20:00.151058+00:00" },
+		seven_day: { utilization: 6, resets_at: "2026-09-16T08:00:00.151080+00:00" },
+		seven_day_opus: null,
+	};
+	const usage = parseAnthropicOauthUsage(payload, NOW);
+	assert.ok(usage);
+	assert.equal(usage.provider, "claude-bridge");
+	assert.deepEqual(usage.limits.map((limit) => limit.name), ["claude"]);
+	assert.deepEqual(usage.limits[0].windows.map((w) => `${w.label}:${w.usedPercent}`), ["5h:31", "week:6"]);
+	assert.equal(usage.limits[0].windows[0].resetAt, Date.parse("2026-09-10T23:20:00.151058+00:00"));
+	assert.equal(usage.limits[0].limitReached, false);
+});
+
+test("parseAnthropicOauthUsage marks the limit reached once a window is exhausted", () => {
+	const usage = parseAnthropicOauthUsage({ five_hour: { utilization: 100, resets_at: null } }, NOW);
+	assert.equal(usage?.limits[0].limitReached, true);
+});
+
+test("getAntigravityModelTier identifies flash, pro, and claude tiers", () => {
+	assert.equal(getAntigravityModelTier("gemini-3.8-flash").plan, "flash");
+	assert.equal(getAntigravityModelTier("gemini-3-8-flash").maxTokens, 10_000_000);
+	assert.equal(getAntigravityModelTier("gemini-3.1-pro").plan, "pro");
+	assert.equal(getAntigravityModelTier("gemini-3-1-pro").maxTokens, 2_000_000);
+	assert.equal(getAntigravityModelTier("claude-sonnet-4-6").plan, "claude");
+});
+
+test("calculateAntigravityUsage generates ProviderUsage and renders in gauge", () => {
+	const usage = calculateAntigravityUsage({
+		modelId: "gemini-3.8-flash",
+		sessionTokens: 2_500_000,
+		now: NOW,
+	});
+	assert.equal(usage.provider, "antigravity");
+	assert.equal(usage.plan, "flash");
+	assert.equal(usage.limits[0].windows[0].usedPercent, 25);
+	assert.equal(usage.limits[0].windows[0].label, "1d");
+	assert.equal(renderUsageBar(usage, plainTheme), "gemini 1d ▰▰▱▱▱▱▱▱ 25%");
 });

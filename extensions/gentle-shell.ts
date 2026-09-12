@@ -11,7 +11,21 @@ import { SessionWorktreeRegistry, SESSION_WORKTREE_CHANGED, resolveSessionWorktr
 import { CARD_TONE, renderCard, type Card, type CardTheme } from "../lib/shell-card.ts";
 import { GentleAiDevBinaryOverrideError, resolveGentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
 import { framePromptLines, PROMPT_HINT, PROMPT_STATE, withPromptHint, type PromptState } from "../lib/shell-prompt.ts";
-import { accountIdFromToken, CODEX_PROVIDER, CODEX_USAGE_URL, parseCodexUsage, parseUsageHeaders, UsageStore, type ProviderUsage } from "../lib/shell-usage.ts";
+import {
+	accountIdFromToken,
+	ANTHROPIC_OAUTH_BETA,
+	ANTHROPIC_USAGE_URL,
+	ANTIGRAVITY_PROVIDER,
+	calculateAntigravityUsage,
+	CLAUDE_BRIDGE_PROVIDER,
+	CODEX_PROVIDER,
+	CODEX_USAGE_URL,
+	parseAnthropicOauthUsage,
+	parseCodexUsage,
+	parseUsageHeaders,
+	UsageStore,
+	type ProviderUsage,
+} from "../lib/shell-usage.ts";
 import { UsageView } from "../lib/shell-usage-view.ts";
 import { sidebarPart } from "../lib/shell-sidebar.ts";
 import { installSidebar, invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
@@ -52,6 +66,8 @@ export interface ShellDeps {
 	devBinary(): DevBinaryNotice | undefined;
 	resolveWorktree: WorktreeResolver;
 	gitRunner(cwd: string): GitRunner;
+	readFile(path: string, encoding: "utf8"): Promise<string>;
+	homedir(): string;
 }
 
 function ambientDevBinary(): DevBinaryNotice | undefined {
@@ -64,13 +80,26 @@ function ambientDevBinary(): DevBinaryNotice | undefined {
 	}
 }
 
-const defaultShellDeps: ShellDeps = { fetch: (...args) => globalThis.fetch(...args), now: () => Date.now(), devBinary: ambientDevBinary, resolveWorktree: resolveSessionWorktree, gitRunner: shellGitRunner };
+const defaultShellDeps: ShellDeps = {
+	fetch: (...args) => globalThis.fetch(...args),
+	now: () => Date.now(),
+	devBinary: ambientDevBinary,
+	resolveWorktree: resolveSessionWorktree,
+	gitRunner: shellGitRunner,
+	readFile: (path, encoding) => readFile(path, encoding),
+	homedir: () => os.homedir(),
+};
 
 interface AssistantUsageEntry {
 	type: string;
 	message?: {
 		role?: string;
 		usage?: {
+			input?: number;
+			output?: number;
+			cacheRead?: number;
+			cacheWrite?: number;
+			totalTokens?: number;
 			cost?: { total?: number };
 		};
 	};
@@ -86,6 +115,17 @@ function sessionCost(ctx: ExtensionContext): number {
 	for (const entry of ctx.sessionManager.getEntries() as AssistantUsageEntry[]) {
 		if (entry.type !== "message" || entry.message?.role !== "assistant") continue;
 		total += entry.message.usage?.cost?.total ?? 0;
+	}
+	return total;
+}
+
+export function sessionTotalTokens(ctx: ExtensionContext): number {
+	let total = 0;
+	for (const entry of ctx.sessionManager.getEntries() as AssistantUsageEntry[]) {
+		if (entry.type !== "message" || entry.message?.role !== "assistant") continue;
+		const u = entry.message.usage;
+		if (!u) continue;
+		total += (u.totalTokens ?? (u.input ?? 0) + (u.output ?? 0));
 	}
 	return total;
 }
@@ -450,6 +490,32 @@ export async function fetchCodexUsage(token: string | undefined, fetchFn: typeof
 	}
 }
 
+export async function readClaudeCodeToken(deps: Pick<ShellDeps, "readFile" | "homedir">, now: number): Promise<string | undefined> {
+	try {
+		const raw = await deps.readFile(join(deps.homedir(), ".claude", ".credentials.json"), "utf8");
+		const oauth = (JSON.parse(raw) as { claudeAiOauth?: { accessToken?: unknown; expiresAt?: unknown } }).claudeAiOauth;
+		if (typeof oauth?.accessToken !== "string" || oauth.accessToken.length === 0) return undefined;
+		if (typeof oauth.expiresAt === "number" && oauth.expiresAt <= now) return undefined;
+		return oauth.accessToken;
+	} catch {
+		return undefined;
+	}
+}
+
+export async function fetchClaudeBridgeUsage(deps: Pick<ShellDeps, "readFile" | "homedir" | "fetch">, now: number): Promise<ProviderUsage | undefined> {
+	const token = await readClaudeCodeToken(deps, now);
+	if (!token) return undefined;
+	try {
+		const response = await deps.fetch(ANTHROPIC_USAGE_URL, {
+			headers: { Authorization: `Bearer ${token}`, "anthropic-beta": ANTHROPIC_OAUTH_BETA, "User-Agent": "gentle-pi" },
+		});
+		if (!response.ok) return undefined;
+		return parseAnthropicOauthUsage(await response.json(), now);
+	} catch {
+		return undefined;
+	}
+}
+
 export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = process.env, overrides: Partial<ShellDeps> = {}): void {
 	if (!shellEnabled(env)) return;
 	const deps: ShellDeps = { ...defaultShellDeps, ...overrides };
@@ -458,18 +524,43 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	let usageFetchedAt = 0;
 	const refreshUsage = async (ctx: ExtensionContext, force: boolean) => {
 		const provider = ctx.model?.provider;
-		if (provider !== CODEX_PROVIDER) return;
+		if (provider !== CODEX_PROVIDER && provider !== CLAUDE_BRIDGE_PROVIDER && provider !== ANTIGRAVITY_PROVIDER) return;
 		const now = deps.now();
+
+		if (provider === ANTIGRAVITY_PROVIDER) {
+			const modelId = ctx.model?.id ?? "gemini-3.8-flash";
+			const tokens = sessionTotalTokens(ctx);
+			const usageModel = calculateAntigravityUsage({
+				modelId,
+				sessionTokens: tokens,
+				contextWindow: ctx.model?.contextWindow,
+				now,
+			});
+			usage.record(usageModel);
+			renderHost?.invalidateSidebar?.();
+			renderHost?.requestRender();
+			return;
+		}
+
 		if (!force && now - usageFetchedAt < USAGE_REFRESH_MS) return;
 		usageFetchedAt = now;
-		const token = await ctx.modelRegistry.getApiKeyForProvider(CODEX_PROVIDER).catch(() => undefined);
-		const fetched = await fetchCodexUsage(token, deps.fetch, deps.now());
+		let fetched: ProviderUsage | undefined;
+		if (provider === CLAUDE_BRIDGE_PROVIDER) {
+			fetched = await fetchClaudeBridgeUsage(deps, deps.now());
+		} else {
+			const token = await ctx.modelRegistry.getApiKeyForProvider(CODEX_PROVIDER).catch(() => undefined);
+			fetched = await fetchCodexUsage(token, deps.fetch, deps.now());
+		}
 		if (!fetched) return;
 		usage.record(fetched);
 		renderHost?.invalidateSidebar?.();
 		renderHost?.requestRender();
 	};
-	pi.on("after_provider_response", (event) => {
+	pi.on("after_provider_response", (event, ctx) => {
+		if (ctx && ctx.model?.provider === ANTIGRAVITY_PROVIDER) {
+			void refreshUsage(ctx, true);
+			return;
+		}
 		const parsed = parseUsageHeaders(event.headers, deps.now());
 		if (!parsed) return;
 		usage.record(parsed);
