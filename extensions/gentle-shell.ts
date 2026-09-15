@@ -871,6 +871,21 @@ export async function fetchClaudeBridgeUsage(deps: Pick<ShellDeps, "readFile" | 
 
 // Kimi Code usage is reachable with the same bearer token pi holds for the
 // subscription. The endpoint answers the weekly plan quota plus per-window caps.
+// Unlike Codex, Kimi's OAuth credential exposes the token under headers.Authorization
+// rather than auth.apiKey, so we read it from the auth file the way Claude does.
+export async function readKimiCodeToken(deps: Pick<ShellDeps, "readFile" | "homedir">, now: number): Promise<string | undefined> {
+	try {
+		const raw = await deps.readFile(join(deps.homedir(), ".pi", "agent", "auth.json"), "utf8");
+		const data = JSON.parse(raw) as { "kimi-coding"?: { type?: string; access?: string; expires?: number } };
+		const credential = data["kimi-coding"];
+		if (credential?.type !== "oauth" || typeof credential.access !== "string" || credential.access.length === 0) return undefined;
+		if (typeof credential.expires === "number" && credential.expires <= now) return undefined;
+		return credential.access;
+	} catch {
+		return undefined;
+	}
+}
+
 export async function fetchKimiUsage(token: string | undefined, fetchFn: typeof fetch, now: number): Promise<ProviderUsage | undefined> {
 	if (!token) return undefined;
 	try {
@@ -928,7 +943,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		} else if (provider === NAN_PROVIDER) {
 			fetched = await fetchNanUsage(apiKey, deps.fetch, deps.now());
 		} else if (provider === KIMI_PROVIDER) {
-			const token = await ctx.modelRegistry.getApiKeyForProvider(KIMI_PROVIDER).catch(() => undefined);
+			const token = await readKimiCodeToken(deps, deps.now());
 			fetched = await fetchKimiUsage(token, deps.fetch, deps.now());
 		} else {
 			fetched = await fetchCodexUsage(apiKey, deps.fetch, deps.now());
