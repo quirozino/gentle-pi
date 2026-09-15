@@ -113,6 +113,33 @@ test("branding belongs to scroll content before Status, never transcript or narr
 	assert.deepEqual(f.bottom.render(80), ["Status"]);
 });
 
+test("external parts honor placement: top before branding, bottom after known sections", (t) => {
+	const f = fixture();
+	sidebarPart(f.tui, "portrait", { render: () => ["@PORTRAIT@"], invalidate() {}, placement: "top" } as never);
+	sidebarPart(f.tui, "extra", { render: () => ["@EXTRA@"], invalidate() {} });
+	for (const key of ["todo", "agents", "changes"]) {
+		sidebarPart(f.tui, key, { render: () => [key, ""], invalidate() {} });
+	}
+	t.after(installSidebar(f.tui, theme));
+	const trimmed = rail(f).render(50).map((line) => line.trim());
+	const at = (needle: string) => trimmed.findIndex((line) => line.includes(needle));
+	assert.ok(at("@PORTRAIT@") >= 0 && at("@PORTRAIT@") < at("✿ Gentle-Pi ✿"), "top part precedes branding");
+	assert.ok(at("✿ Gentle-Pi ✿") < at("Status"), "branding still precedes Status");
+	assert.ok(at("todo") < at("@EXTRA@"), "bottom part follows known sections");
+});
+
+test("a top part without handleMouse owns no click region", (t) => {
+	const f = fixture();
+	sidebarPart(f.tui, "portrait", { render: () => ["@PORTRAIT@"], invalidate() {}, placement: "top" } as never);
+	t.after(installSidebar(f.tui, theme));
+	const scroll = rail(f);
+	scroll.render(50);
+	scroll.updateLayout(20, 10, () => {});
+	const click = { type: "down", x: 3, y: 0, screenX: 93, screenY: 2, width: 50, height: 10 } as Parameters<typeof scroll.handleMouse>[0];
+	const result = scroll.handleMouse(click);
+	assert.ok(result === undefined || result.target?.component === scroll, "portrait row does not capture the click");
+});
+
 test("wheel scrolls the rail and is consumed at both boundaries and blank space", (t) => {
 	const f = fixture();
 	t.after(installSidebar(f.tui, theme));

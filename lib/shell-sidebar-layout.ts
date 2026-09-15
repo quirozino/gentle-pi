@@ -179,44 +179,51 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme): () => void {
 			const preparedHeaderLines = [...(headerPart?.render(Math.max(0, width - HEADER_RIGHT_INSET)) ?? [])];
 			const headerActive = headerPart !== undefined && preparedHeaderLines.some((line) => line.trim() !== "");
 			const contentWidth = scroll.getContentWidth(RAIL_WIDTH);
-			const sections = ["footer", "agents", "todo"].map((key) => {
-				const component = state.parts.get(key);
-				if (!component) {
-					sectionCache.delete(key);
-					return { key, component, lines: [] as string[] };
-				}
+			const KNOWN = ["footer", "changes", "agents", "todo"];
+			const knownKeys = new Set(KNOWN);
+			const collectCached = (keys: Array<[string, SidebarRail]>, keepBlank = false) => keys.map(([key, component]) => {
 				const digest = railDigest(component);
 				const existing = sectionCache.get(key);
 				const reusable = existing?.component === component && existing.contentWidth === contentWidth && existing.theme === theme &&
 					(digest !== undefined ? existing.digest === digest : existing.digest === undefined && existing.revision === cache.revision);
 				const lines = reusable ? existing.lines : (() => {
-					const rendered = [...(component.render(contentWidth - RAIL_PADDING * 2) ?? [])];
-					while (rendered.length && rendered[rendered.length - 1]?.trim() === "") rendered.pop();
+					const rendered = [...component.render(contentWidth - RAIL_PADDING * 2)];
+					if (!keepBlank) while (rendered.length && rendered[rendered.length - 1]?.trim() === "") rendered.pop();
 					return rendered;
 				})();
 				sectionCache.set(key, { component, digest, revision: cache.revision, contentWidth, theme, lines });
 				return { key, component, lines };
-			}).filter((section) => section.component !== undefined && section.lines.length > 0) as Array<{ key: string; component: Component; lines: string[] }>;
-			// The header carries the brand once it is active; the banner is the
-			// rail's fallback identity when no header is wired up.
+			}).filter((section) => section.lines.length > 0);
+			const collect = (keys: Array<[string, SidebarRail]>, keepBlank = false) => keys.map(([key, component]) => {
+				const lines = [...component.render(contentWidth - RAIL_PADDING * 2)];
+				if (!keepBlank) while (lines.length && lines[lines.length - 1]?.trim() === "") lines.pop();
+				return { key, component, lines };
+			}).filter((section) => section.lines.length > 0);
+			// Built-in sections keep their canonical order; external parts render
+			// before branding with placement "top", after them otherwise.
+			const topSections = collect(parts.filter(([key, part]) => !knownKeys.has(key) && part.placement === "top"), true);
+			const sections = collectCached(KNOWN.flatMap((key) => {
+				const component = state.parts.get(key);
+				return component ? [[key, component] as [string, SidebarRail]] : [];
+			}));
+			const bottomSections = collect(parts.filter(([key, part]) => !knownKeys.has(key) && part.placement !== "top"));
 			const branding = headerActive ? [] : renderSidebarBanner(theme, contentWidth - RAIL_PADDING * 2);
 			const hits: RailHit[] = [];
 			railLines = [];
-			if (sections.length && branding.length) {
-				railLines.push(...branding.map((line) => " ".repeat(RAIL_PADDING) + line + " ".repeat(RAIL_PADDING)));
-			} else if (sections.length && headerActive) {
-				// The banner used to hold the first card off the top; the header
-				// took its place, so keep one blank row between them.
-				railLines.push("");
-			}
-			for (const section of sections) {
-				// One blank row separates a section from the banner or the
-				// previous section; the header gap above is not a section.
-				if (hits.length > 0 || branding.length > 0) railLines.push("");
+			const pushSection = (section: { key: string; component: Component; lines: string[] }) => {
+				if (railLines.length > 0) railLines.push("");
 				const startY = railLines.length;
 				railLines.push(...section.lines.map((line) => " ".repeat(RAIL_PADDING) + line + " ".repeat(RAIL_PADDING)));
-				hits.push({ key: section.key, component: section.component, startY, height: section.lines.length, width: contentWidth - RAIL_PADDING * 2 });
+				if (section.component.handleMouse) hits.push({ key: section.key, component: section.component, startY, height: section.lines.length, width: contentWidth - RAIL_PADDING * 2 });
+			};
+			for (const section of topSections) pushSection(section);
+			if (railLines.length === 0 && sections.length && branding.length) {
+				railLines.push(...branding.map((line) => " ".repeat(RAIL_PADDING) + line + " ".repeat(RAIL_PADDING)));
+			} else if (sections.length && branding.length) {
+				railLines.push("");
+				railLines.push(...branding.map((line) => " ".repeat(RAIL_PADDING) + line + " ".repeat(RAIL_PADDING)));
 			}
+			for (const section of [...sections, ...bottomSections]) pushSection(section);
 			// Height is owned by the native ScrollView, never by the transcript.
 			const active = railLines.length > 0 && railLines.every((line) => visibleWidth(line) <= contentWidth);
 			headerLines = active && headerActive ? preparedHeaderLines : [];
