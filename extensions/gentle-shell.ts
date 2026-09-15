@@ -34,10 +34,13 @@ import {
 	CLAUDE_BRIDGE_PROVIDER,
 	CODEX_PROVIDER,
 	CODEX_USAGE_URL,
+	KIMI_PROVIDER,
+	KIMI_USAGE_URL,
 	NAN_PROVIDER,
 	NAN_QUOTA_URL,
 	parseAnthropicOauthUsage,
 	parseCodexUsage,
+	parseKimiUsage,
 	parseNanQuota,
 	parseProviderUsage,
 	parseUsageHeaders,
@@ -866,6 +869,19 @@ export async function fetchClaudeBridgeUsage(deps: Pick<ShellDeps, "readFile" | 
 	}
 }
 
+// Kimi Code usage is reachable with the same bearer token pi holds for the
+// subscription. The endpoint answers the weekly plan quota plus per-window caps.
+export async function fetchKimiUsage(token: string | undefined, fetchFn: typeof fetch, now: number): Promise<ProviderUsage | undefined> {
+	if (!token) return undefined;
+	try {
+		const response = await fetchFn(KIMI_USAGE_URL, { headers: { Authorization: `Bearer ${token}`, "User-Agent": "gentle-pi" } });
+		if (!response.ok) return undefined;
+		return parseKimiUsage(await response.json(), now);
+	} catch {
+		return undefined;
+	}
+}
+
 export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = process.env, overrides: Partial<ShellDeps> = {}): void {
 	installSessionChangeCapture(pi, env, overrides.resolveWorktree ?? resolveSessionWorktree);
 	if (!shellEnabled(env)) return;
@@ -883,7 +899,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		const provider = ctx.model?.provider;
 		if (!provider) return;
 		const source = usageSources.get(provider);
-		if (!source && provider !== CODEX_PROVIDER && provider !== NAN_PROVIDER && provider !== CLAUDE_BRIDGE_PROVIDER && provider !== ANTIGRAVITY_PROVIDER) return;
+		if (!source && provider !== CODEX_PROVIDER && provider !== NAN_PROVIDER && provider !== CLAUDE_BRIDGE_PROVIDER && provider !== ANTIGRAVITY_PROVIDER && provider !== KIMI_PROVIDER) return;
 		const now = deps.now();
 
 		if (provider === ANTIGRAVITY_PROVIDER) {
@@ -911,6 +927,9 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			fetched = await fetchFromSource(source, apiKey, deps.fetch, deps.now());
 		} else if (provider === NAN_PROVIDER) {
 			fetched = await fetchNanUsage(apiKey, deps.fetch, deps.now());
+		} else if (provider === KIMI_PROVIDER) {
+			const token = await ctx.modelRegistry.getApiKeyForProvider(KIMI_PROVIDER).catch(() => undefined);
+			fetched = await fetchKimiUsage(token, deps.fetch, deps.now());
 		} else {
 			fetched = await fetchCodexUsage(apiKey, deps.fetch, deps.now());
 		}
@@ -939,7 +958,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	pi.on("model_select", (_event, ctx) => {
 		renderHost?.invalidateSidebar?.();
 		renderHost?.requestRender();
-		if (ctx && ctx.model?.provider === ANTIGRAVITY_PROVIDER) {
+		const provider = ctx?.model?.provider;
+		if (ctx && (provider === ANTIGRAVITY_PROVIDER || provider === KIMI_PROVIDER)) {
 			void refreshUsage(ctx, true);
 		}
 	});
