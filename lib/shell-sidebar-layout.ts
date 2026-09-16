@@ -179,7 +179,10 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme): () => void {
 			const preparedHeaderLines = [...(headerPart?.render(Math.max(0, width - HEADER_RIGHT_INSET)) ?? [])];
 			const headerActive = headerPart !== undefined && preparedHeaderLines.some((line) => line.trim() !== "");
 			const contentWidth = scroll.getContentWidth(RAIL_WIDTH);
-			const KNOWN = ["footer", "changes", "agents", "todo"];
+			// v3.1 unified the changes rail into Status; keep upstream's canonical
+			// set and never render the standalone changes part in the rail.
+			const KNOWN = ["footer", "agents", "todo"];
+			const RAIL_EXCLUDED = new Set(["changes"]);
 			const knownKeys = new Set(KNOWN);
 			const collectCached = (keys: Array<[string, SidebarRail]>, keepBlank = false) => keys.map(([key, component]) => {
 				const digest = railDigest(component);
@@ -201,12 +204,12 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme): () => void {
 			}).filter((section) => section.lines.length > 0);
 			// Built-in sections keep their canonical order; external parts render
 			// before branding with placement "top", after them otherwise.
-			const topSections = collect(parts.filter(([key, part]) => !knownKeys.has(key) && part.placement === "top"), true);
+			const topSections = collect(parts.filter(([key, part]) => !knownKeys.has(key) && !RAIL_EXCLUDED.has(key) && part.placement === "top"), true);
 			const sections = collectCached(KNOWN.flatMap((key) => {
 				const component = state.parts.get(key);
 				return component ? [[key, component] as [string, SidebarRail]] : [];
 			}));
-			const bottomSections = collect(parts.filter(([key, part]) => !knownKeys.has(key) && part.placement !== "top"));
+			const bottomSections = collect(parts.filter(([key, part]) => !knownKeys.has(key) && !RAIL_EXCLUDED.has(key) && part.placement !== "top"));
 			const branding = headerActive ? [] : renderSidebarBanner(theme, contentWidth - RAIL_PADDING * 2);
 			const hits: RailHit[] = [];
 			railLines = [];

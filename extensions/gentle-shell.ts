@@ -2,6 +2,7 @@ import { CustomEditor, keyHint, type ExtensionAPI, type ExtensionContext, type K
 import type { EditorTheme, TUI } from "@earendil-works/pi-tui";
 import { execFile, spawnSync } from "node:child_process";
 import { statSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { profilesFilePath, readProfilesFileResult } from "../lib/agent-profiles.ts";
 import * as os from "node:os";
 import { join } from "node:path";
