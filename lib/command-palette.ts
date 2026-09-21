@@ -1,5 +1,6 @@
 import { isKeyRelease, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { stripAnsi } from "./terminal-theme.ts";
+import { SHELL_GLYPHS } from "./shell-glyphs.ts";
 
 // Command palette: a pure, curated, grouped overlay component for
 // `/gentle:commands` and its `alt+k` shortcut (see
@@ -308,9 +309,14 @@ export class CommandPalette {
 	}
 
 	private renderCard(lines: string[], innerWidth: number): string[] {
-		const horizontal = "─".repeat(innerWidth + 2);
+		const horizontal = SHELL_GLYPHS.frame.horizontal.repeat(innerWidth + 2);
 		const border = (text: string) => this.renderText(text, "border");
-		return [border(`╭${horizontal}╮`), ...lines.map((content) => `${border("│")} ${this.fitStyledLine(content, innerWidth)} ${border("│")}`), border(`╰${horizontal}╯`)];
+		const { topLeft, topRight, bottomLeft, bottomRight, vertical } = SHELL_GLYPHS.frame;
+		return [
+			border(`${topLeft}${horizontal}${topRight}`),
+			...lines.map((content) => `${border(vertical)} ${this.fitStyledLine(content, innerWidth)} ${border(vertical)}`),
+			border(`${bottomLeft}${horizontal}${bottomRight}`),
+		];
 	}
 
 	private fitStyledLine(content: string, width: number): string {

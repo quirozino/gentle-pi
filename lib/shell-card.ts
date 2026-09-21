@@ -1,4 +1,5 @@
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { SHELL_GLYPHS } from "./shell-glyphs.ts";
 
 // Gentle Shell cards: the shape every Gentle notice takes in the transcript
 // and above the editor. The same rounded frame as the prompt and the
@@ -31,7 +32,7 @@ export interface CardRenderOptions {
 	hint?: string;
 }
 
-export const CARD_GLYPH = "✿";
+export const CARD_GLYPH = SHELL_GLYPHS.card;
 // Frame and title paint with the same role for every tone except INFO, whose
 // rounded frame stays in the theme's plain border role while its title
 // carries the accent role — the rose look every informational card (sidebar,
@@ -55,7 +56,7 @@ const SEPARATOR = "·";
 const FRAME_COLUMNS = 4;
 
 function rule(length: number): string {
-	return "─".repeat(Math.max(0, length));
+	return SHELL_GLYPHS.frame.horizontal.repeat(Math.max(0, length));
 }
 
 function titleText(card: Card, theme: CardTheme): { styled: string; width: number } {
@@ -78,9 +79,9 @@ export function cardTop(card: Card, theme: CardTheme, width: number, hint?: stri
 	const targetWidth = Math.max(0, Math.floor(width));
 	if (targetWidth === 0) return "";
 	if (targetWidth < 5) {
-		const left = theme.fg(FRAME_ROLE[card.tone], "╭");
+		const left = theme.fg(FRAME_ROLE[card.tone], SHELL_GLYPHS.frame.topLeft);
 		if (targetWidth === 1) return left;
-		return left + frame(theme, card.tone, `${rule(targetWidth - 2)}╮`);
+		return left + frame(theme, card.tone, `${rule(targetWidth - 2)}${SHELL_GLYPHS.frame.topRight}`);
 	}
 
 	const title = titleText(card, theme);
@@ -92,29 +93,37 @@ export function cardTop(card: Card, theme: CardTheme, width: number, hint?: stri
 	const styledTitleWidth = title.width <= titleWidth ? title.width : visibleWidth(styledTitle);
 	const fill = rule(targetWidth - styledTitleWidth - 5 - hintWidth);
 	const tail = shownHint ? ` ${theme.fg(HINT_ROLE, shownHint)} ` : "";
-	return theme.fg(FRAME_ROLE[card.tone], "╭") + frame(theme, card.tone, "─ ") + styledTitle + frame(theme, card.tone, ` ${fill}`) + tail + frame(theme, card.tone, "╮");
+	return (
+		theme.fg(FRAME_ROLE[card.tone], SHELL_GLYPHS.frame.topLeft) +
+		frame(theme, card.tone, `${SHELL_GLYPHS.frame.horizontal} `) +
+		styledTitle +
+		frame(theme, card.tone, ` ${fill}`) +
+		tail +
+		frame(theme, card.tone, SHELL_GLYPHS.frame.topRight)
+	);
 }
 
 export function cardLine(text: string, tone: CardTone, theme: CardTheme, width: number): string {
 	const targetWidth = Math.max(0, Math.floor(width));
 	if (targetWidth === 0) return "";
-	const left = theme.fg(FRAME_ROLE[tone], "│");
+	const vertical = SHELL_GLYPHS.frame.vertical;
+	const left = theme.fg(FRAME_ROLE[tone], vertical);
 	if (targetWidth === 1) return left;
-	if (targetWidth === 2) return left + frame(theme, tone, "│");
-	if (targetWidth === 3) return `${left} ${frame(theme, tone, "│")}`;
+	if (targetWidth === 2) return left + frame(theme, tone, vertical);
+	if (targetWidth === 3) return `${left} ${frame(theme, tone, vertical)}`;
 
 	const innerWidth = targetWidth - FRAME_COLUMNS;
 	const clipped = innerWidth === 0 ? "" : truncateToWidth(text, innerWidth, "…");
 	const padding = " ".repeat(Math.max(0, innerWidth - visibleWidth(clipped)));
-	return `${left} ${clipped}${padding} ${frame(theme, tone, "│")}`;
+	return `${left} ${clipped}${padding} ${frame(theme, tone, vertical)}`;
 }
 
 export function cardBottom(tone: CardTone, theme: CardTheme, width: number): string {
 	const targetWidth = Math.max(0, Math.floor(width));
 	if (targetWidth === 0) return "";
-	const left = theme.fg(FRAME_ROLE[tone], "╰");
+	const left = theme.fg(FRAME_ROLE[tone], SHELL_GLYPHS.frame.bottomLeft);
 	if (targetWidth === 1) return left;
-	return left + frame(theme, tone, `${rule(targetWidth - 2)}╯`);
+	return left + frame(theme, tone, `${rule(targetWidth - 2)}${SHELL_GLYPHS.frame.bottomRight}`);
 }
 
 export function cardInnerWidth(width: number): number {

@@ -7,6 +7,7 @@ import { formatElapsed } from "./agents-widget.ts";
 import { createNativePointerScope, type NativePointerRegion } from "./native-pointer-region.ts";
 import { formatTokens } from "./shell-bar.ts";
 import { PresenceCursor, readActivity, type Header, type Target } from "./orchestrator-presence.ts";
+import { SHELL_GLYPHS } from "./shell-glyphs.ts";
 
 // Gentle Agents overlay: tasks on the left, the selected task's thread on
 // the right. Only the selected task is subscribed, thread items are rendered
@@ -120,7 +121,7 @@ type VisibleRow =
 	| { id: string; kind: "task"; group: SessionGroup; task: TaskRecord };
 
 function rule(length: number): string {
-	return "─".repeat(Math.max(0, length));
+	return SHELL_GLYPHS.frame.horizontal.repeat(Math.max(0, length));
 }
 
 function fit(text: string, width: number): string {
@@ -409,18 +410,18 @@ export class AgentsView {
 		const title = truncateToWidth(`❀ Agents · ${scope}${this.counts()}`, Math.max(0, inner - 3 - controlsWidth), "…");
 		const mode = modeLabel ? ` ${theme.fg(this.hoveredControl === "mode" ? "warning" : ROLE.KEY, modeLabel)}` : "";
 		const close = closeLabel ? ` ${theme.fg(this.hoveredControl === "close" ? "warning" : ROLE.KEY, closeLabel)}` : "";
-		const top = theme.fg(ROLE.FRAME, "╭─ ") + theme.fg(ROLE.TITLE, title) + theme.fg(ROLE.FRAME, ` ${rule(inner - visibleWidth(title) - 3 - controlsWidth)}`) + mode + close + theme.fg(ROLE.FRAME, "╮");
+		const top = theme.fg(ROLE.FRAME, `${SHELL_GLYPHS.frame.topLeft}${SHELL_GLYPHS.frame.horizontal} `) + theme.fg(ROLE.TITLE, title) + theme.fg(ROLE.FRAME, ` ${rule(inner - visibleWidth(title) - 3 - controlsWidth)}`) + mode + close + theme.fg(ROLE.FRAME, SHELL_GLYPHS.frame.topRight);
 		const detail = layout.mode === "panes" || this.narrowView === "details" ? this.threadWindow(layout.bodyRows, layout.threadWidth) : [];
 		const body: string[] = [];
 		for (let row = 0; row < layout.bodyRows; row += 1) {
-			if (layout.mode === "panes") body.push(`${theme.fg(ROLE.FRAME, "│")} ${fit(this.taskLine(row), layout.listWidth)} ${theme.fg(ROLE.FRAME, "│")} ${fit(detail[row] ?? "", layout.threadWidth)}${theme.fg(ROLE.FRAME, "│")}`);
-			else body.push(`${theme.fg(ROLE.FRAME, "│")} ${fit(this.narrowView === "list" ? this.taskLine(row) : detail[row] ?? "", layout.listWidth)} ${theme.fg(ROLE.FRAME, "│")}`);
+			if (layout.mode === "panes") body.push(`${theme.fg(ROLE.FRAME, SHELL_GLYPHS.frame.vertical)} ${fit(this.taskLine(row), layout.listWidth)} ${theme.fg(ROLE.FRAME, SHELL_GLYPHS.frame.vertical)} ${fit(detail[row] ?? "", layout.threadWidth)}${theme.fg(ROLE.FRAME, SHELL_GLYPHS.frame.vertical)}`);
+			else body.push(`${theme.fg(ROLE.FRAME, SHELL_GLYPHS.frame.vertical)} ${fit(this.narrowView === "list" ? this.taskLine(row) : detail[row] ?? "", layout.listWidth)} ${theme.fg(ROLE.FRAME, SHELL_GLYPHS.frame.vertical)}`);
 		}
 		const keyHints = this.selectedRow()?.kind === "heading" ? [["←/→", "group"] as const, ...this.keys(layout.mode === "narrow")] : this.keys(layout.mode === "narrow");
 		const keys = keyHints.map(([key, label]) => `${theme.fg(ROLE.KEY, key)} ${theme.fg(ROLE.KEY_TEXT, label)}`).join("   ");
 		const footer = this.footer(keys, inner - 2);
-		const keysLine = `${theme.fg(ROLE.FRAME, "│")} ${fit(footer, inner - 2)} ${theme.fg(ROLE.FRAME, "│")}`;
-		return [top, ...body, keysLine, theme.fg(ROLE.FRAME, `╰${rule(inner)}╯`)];
+		const keysLine = `${theme.fg(ROLE.FRAME, SHELL_GLYPHS.frame.vertical)} ${fit(footer, inner - 2)} ${theme.fg(ROLE.FRAME, SHELL_GLYPHS.frame.vertical)}`;
+		return [top, ...body, keysLine, theme.fg(ROLE.FRAME, `${SHELL_GLYPHS.frame.bottomLeft}${rule(inner)}${SHELL_GLYPHS.frame.bottomRight}`)];
 	}
 
 	invalidate(): void {

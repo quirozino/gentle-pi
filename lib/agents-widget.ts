@@ -2,13 +2,14 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { isFinished, TASK_STATUS, type TaskRecord, type TaskStatus } from "./agents-protocol.ts";
 import { formatTokens } from "./shell-bar.ts";
 import { CARD_TONE, cardInnerWidth, renderCard, type CardTheme, type CardTone } from "./shell-card.ts";
+import { SHELL_GLYPHS } from "./shell-glyphs.ts";
 
 // Gentle Agents widget: the card above the editor. Reads task records only
 // (status, prompt, counters, timestamps), so drawing it costs nothing per
 // event. One row per task: glyph, agent, task summary, then
 // model · effort · tokens · cost · time right-aligned.
 
-export const AGENTS_GLYPH = "❀";
+export const AGENTS_GLYPH = SHELL_GLYPHS.agents;
 
 export interface AgentsWidgetOptions {
 	collapsed: boolean;

@@ -1,5 +1,6 @@
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { stripAnsi } from "./terminal-theme.ts";
+import { SHELL_GLYPHS } from "./shell-glyphs.ts";
 
 // Gentle Shell prompt frame. pi's editor renders a top rule, padded content
 // lines, and a bottom rule; this module wraps those lines in a rounded frame
@@ -90,7 +91,7 @@ function scrollIndicator(rule: string): string | undefined {
 }
 
 function rule(length: number): string {
-	return "─".repeat(Math.max(0, length));
+	return SHELL_GLYPHS.frame.horizontal.repeat(Math.max(0, length));
 }
 
 function topRule(width: number, options: PromptFrameOptions, indicator: string | undefined): string {
@@ -102,28 +103,42 @@ function topRule(width: number, options: PromptFrameOptions, indicator: string |
 	const title = [petal, paintedLabel].filter(Boolean).join(" ");
 	const titleWidth = visibleWidth(glyph) + (label ? visibleWidth(label) + (glyph ? 1 : 0) : 0);
 	const fill = width - titleWidth - 5;
-	if (fill < 0) return options.borderColor(`╭${rule(width - 2)}╮`);
-	return options.borderColor("╭─ ") + title + options.borderColor(` ${rule(fill)}╮`);
+	const { topLeft, topRight, horizontal } = SHELL_GLYPHS.frame;
+	if (fill < 0) return options.borderColor(`${topLeft}${rule(width - 2)}${topRight}`);
+	return options.borderColor(`${topLeft}${horizontal} `) + title + options.borderColor(` ${rule(fill)}${topRight}`);
 }
 
 function bottomRule(width: number, options: PromptFrameOptions, indicator: string | undefined): string {
-	if (!indicator) return options.borderColor(`╰${rule(width - 2)}╯`);
+	const { bottomLeft, bottomRight, horizontal } = SHELL_GLYPHS.frame;
+	if (!indicator) return options.borderColor(`${bottomLeft}${rule(width - 2)}${bottomRight}`);
 	const fill = width - 3 - indicator.length - 1 - 1;
-	if (fill < 0) return options.borderColor(`╰${rule(width - 2)}╯`);
-	return options.borderColor("╰─ ") + options.fg(LABEL_ROLE, indicator) + options.borderColor(` ${rule(fill)}╯`);
+	if (fill < 0) return options.borderColor(`${bottomLeft}${rule(width - 2)}${bottomRight}`);
+	return options.borderColor(`${bottomLeft}${horizontal} `) + options.fg(LABEL_ROLE, indicator) + options.borderColor(` ${rule(fill)}${bottomRight}`);
 }
 
 function sideRules(line: string, innerWidth: number, options: PromptFrameOptions): string {
 	const clipped = innerWidth === 0 ? "" : truncateToWidth(line, innerWidth, "");
 	const padding = " ".repeat(Math.max(0, innerWidth - visibleWidth(clipped)));
 	const content = clipped + padding;
-	return options.borderColor("│") + content + options.borderColor("│");
+	const vertical = SHELL_GLYPHS.frame.vertical;
+	return options.borderColor(vertical) + content + options.borderColor(vertical);
 }
 
 export function framePromptLines(lines: string[], width: number, options: PromptFrameOptions): string[] {
 	width = Math.max(0, Math.floor(width));
 	if (lines.length < 2) return lines.map((line) => truncateToWidth(line, width, ""));
-	if (width < 2) return lines.map((_line, index) => width === 0 ? "" : options.borderColor(index === 0 ? "╭" : index === lines.length - 1 ? "╰" : "│"));
+	if (width < 2)
+		return lines.map((_line, index) =>
+			width === 0
+				? ""
+				: options.borderColor(
+						index === 0
+							? SHELL_GLYPHS.frame.topLeft
+							: index === lines.length - 1
+								? SHELL_GLYPHS.frame.bottomLeft
+								: SHELL_GLYPHS.frame.vertical,
+					),
+		);
 	const innerWidth = width - 2;
 	const top = lines[0];
 	const bottom = lines[lines.length - 1];

@@ -1,6 +1,7 @@
 import { Key, matchesKey, truncateToWidth, visibleWidth, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { renderUsagePanel, type ActiveProvider, type UsageSourceRegistry, type UsageStore, type UsageTheme } from "./shell-usage.ts";
 import { paintHoverable } from "./shell-hover.ts";
+import { SHELL_GLYPHS } from "./shell-glyphs.ts";
 
 // Gentle Shell subscriptions overlay: a framed panel over the usage store.
 // It reads the store on every render, so a refresh only needs to record.
@@ -29,7 +30,7 @@ const KEYS = [
 ] as const;
 
 function rule(length: number): string {
-	return "─".repeat(Math.max(0, length));
+	return SHELL_GLYPHS.frame.horizontal.repeat(Math.max(0, length));
 }
 
 function fit(text: string, width: number): string {
@@ -100,9 +101,9 @@ export class UsageView {
 		const theme = this.deps.theme;
 		const inner = width - 2;
 		const title = this.refreshing ? REFRESHING : TITLE;
-		const top = theme.fg(FRAME_ROLE, "╭─ ") + theme.fg(TITLE_ROLE, title) + theme.fg(FRAME_ROLE, ` ${rule(inner - visibleWidth(title) - 3)}╮`);
+		const top = theme.fg(FRAME_ROLE, `${SHELL_GLYPHS.frame.topLeft}${SHELL_GLYPHS.frame.horizontal} `) + theme.fg(TITLE_ROLE, title) + theme.fg(FRAME_ROLE, ` ${rule(inner - visibleWidth(title) - 3)}${SHELL_GLYPHS.frame.topRight}`);
 		const body = renderUsagePanel(this.store.all(), theme, inner - 2, this.deps.now(), this.deps.active(), this.deps.registry?.()).map(
-			(line) => `${theme.fg(FRAME_ROLE, "│")} ${fit(line, inner - 2)} ${theme.fg(FRAME_ROLE, "│")}`,
+			(line) => `${theme.fg(FRAME_ROLE, SHELL_GLYPHS.frame.vertical)} ${fit(line, inner - 2)} ${theme.fg(FRAME_ROLE, SHELL_GLYPHS.frame.vertical)}`,
 		);
 		const hints = KEYS.map(([key, label]) => ({ key, label, text: `${key} ${label}`, action: (key === "r" ? "refresh" : "close") as HintAction }));
 		// The hovered hint paints entirely in the shared hover role (key and
@@ -113,8 +114,8 @@ export class UsageView {
 				this.hoveredHint === action ? paintHoverable(theme, `${key} ${label}`, true) : `${theme.fg(KEY_ROLE, key)} ${theme.fg(KEY_TEXT_ROLE, label)}`,
 			)
 			.join(HINT_GAP);
-		const keysLine = `${theme.fg(FRAME_ROLE, "│")} ${fit(keys, inner - 2)} ${theme.fg(FRAME_ROLE, "│")}`;
-		const bottom = theme.fg(FRAME_ROLE, `╰${rule(inner)}╯`);
+		const keysLine = `${theme.fg(FRAME_ROLE, SHELL_GLYPHS.frame.vertical)} ${fit(keys, inner - 2)} ${theme.fg(FRAME_ROLE, SHELL_GLYPHS.frame.vertical)}`;
+		const bottom = theme.fg(FRAME_ROLE, `${SHELL_GLYPHS.frame.bottomLeft}${rule(inner)}${SHELL_GLYPHS.frame.bottomRight}`);
 		const lines = [top, ...body, keysLine, bottom];
 		this.pointer = this.hintLayout(width, lines.length, body.length + 1, hints, inner - 2);
 		return lines;

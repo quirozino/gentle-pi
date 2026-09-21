@@ -3,6 +3,7 @@ import { sanitizeTerminalText } from "./terminal-theme.ts";
 import { basename } from "node:path";
 import { CHANGE_STATUS, changesSummary, type ChangedFile, type ChangesModel, type WorktreeChanges } from "./shell-changes.ts";
 import { paintHoverable } from "./shell-hover.ts";
+import { SHELL_GLYPHS } from "./shell-glyphs.ts";
 
 // Gentle Shell changes overlay: a framed two-pane view with the working
 // tree's changed files on the left and the selected file's diff on the right.
@@ -51,7 +52,7 @@ const KEYS = [
 ] as const;
 
 function rule(length: number): string {
-	return "─".repeat(Math.max(0, length));
+	return SHELL_GLYPHS.frame.horizontal.repeat(Math.max(0, length));
 }
 
 export function colorDiff(text: string, theme: ChangesViewTheme): string[] {
@@ -94,15 +95,15 @@ function renderPanes(width: number, rows: number, theme: ChangesViewTheme, title
 	const listWidth = Math.min(LIST_MAX_WIDTH, Math.floor(inner * LIST_RATIO));
 	const diffWidth = inner - listWidth - 4;
 	const titleText = truncateToWidth(title, inner - 4, "…");
-	const top = theme.fg(ROLE.FRAME, "╭─ ") + theme.fg(ROLE.TITLE, titleText) + theme.fg(ROLE.FRAME, ` ${rule(inner - visibleWidth(titleText) - 3)}╮`);
+	const top = theme.fg(ROLE.FRAME, `${SHELL_GLYPHS.frame.topLeft}${SHELL_GLYPHS.frame.horizontal} `) + theme.fg(ROLE.TITLE, titleText) + theme.fg(ROLE.FRAME, ` ${rule(inner - visibleWidth(titleText) - 3)}${SHELL_GLYPHS.frame.topRight}`);
 	const body: string[] = [];
 	for (let row = 0; row < rows; row += 1) {
 		const left = fit(leftLine(row), listWidth);
 		const right = fit(rightLines[row] ?? "", diffWidth);
-		body.push(`${theme.fg(ROLE.FRAME, "│")} ${left} ${theme.fg(ROLE.FRAME, "│")} ${right}${theme.fg(ROLE.FRAME, "│")}`);
+		body.push(`${theme.fg(ROLE.FRAME, SHELL_GLYPHS.frame.vertical)} ${left} ${theme.fg(ROLE.FRAME, SHELL_GLYPHS.frame.vertical)} ${right}${theme.fg(ROLE.FRAME, SHELL_GLYPHS.frame.vertical)}`);
 	}
-	const keysLine = `${theme.fg(ROLE.FRAME, "│")} ${fit(keys, inner - 2)} ${theme.fg(ROLE.FRAME, "│")}`;
-	const bottom = theme.fg(ROLE.FRAME, `╰${rule(inner)}╯`);
+	const keysLine = `${theme.fg(ROLE.FRAME, SHELL_GLYPHS.frame.vertical)} ${fit(keys, inner - 2)} ${theme.fg(ROLE.FRAME, SHELL_GLYPHS.frame.vertical)}`;
+	const bottom = theme.fg(ROLE.FRAME, `${SHELL_GLYPHS.frame.bottomLeft}${rule(inner)}${SHELL_GLYPHS.frame.bottomRight}`);
 	return [top, ...body, keysLine, bottom].map((line) => truncateToWidth(line, width));
 }
 
