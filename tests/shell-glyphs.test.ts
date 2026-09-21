@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { renderCard } from "../lib/shell-card.ts";
-import { renderGauge } from "../lib/shell-gauge.ts";
+import { animatedFill, renderGauge } from "../lib/shell-gauge.ts";
 import {
 	DEFAULT_SHELL_GLYPHS,
 	FRAME_GLYPHS,
@@ -170,4 +170,50 @@ test("readGlyphConfig reports one warning per rejected override", () => {
 	assert.equal(resolved.warnings.length, 3);
 	assert.equal(resolved.glyphs.agents, "ok");
 	assert.equal(resolved.glyphs.card, DEFAULT_SHELL_GLYPHS.card);
+});
+
+test("gauge animation defaults to working and accepts the three modes", () => {
+	assert.equal(DEFAULT_SHELL_GLYPHS.gaugeAnimation, "working");
+	for (const mode of ["always", "working", "off"] as const) {
+		const resolved = resolveShellGlyphs({ env: {}, readConfig: () => ({ glyphs: { gaugeAnimation: mode } }) });
+		assert.equal(resolved.glyphs.gaugeAnimation, mode);
+		assert.deepEqual(resolved.warnings, []);
+	}
+	const invalid = resolveShellGlyphs({ env: {}, readConfig: () => ({ glyphs: { gaugeAnimation: "sometimes" } }) });
+	assert.equal(invalid.glyphs.gaugeAnimation, "working");
+	assert.equal(invalid.warnings.length, 1);
+});
+
+test("the animated fill grows one cell at a time, holds, then restarts", () => {
+	const filled = 4;
+	// growth always spans the full step count (8), hold = round(8 * 0.6) = 5, cycle = 13
+	const grown = [0, 1, 2, 3, 4, 5, 6, 7].map((tick) => animatedFill(filled, 8, tick));
+	assert.deepEqual(grown, [0, 1, 1, 2, 2, 3, 3, 4], "ramps up to the value");
+	assert.equal(animatedFill(filled, 8, 8), filled, "the strip holds at the value");
+	assert.equal(animatedFill(filled, 8, 12), filled, "the hold is part of the cycle");
+	assert.equal(animatedFill(filled, 8, 13), 0, "the cycle restarts from empty");
+});
+
+test("the animated fill never exceeds the strip or the value", () => {
+	for (let tick = 0; tick < 60; tick += 1) {
+		const shown = animatedFill(2, 8, tick);
+		assert.ok(shown >= 0 && shown <= 2, `tick ${tick} produced ${shown}`);
+	}
+	assert.equal(animatedFill(0, 8, 5), 0, "an empty strip never fills");
+	assert.equal(animatedFill(99, 8, 7), 8, "a value past the strip fills it and caps there");
+	assert.ok(animatedFill(99, 8, 3) <= 8, "and never overshoots on the way");
+	assert.equal(animatedFill(3, 8, Number.NaN), 3, "a broken tick falls back to the value");
+	// A single filled cell — 9% of an 8-cell strip — still moves: it shows late in
+	// the cycle instead of being on from the first tick, which made it look static.
+	assert.equal(animatedFill(1, 8, 0), 0, "one filled cell is off at the start");
+	assert.equal(animatedFill(1, 8, 7), 1, "and shows on the last growth tick");
+	assert.equal(animatedFill(1, 8, 9), 1, "holding before the restart");
+});
+
+test("a tick turns the gauge into a moving strip, and no tick keeps it static", () => {
+	const staticEight = renderGauge(50, 8);
+	assert.equal(staticEight, "▰▰▰▰▱▱▱▱");
+	// with a tick the same gauge shows fewer cells early in the cycle
+	assert.notEqual(renderGauge(50, 8, 0), staticEight);
+	assert.equal(renderGauge(50, 8, 0).length, 8, "the strip keeps its width while animating");
 });

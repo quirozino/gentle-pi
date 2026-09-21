@@ -16,6 +16,7 @@ import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
 import { agentsViewKey } from "../lib/agents-keys.ts";
 import { GentleAiDevBinaryOverrideError, resolveGentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
 import { DOUBLE_ESC_CANCEL_HINT, framePromptLines, IDLE_ESC_CLEAR_HINT, PROMPT_HINT, PROMPT_STATE, SHELL_PULSE_MS, withPromptHint, type PromptState } from "../lib/shell-prompt.ts";
+import { SHELL_GLYPHS } from "../lib/shell-glyphs.ts";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
 import { resolveAnimationPolicy, writeAnimationPolicy, type AnimationPolicy } from "../lib/animation-policy.ts";
 import {
@@ -269,6 +270,21 @@ interface PromptEditorDeps {
 	doubleEscCancelEnabled(): boolean;
 	/** Hand off text reconstructed from Pi's Esc-abort restore so it is sent as the next turn instead of sitting in the editor. */
 	dispatchQueuedText(text: string): void;
+	/**
+	 * Called on every prompt pulse. The gauges advance with it, so a bar animates
+	 * at the rate the shell is already repainting and never needs its own timer
+	 * while the agent works.
+	 */
+	onPulse?: () => void;
+}
+
+// Gauge animation frame shared by the prompt pulse and the optional idle ticker.
+const gaugeTick = { value: 0 };
+/** Slow idle rate for `gaugeAnimation: "always"`; the working pulse is faster. */
+const IDLE_GAUGE_ANIMATION_MS = 400;
+
+function gaugeAnimationEnabled(): boolean {
+	return SHELL_GLYPHS.gaugeAnimation !== "off";
 }
 
 const PROMPT_FRAME_ROLE = "border";
@@ -336,6 +352,7 @@ export class GentlePromptEditor extends CustomEditor {
 		if (this.animationPolicy === "potato") return;
 		this.pulse = setInterval(() => {
 			this.tick += 1;
+			this.deps.onPulse?.();
 			this.deps.requestRender();
 		}, this.animationPolicy === "performance" ? 1000 : SHELL_PULSE_MS);
 		this.pulse.unref();
@@ -523,6 +540,9 @@ function installPrompt(
 			now: promptDeps.now,
 			doubleEscCancelEnabled: promptDeps.doubleEscCancelEnabled,
 			dispatchQueuedText: promptDeps.dispatchQueuedText,
+			onPulse: () => {
+				if (gaugeAnimationEnabled()) gaugeTick.value += 1;
+			},
 		});
 		onCreated(prompt);
 		return prompt;
@@ -908,6 +928,23 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	// USAGE_SOURCE_EVENT subscription below.
 	const usageSources = new UsageSourceRegistry();
 	let renderHost: ShellRenderHost | undefined;
+	let idleGaugeTimer: NodeJS.Timeout | undefined;
+
+	function startIdleGaugeAnimation(): void {
+		if (SHELL_GLYPHS.gaugeAnimation !== "always") return;
+		if (idleGaugeTimer) return;
+		idleGaugeTimer = setInterval(() => {
+			gaugeTick.value += 1;
+			renderHost?.requestRender?.();
+		}, IDLE_GAUGE_ANIMATION_MS);
+		idleGaugeTimer.unref?.();
+	}
+
+	function stopIdleGaugeAnimation(): void {
+		if (!idleGaugeTimer) return;
+		clearInterval(idleGaugeTimer);
+		idleGaugeTimer = undefined;
+	}
 	// The 5-minute rule is per provider: one provider's fetch cannot leave the
 	// next one waiting for an interval it never used.
 	const usageFetchedAt = new Map<string, number>();
@@ -1098,6 +1135,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			const footerModel = (): ShellBarModel => ({
 				...buildShellBarModel(pi, ctx, footerData, { dirty: tracker.model.files.length, usage: usage.get(ctx.model?.provider ?? ""), profile: deps.activeProfile() }),
 				changes: { files: tracker.model.files.length, added: tracker.model.added, deleted: tracker.model.deleted, notice: tracker.model.notice },
+				tick: gaugeAnimationEnabled() ? gaugeTick.value : undefined,
 			});
 			const part = sidebarPart(tui, "footer", bottom, {
 				digest: () => JSON.stringify(footerModel()),
@@ -1122,6 +1160,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				},
 			});
 			const uninstall = installSidebar(tui, theme);
+			startIdleGaugeAnimation();
 			return { ...part, dispose() { disposeHeader(); uninstall(); part.dispose(); } };
 		});
 		void refreshUsage(ctx, true);
@@ -1150,6 +1189,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	});
 	pi.on("session_shutdown", (_event, ctx) => {
 		pendingQueuedText = undefined;
+		stopIdleGaugeAnimation();
 		prompt?.dispose();
 		prompt = undefined;
 		if ((ctx.ui.getEditorComponent() as PromptFactory | undefined)?.[PROMPT_OWNER]) {
@@ -1265,6 +1305,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		// below has delivered the pending text. Nothing is sent from here: Pi
 		// is mid-turn, so the text simply waits and goes out, once, when that
 		// turn settles. It is never dropped.
+		stopIdleGaugeAnimation();
 		prompt?.setWorking(true);
 		// The dev-binary card is a startup notice: it leaves with the first prompt.
 		if (ctx.hasUI) ctx.ui.setWidget(DEV_BINARY_WIDGET_KEY, undefined);
@@ -1275,6 +1316,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		// stays working and the pending text waits for the next settle.
 		if (!ctx.isIdle()) return;
 		prompt?.setWorking(false);
+		startIdleGaugeAnimation();
 		if (pendingQueuedText === undefined) return;
 		const queued = pendingQueuedText;
 		pendingQueuedText = undefined;

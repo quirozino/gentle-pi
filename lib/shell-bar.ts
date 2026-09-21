@@ -1,6 +1,6 @@
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { GAUGE_CELLS, gaugeTone, paintGauge, renderGauge, type GaugeTone } from "./shell-gauge.ts";
-import { renderUsageBar, selectUsageLimit, type ProviderUsage, type UsageWindow } from "./shell-usage.ts";
+import { allowanceGroupsSupported, groupUsageLimits, renderUsageBar, selectUsageLimit, type ProviderUsage, type UsageWindow } from "./shell-usage.ts";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 import { CARD_TONE, cardInnerWidth, renderCard } from "./shell-card.ts";
 
@@ -25,6 +25,12 @@ export interface ShellBarModel {
 	subscription: boolean;
 	usage: ProviderUsage | undefined;
 	statuses: string[];
+	/**
+	 * Animation frame for the gauges. Supplied while the shell is repainting anyway
+	 * (the prompt pulse), so the bars move without adding a timer of their own.
+	 * Absent means static output, which is what every narrow-mode caller gets.
+	 */
+	tick?: number;
 }
 
 // The live header row above the fullscreen rail: session identity plus the
@@ -90,6 +96,12 @@ export const SHELL_BAR_SEPARATOR = "⟡";
 export const SHELL_BAR_GAUGE_CELLS = GAUGE_CELLS;
 const RIGHT_PADDING = 2;
 const COMPACT_BRANCH_WIDTH = 15;
+// The rows the sidebar prints for a provider with per-model allowances use the
+// bar's shorter meter: the rail is 50 columns wide, and the panel's 16 cells
+// would leave no room for the model ids.
+const SIDEBAR_USAGE_METER_CELLS = GAUGE_CELLS;
+// Meter, its two spaces and the right-aligned percentage.
+const SIDEBAR_USAGE_ROW_FIXED = SIDEBAR_USAGE_METER_CELLS + 6;
 
 export function shellEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
 	if (env.GENTLE_PI_AGENTS_CHILD === "1") return false;
@@ -175,6 +187,52 @@ function joinSegments(segments: string[], theme: ShellBarTheme): string {
 	return segments.join(` ${theme.fg(ROLE.SEPARATOR, SHELL_BAR_SEPARATOR)} `);
 }
 
+// A row exists to show what is being consumed, so a window that consumed
+// nothing is noise the sidebar drops. The threshold is the row's own number and
+// nothing else: the render path prints `Math.round(percent)`, so a fraction
+// below half a percent prints `0%` and disappears while half a percent keeps its
+// row and prints `1%` — no second scale and no separate epsilon. A window whose
+// percent is not a number never equals zero, so it keeps its row instead of
+// being dropped in silence. The bar and the panel keep their own contract and
+// still print a zero allowance.
+function consumedNothing(usedPercent: number): boolean {
+	return Math.round(usedPercent) === 0;
+}
+
+// The sidebar is the surface that never needs opening, so a provider with
+// per-model allowances prints the panel's model rows there too — the most
+// consumed family first, its models inside it — and leaves the aggregate totals
+// and the reset dates to the bar and the panel. Providers without raw
+// allowances keep the one aggregate line the bar has always drawn for the model
+// in use.
+function sidebarUsageLines(usage: ProviderUsage, modelId: string, theme: ShellBarTheme, available: number, tick?: number): string[] {
+	if (!allowanceGroupsSupported(usage.limits)) {
+		// The aggregate line is one row, so its windows decide together: one
+		// consumed window keeps the sharing row, all of them zero drop it. A limit
+		// with no windows is not "zero consumption" — there is nothing to draw, and
+		// renderUsageBar already answers that — so the rule only speaks when there
+		// is a window to judge.
+		const windows = selectUsageLimit(usage, modelId)?.windows ?? [];
+		if (windows.length > 0 && windows.every((window) => consumedNothing(window.usedPercent))) return [];
+		const line = renderUsageBar(usage, theme, modelId, tick);
+		return line ? [line] : [];
+	}
+	const rows = groupUsageLimits(usage.limits)
+		.flatMap((limit) =>
+			limit.windows.map((window) => ({ name: [limit.name, window.label].filter((part) => part.length > 0).join(" "), window })),
+		)
+		.filter((row) => !consumedNothing(row.window.usedPercent));
+	// The name column gives way first: it is the only part that can be clipped
+	// without losing the number the row exists to show.
+	const widest = rows.reduce((width, row) => Math.max(width, row.name.length), 0);
+	const nameWidth = Math.min(widest, Math.max(1, available - SIDEBAR_USAGE_ROW_FIXED));
+	return rows.map((row) => {
+		const name = row.name.length > nameWidth ? clipText(row.name, nameWidth) : row.name.padEnd(nameWidth);
+		const percent = `${Math.round(row.window.usedPercent)}%`.padStart(4);
+		return `${theme.fg(ROLE.LABEL, name)} ${paintGauge(row.window.usedPercent, theme, SIDEBAR_USAGE_METER_CELLS, tick)} ${theme.fg(ROLE.VALUE, percent)}`;
+	});
+}
+
 // Sidebar groups use structured fields, never positional compact-bar segments
 // or inferred meanings from opaque extension status strings.
 export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme, width: number): string[] {
@@ -182,14 +240,13 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 	const label = (text: string) => theme.fg(ROLE.LABEL, text);
 	const changes = model.changes;
 	const branch = model.branch ? `${label("Branch")} ${value(model.branch)}` : "";
+	const percent = model.contextPercent === null ? "?%" : `${Math.round(model.contextPercent)}%`;
+	const capacity = label(`${formatTokens(model.contextWindow)} tokens`);
 	// Pre-wrap values before indenting so Unicode/ANSI continuation lines keep
 	// the same inset without consuming the card's right border.
 	const innerWidth = cardInnerWidth(width);
 	const inset = Math.min(1, innerWidth - 1);
-	// Model, effort, context, cost, and the per-model usage table now live in
-	// the always-visible header row (and /gentle:usage for the full table);
-	// this event-driven card keeps only what a footer/model-switch event does
-	// not already refresh every frame.
+	const usageLines = model.usage ? sidebarUsageLines(model.usage, model.modelId, theme, innerWidth - inset, model.tick) : [];
 	const groups: Array<{ title: string; lines: string[] }> = [
 		{
 			title: "Project",
@@ -208,6 +265,15 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 					: label("No captured changes"),
 				...(changes?.notice ? [theme.fg("warning", sanitizeStatus(changes.notice))] : []),
 				label("/gentle:changes"),
+			],
+		},
+		{
+			title: "Usage",
+			lines: [
+				`${label("Context")} ${paintGauge(model.contextPercent, theme, undefined, model.tick)} ${value(percent)}`,
+				capacity,
+				`${label("Cost")} ${value(formatCost(model.costTotal, model.subscription))}`,
+				...usageLines,
 			],
 		},
 		{ title: "Integrations", lines: model.statuses.length

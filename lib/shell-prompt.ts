@@ -58,10 +58,12 @@ export interface PromptFrameOptions {
 	escHint?: string;
 }
 
-// A terminal cell cannot grow, so the petal earns presence with weight and
-// the brightest rose in the theme. Working spins through four flowers.
-export const PROMPT_PETAL = "✿";
-const PETAL_FRAMES = ["✿", "❀", "❁", "✾"] as const;
+// A terminal cell cannot grow, so the face earns presence with weight and the
+// brightest tone in the theme. Working spins through the configured frames.
+// Both come from the shell glyph resolver, so a font that cannot draw the
+// flowers — or a skin that prefers a face — can replace them without patching
+// this package.
+export const PROMPT_PETAL = SHELL_GLYPHS.promptFace;
 export const PROMPT_HINT = "type, or / for commands";
 export const DOUBLE_ESC_CANCEL_HINT = "esc again to cancel";
 export const IDLE_ESC_CLEAR_HINT = "esc again to clear";
@@ -82,8 +84,9 @@ export function petalTone(state: PromptState, tick: number): PetalTone {
 }
 
 export function petalGlyph(state: PromptState, tick: number): string {
+	const frames = SHELL_GLYPHS.promptFaceFrames.length > 0 ? SHELL_GLYPHS.promptFaceFrames : [PROMPT_PETAL];
 	if (state === PROMPT_STATE.IDLE) return PROMPT_PETAL;
-	return PETAL_FRAMES[tick % PETAL_FRAMES.length];
+	return frames[tick % frames.length];
 }
 
 function scrollIndicator(rule: string): string | undefined {

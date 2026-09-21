@@ -16,6 +16,13 @@ import { gentlePiConfigHome } from "./agent-home.ts";
 
 export type FrameStyle = "single" | "double";
 
+/**
+ * How the gauges move. "working" advances the frame while the agent runs, using
+ * the pulse the shell already paints with; "always" adds a slow idle timer so the
+ * bars keep moving on an idle editor; "off" prints them still.
+ */
+export type GaugeAnimation = "always" | "working" | "off";
+
 export interface FrameGlyphs {
 	topLeft: string;
 	topRight: string;
@@ -38,6 +45,20 @@ export interface ShellGlyphs {
 	card: string;
 	/** Title glyph for the agents card. */
 	agents: string;
+	/** Glyph shown in the prompt frame where the flower sits, e.g. a face. */
+	promptFace: string;
+	/**
+	 * Frames the prompt face cycles through while the agent works. A single entry
+	 * keeps it still; the default is the historical flower cycle.
+	 */
+	promptFaceFrames: string[];
+	gaugeAnimation: GaugeAnimation;
+}
+
+export interface GlyphResolution {
+	glyphs: ShellGlyphs;
+	/** Human-readable reasons an override was ignored; empty when all applied. */
+	warnings: string[];
 }
 
 export const FRAME_GLYPHS: Record<FrameStyle, FrameGlyphs> = {
@@ -65,13 +86,11 @@ export const DEFAULT_SHELL_GLYPHS: ShellGlyphs = {
 	gauge: { filled: "▰", empty: "▱" },
 	card: "✿",
 	agents: "❀",
+	promptFace: "✿",
+	promptFaceFrames: ["✿", "❀", "❁", "✾"],
+	gaugeAnimation: "working",
 };
 
-export interface GlyphResolution {
-	glyphs: ShellGlyphs;
-	/** Human-readable reasons an override was ignored; empty when all applied. */
-	warnings: string[];
-}
 
 const ENV_PREFIX = "GENTLE_PI_GLYPHS_";
 
@@ -100,6 +119,7 @@ export function readGlyphConfig(glyphs: Record<string, unknown>): GlyphResolutio
 		...DEFAULT_SHELL_GLYPHS,
 		frame: { ...DEFAULT_SHELL_GLYPHS.frame },
 		gauge: { ...DEFAULT_SHELL_GLYPHS.gauge },
+		promptFaceFrames: [...DEFAULT_SHELL_GLYPHS.promptFaceFrames],
 	};
 
 	const style = glyphs.frameStyle ?? glyphs.frame;
@@ -136,6 +156,38 @@ export function readGlyphConfig(glyphs: Record<string, unknown>): GlyphResolutio
 		else warnings.push("glyphs.agents must be a non-empty printable string; using the default");
 	}
 
+	const promptFace = glyphs.promptFace;
+	if (promptFace !== undefined) {
+		if (isValidLabelGlyph(promptFace)) {
+			resolved.promptFace = promptFace;
+			// A configured face replaces the flower cycle too, unless frames are given:
+			// otherwise the prompt would keep sprouting petals while working.
+			resolved.promptFaceFrames = [promptFace];
+		} else {
+			warnings.push("glyphs.promptFace must be a non-empty printable string; using the default");
+		}
+	}
+
+	const gaugeAnimation = glyphs.gaugeAnimation;
+	if (gaugeAnimation !== undefined) {
+		if (gaugeAnimation === "always" || gaugeAnimation === "working" || gaugeAnimation === "off") {
+			resolved.gaugeAnimation = gaugeAnimation;
+		} else {
+			warnings.push('glyphs.gaugeAnimation: expected "always", "working" or "off"; using the default');
+		}
+	}
+
+	const promptFaceFrames = glyphs.promptFaceFrames;
+	if (promptFaceFrames !== undefined) {
+		const frames = Array.isArray(promptFaceFrames) ? promptFaceFrames : undefined;
+		if (frames && frames.length > 0 && frames.every((frame) => isValidLabelGlyph(frame))) {
+			resolved.promptFace = frames[0] as string;
+			resolved.promptFaceFrames = frames as string[];
+		} else {
+			warnings.push("glyphs.promptFaceFrames must be a non-empty array of printable strings; using the default");
+		}
+	}
+
 	return { glyphs: resolved, warnings };
 }
 
@@ -148,6 +200,8 @@ function parseGlyphEnv(env: NodeJS.ProcessEnv): Record<string, unknown> {
 		[`${ENV_PREFIX}GAUGE_EMPTY`, "gaugeEmpty"],
 		[`${ENV_PREFIX}CARD`, "card"],
 		[`${ENV_PREFIX}AGENTS`, "agents"],
+		[`${ENV_PREFIX}PROMPT_FACE`, "promptFace"],
+		[`${ENV_PREFIX}GAUGE_ANIMATION`, "gaugeAnimation"],
 	];
 	for (const [key, field] of map) {
 		const value = env[key];
@@ -175,6 +229,10 @@ export function resolveShellGlyphs(options: ResolveOptions = {}): GlyphResolutio
 	const read =
 		options.readConfig ??
 		(() => {
+			// The test runner must see the defaults: a developer's own shell.json
+			// would otherwise change every frame and gauge assertion. Tests that
+			// exercise the file path inject readConfig instead.
+			if (env.NODE_TEST_CONTEXT !== undefined) return undefined;
 			try {
 				const path = join(gentlePiConfigHome(env), "shell.json");
 				return JSON.parse(readFileSync(path, "utf8")) as unknown;
@@ -218,8 +276,27 @@ function envGlyphShape(glyphs: ShellGlyphs): Record<string, unknown> {
 		gaugeEmpty: glyphs.gauge.empty,
 		card: glyphs.card,
 		agents: glyphs.agents,
+		promptFace: glyphs.promptFace,
+		promptFaceFrames: glyphs.promptFaceFrames,
+		gaugeAnimation: glyphs.gaugeAnimation,
 	};
 }
 
-/** Resolved once for the process; see resolveShellGlyphs for the fresh read. */
-export const SHELL_GLYPHS: ShellGlyphs = resolveShellGlyphs().glyphs;
+/**
+ * Resolved on first use rather than at import: the prompt, cards and gauges are
+ * built during rendering, and resolving lazily keeps a developer's shell.json out
+ * of module load (which the test runner imports directly).
+ */
+let cachedGlyphs: ShellGlyphs | undefined;
+
+export function shellGlyphs(): ShellGlyphs {
+	if (!cachedGlyphs) cachedGlyphs = resolveShellGlyphs().glyphs;
+	return cachedGlyphs;
+}
+
+/** Convenience proxy so call sites read like a constant. */
+export const SHELL_GLYPHS: ShellGlyphs = new Proxy({} as ShellGlyphs, {
+	get(_target, property: string | symbol) {
+		return Reflect.get(shellGlyphs() as object, property);
+	},
+});

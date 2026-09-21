@@ -716,16 +716,16 @@ export function accountIdFromToken(token: string): string | undefined {
 	}
 }
 
-function paintMeter(percent: number, cells: number, theme: UsageTheme): string {
-	return paintGauge(percent, theme, cells);
+function paintMeter(percent: number, cells: number, theme: UsageTheme, tick?: number): string {
+	return paintGauge(percent, theme, cells, tick);
 }
 
-export function renderUsageBar(usage: ProviderUsage, theme: UsageTheme, activeModelId?: string): string | undefined {
+export function renderUsageBar(usage: ProviderUsage, theme: UsageTheme, activeModelId?: string, tick?: number): string | undefined {
 	const main = selectUsageLimit(usage, activeModelId);
 	const [first, ...rest] = main?.windows ?? [];
 	if (!first) return undefined;
 	// An unlabeled window prints as the name, the meter and the percentage.
-	const head = [theme.fg(ROLE.LABEL, main.name), ...(first.label.length === 0 ? [] : [theme.fg(ROLE.LABEL, first.label)]), paintMeter(first.usedPercent, 8, theme), theme.fg(ROLE.PERCENT, `${Math.round(first.usedPercent)}%`)].join(" ");
+	const head = [theme.fg(ROLE.LABEL, main.name), ...(first.label.length === 0 ? [] : [theme.fg(ROLE.LABEL, first.label)]), paintMeter(first.usedPercent, 8, theme, tick), theme.fg(ROLE.PERCENT, `${Math.round(first.usedPercent)}%`)].join(" ");
 	const tail = rest.map((window) => `${theme.fg(ROLE.SEPARATOR, "·")} ${theme.fg(ROLE.LABEL, window.label)} ${theme.fg(ROLE.PERCENT, `${Math.round(window.usedPercent)}%`)}`);
 	return [head, ...tail].join(" ");
 }
