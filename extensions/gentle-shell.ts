@@ -3,7 +3,7 @@ import type { EditorTheme, TUI } from "@earendil-works/pi-tui";
 import { execFile, spawnSync } from "node:child_process";
 import { statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { profilesFilePath, readProfilesFileResult, summarizeProfile } from "../lib/agent-profiles.ts";
+import { profilesFilePath, readProfileOrchestrator, readProfilesFileResult, summarizeProfile } from "../lib/agent-profiles.ts";
 import * as os from "node:os";
 import { join } from "node:path";
 import { buildShellHeaderModel, renderShellBar, renderShellHeaderBar, renderShellHeaderRule, renderShellSidebarBar, shellEnabled, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
@@ -84,6 +84,8 @@ interface ShellBarComponent {
 interface BuildOptions {
 	profile?: string;
 	profileModels?: readonly string[];
+	orchestratorModel?: string;
+	usageByProvider?: ReadonlyMap<string, ProviderUsage>;
 	home?: string;
 	dirty?: number;
 	usage?: ProviderUsage;
@@ -93,8 +95,10 @@ export type DevBinaryNotice = { state: "active"; path: string; sha256: string } 
 
 export interface ShellDeps {
 	activeProfile(): string | undefined;
-	/** Distinct models the active profile routes to; empty when unknown. */
+	/** Distinct models the active profile routes to, orchestrator first. */
 	activeProfileModels(): readonly string[];
+	/** Model the active profile pins as the orchestrator, when it pins one. */
+	profileOrchestrator(): string | undefined;
 	fetch: typeof fetch;
 	now(): number;
 	devBinary(): DevBinaryNotice | undefined;
@@ -107,6 +111,31 @@ export interface ShellDeps {
 // The rail digest runs every frame. Cache parsing by file identity and metadata,
 // not just mtime: profile writes replace the store atomically. Keep the cache
 // local to this shell instance and recheck on the next frame after panel edits.
+/** The model the active profile pins as its orchestrator, cached by fingerprint. */
+export function createActiveProfileOrchestratorReader(env: NodeJS.ProcessEnv = process.env): () => string | undefined {
+	const path = profilesFilePath(env.GENTLE_PI_CONFIG_HOME ?? join(os.homedir(), ".pi", "gentle-ai"));
+	let fingerprint: string | undefined;
+	let model: string | undefined;
+	return () => {
+		try {
+			const stat = statSync(path, { bigint: true });
+			const next = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
+			if (next !== fingerprint) {
+				const result = readProfilesFileResult(path);
+				const active = result.status === "valid" ? result.file.active : undefined;
+				const config = active === undefined || result.status !== "valid" ? undefined : result.file.profiles[active];
+				model = config === undefined ? undefined : readProfileOrchestrator(config)?.model;
+				fingerprint = next;
+			}
+			return model;
+		} catch {
+			fingerprint = undefined;
+			model = undefined;
+			return model;
+		}
+	};
+}
+
 /**
  * Distinct models the active profile routes to. The Profile panel is where a
  * person decides which models their agents may use, so the usage block lists
@@ -126,7 +155,11 @@ export function createActiveProfileModelsReader(env: NodeJS.ProcessEnv = process
 				const result = readProfilesFileResult(path);
 				const active = result.status === "valid" ? result.file.active : undefined;
 				const config = active === undefined ? undefined : result.status === "valid" ? result.file.profiles[active] : undefined;
-				models = config === undefined ? [] : summarizeProfile(config).models.map((entry) => entry.model);
+				// The orchestrator's model comes first: it is the one running now, and the
+				// profile keeps it under a reserved key that the role summary skips.
+				const orchestrator = config === undefined ? undefined : readProfileOrchestrator(config)?.model;
+				const roles = config === undefined ? [] : summarizeProfile(config).models.map((entry) => entry.model);
+				models = orchestrator === undefined ? roles : [orchestrator, ...roles.filter((model) => model !== orchestrator)];
 				fingerprint = next;
 			}
 			return models;
@@ -170,7 +203,7 @@ function ambientDevBinary(): DevBinaryNotice | undefined {
 	}
 }
 
-const defaultShellDeps: Omit<ShellDeps, "activeProfile" | "activeProfileModels"> = {
+const defaultShellDeps: Omit<ShellDeps, "activeProfile" | "activeProfileModels" | "profileOrchestrator"> = {
 	fetch: (...args) => globalThis.fetch(...args),
 	now: () => Date.now(),
 	devBinary: ambientDevBinary,
@@ -257,6 +290,9 @@ export function buildShellBarModel(
 		cwd: shortenHome(ctx.sessionManager.getCwd(), home),
 		profile: options.profile,
 		profileModels: options.profileModels,
+		orchestratorModel: options.orchestratorModel,
+		provider: model?.provider,
+		usageByProvider: options.usageByProvider,
 		branch: footerData.getGitBranch(),
 		dirty: options.dirty,
 		sessionName: ctx.sessionManager.getSessionName(),
@@ -960,6 +996,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		...defaultShellDeps,
 		activeProfile: createActiveProfileReader(env),
 		activeProfileModels: createActiveProfileModelsReader(env),
+		profileOrchestrator: createActiveProfileOrchestratorReader(env),
 		...overrides,
 	};
 	const usage = new UsageStore();
@@ -1173,7 +1210,14 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			// statuses. The digest is what keeps the fullscreen memo honest, and it
 			// rebuilds the model exactly as the narrow bottom bar does every frame.
 			const footerModel = (): ShellBarModel => ({
-				...buildShellBarModel(pi, ctx, footerData, { dirty: tracker.model.files.length, usage: usage.get(ctx.model?.provider ?? ""), profile: deps.activeProfile(), profileModels: deps.activeProfileModels() }),
+				...buildShellBarModel(pi, ctx, footerData, {
+					dirty: tracker.model.files.length,
+					usage: usage.get(ctx.model?.provider ?? ""),
+					profile: deps.activeProfile(),
+					profileModels: deps.activeProfileModels(),
+					orchestratorModel: deps.profileOrchestrator(),
+					usageByProvider: new Map(usage.all().map((entry) => [entry.provider, entry])),
+				}),
 				changes: { files: tracker.model.files.length, added: tracker.model.added, deleted: tracker.model.deleted, notice: tracker.model.notice },
 				tick: gaugeAnimationEnabled() ? gaugeTick.value : undefined,
 			});

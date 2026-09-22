@@ -721,31 +721,39 @@ function paintMeter(percent: number, cells: number, theme: UsageTheme, tick?: nu
 }
 
 export interface ModelUsageRow {
-	/** Model id without its provider prefix, as the routing config writes it. */
+	/** Model id without its provider prefix, as the sidebar shows it. */
 	name: string;
 	/** Worst consumed window for this model, or undefined when nothing reported it. */
 	percent?: number;
-	/** False for a model the provider reports but the profile does not route to. */
-	configured: boolean;
 }
 
 function bareModelId(id: string): string {
 	return id.includes("/") ? id.slice(id.lastIndexOf("/") + 1) : id;
 }
 
+function providerOf(id: string): string | undefined {
+	return id.includes("/") ? id.slice(0, id.indexOf("/")) : undefined;
+}
+
 /**
- * One row per model the active profile routes to, plus any model the provider
- * reports that the profile does not mention (marked as such). A model with no
- * reported window is kept as an explicit unknown instead of disappearing, so a
- * missing quota reads as missing rather than as fine.
+ * One row per model the active profile routes to, resolved against that model's
+ * OWN provider. A profile mixes providers — one model on nan, another on codex,
+ * another on kimi — and each provider reports differently:
+ *
+ * - per-model allowances (nan) name their limits after the model id;
+ * - aggregate providers (codex, kimi, claude) use one fixed limit name for every
+ *   model of theirs, so the model can only be matched through its provider.
+ *
+ * A model with no provider data, or one whose provider reports no window for it,
+ * keeps its row with no percentage, which the caller prints as an unknown rather
+ * than as an empty quota.
  */
 export function modelUsageRows(
 	models: readonly string[],
-	usage: ProviderUsage | undefined,
+	usageByProvider: ReadonlyMap<string, ProviderUsage> | undefined,
 	activeModelId: string | undefined,
+	activeProvider: string | undefined,
 ): ModelUsageRow[] {
-	const limits = usage?.limits ?? [];
-	const claimed = new Set<number>();
 	// Half a percent is the threshold the shell already uses before a row is worth
 	// drawing; the worst window is the one that decides whether a model still has
 	// room, so that is what the row shows.
@@ -755,23 +763,30 @@ export function modelUsageRows(
 		if (windows.length === 0) return limit.windows[0]?.usedPercent;
 		return Math.max(...windows.map((window) => window.usedPercent));
 	};
+
 	const rows: ModelUsageRow[] = [];
+	const claimed = new Map<string, Set<number>>();
 	for (const model of models) {
+		const provider = providerOf(model) ?? activeProvider;
+		const usage = provider === undefined ? undefined : usageByProvider?.get(provider);
+		const limits = usage?.limits ?? [];
+		const taken = claimed.get(provider ?? "") ?? new Set<number>();
+		claimed.set(provider ?? "", taken);
 		const key = bareModelId(model).toLowerCase();
-		const index = limits.findIndex(
-			(limit, position) => !claimed.has(position) && (limit.name === model || bareModelId(limit.name).toLowerCase() === key),
-		);
-		if (index >= 0) {
-			claimed.add(index);
-			rows.push({ name: bareModelId(model), percent: worstPercent(limits[index] as UsageLimit), configured: true });
-		} else {
-			rows.push({ name: bareModelId(model), configured: true });
+
+		// 1) the provider names this model's own allowance (nan).
+		let index = limits.findIndex((limit, position) => !taken.has(position) && bareModelId(limit.name).toLowerCase() === key);
+		// 2) an aggregate provider holds every model under one fixed limit name, so the
+		//    model is reached through its provider rather than its own name.
+		if (index < 0 && limits.length > 0 && !allowanceGroupsSupported(limits)) index = 0;
+
+		if (index < 0) {
+			rows.push({ name: bareModelId(model) });
+			continue;
 		}
+		taken.add(index);
+		rows.push({ name: bareModelId(model), percent: worstPercent(limits[index] as UsageLimit) });
 	}
-	limits.forEach((limit, index) => {
-		if (claimed.has(index)) return;
-		rows.push({ name: bareModelId(limit.name), percent: worstPercent(limit), configured: false });
-	});
 	return rows;
 }
 

@@ -494,30 +494,45 @@ test("renderShellHeaderRule paints one full-width line in the editor frame color
 	assert.equal(renderShellHeaderRule(plainTheme, -3), "", "negative widths clamp to an empty rule");
 });
 
-test("the Usage block lists one row per profile model, with Unknown when nothing reported it", () => {
-	const usage = {
+test("the Usage block lists one row per profile model and reads each against its own provider", () => {
+	const nan = {
 		provider: "nan",
 		plan: "pro",
 		fetchedAt: 0,
 		limits: [
-			{ name: "deepseek-v4-flash", limitReached: false, windows: [{ label: "", usedPercent: 54, windowSeconds: 18_000, resetAt: null }] },
-			{ name: "qwen3.8-flash", limitReached: false, windows: [{ label: "", usedPercent: 31, windowSeconds: 18_000, resetAt: null }] },
-			{ name: "surprise-model", limitReached: false, windows: [{ label: "", usedPercent: 12, windowSeconds: 18_000, resetAt: null }] },
+			{ name: "deepseek-v4-flash", limitReached: false, windows: [{ label: "", usedPercent: 56, windowSeconds: 18_000, resetAt: null, used: 56, budget: 100 }] },
+			{ name: "glm5.3-flash", limitReached: false, windows: [{ label: "", usedPercent: 38, windowSeconds: 18_000, resetAt: null, used: 38, budget: 100 }] },
+			{ name: "glm5.2", limitReached: false, windows: [{ label: "", usedPercent: 0, windowSeconds: 18_000, resetAt: null, used: 0, budget: 100 }] },
 		],
 	};
+	// An aggregate provider: one fixed limit name covers every model of its own.
+	const codex = {
+		provider: "openai-codex",
+		plan: "pro",
+		fetchedAt: 0,
+		limits: [{ name: "codex", limitReached: false, windows: [{ label: "5h", usedPercent: 41, windowSeconds: 18_000, resetAt: null }] }],
+	};
+	const usageByProvider = new Map([
+		["nan", nan],
+		["openai-codex", codex],
+	]);
 	const lines = renderShellSidebarBar(
-		model({ usage, profileModels: ["nan/deepseek-v4-flash", "qwen3.8-flash", "glm5.3-flash"] }),
+		model({
+			usage: nan,
+			provider: "nan",
+			usageByProvider,
+			profileModels: ["nan/deepseek-v4-flash", "openai-codex/gpt-6-astra", "nan/qwen3.6", "minimax/MiniMax-M3"],
+		}),
 		plainTheme,
 		60,
 	);
 	const text = lines.join("\n");
-	assert.match(text, /deepseek-v4-flash ▰+▱+ +54%/);
-	assert.match(text, /qwen3\.8-flash ▰+▱+ +31%/);
-	// A model the profile routes to but the provider never reported is still a row.
-	assert.match(text, /glm5\.3-flash Unknown/);
-	// And a model the provider reports that the profile does not route to is visible
-	// as an extra, labelled row rather than silently missing.
-	assert.match(text, /surprise-model .*12% not in profile/);
+	assert.match(text, /deepseek-v4-flash ▰+▱+ +56%/, "the model's own allowance");
+	assert.match(text, /gpt-6-astra ▰+▱+ +41%/, "an aggregate provider is reached through the model's provider");
+	assert.match(text, /qwen3\.6 Unknown/, "nan reports no window for this model");
+	assert.match(text, /MiniMax-M3 Unknown/, "no usage provider was ever recorded for minimax");
+	// Only profile models are listed: the provider's extra allowances are not.
+	assert.doesNotMatch(text, /glm5\.2/, "a model the profile does not route to is not listed");
 });
 
 test("modelUsageRows matches bare ids, keeps unknown models and labels the unlisted ones", () => {
@@ -526,19 +541,16 @@ test("modelUsageRows matches bare ids, keeps unknown models and labels the unlis
 		plan: "pro",
 		fetchedAt: 0,
 		limits: [
-			{ name: "nan/deepseek-v4-flash", limitReached: false, windows: [{ label: "", usedPercent: 54, windowSeconds: 18_000, resetAt: null }] },
-			{ name: "unlisted", limitReached: false, windows: [{ label: "", usedPercent: 9, windowSeconds: 18_000, resetAt: null }] },
+			{ name: "nan/deepseek-v4-flash", limitReached: false, windows: [{ label: "", usedPercent: 54, windowSeconds: 18_000, resetAt: null, used: 54, budget: 100 }] },
+			{ name: "unlisted", limitReached: false, windows: [{ label: "", usedPercent: 9, windowSeconds: 18_000, resetAt: null, used: 9, budget: 100 }] },
 		],
 	};
-	const rows = modelUsageRows(["deepseek-v4-flash", "no-data"], usage, "deepseek-v4-flash");
+	const byProvider = new Map([[usage.provider, usage]]);
+	const rows = modelUsageRows(["deepseek-v4-flash", "no-data"], byProvider, "deepseek-v4-flash", "nan");
 	assert.deepEqual(rows, [
-		{ name: "deepseek-v4-flash", percent: 54, configured: true },
-		{ name: "no-data", configured: true },
-		{ name: "unlisted", percent: 9, configured: false },
-	]);
-	// No usage at all still yields one explicit unknown row per model.
-	assert.deepEqual(modelUsageRows(["a", "b"], undefined, undefined), [
-		{ name: "a", configured: true },
-		{ name: "b", configured: true },
-	]);
+		{ name: "deepseek-v4-flash", percent: 54 },
+		{ name: "no-data" },
+	], "only the profile's models, each with its own provider's window or none");
+	// No usage at all still yields one row per model, with no percentage.
+	assert.deepEqual(modelUsageRows(["a", "b"], undefined, undefined, undefined), [{ name: "a" }, { name: "b" }]);
 });

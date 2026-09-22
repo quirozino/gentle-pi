@@ -19,6 +19,12 @@ export interface ShellBarModel {
 	 * provider happened to report.
 	 */
 	profileModels?: readonly string[];
+	/** Model the profile pins as the orchestrator: marked in the usage rows. */
+	orchestratorModel?: string;
+	/** Provider of the active model, used when a profile entry omits its prefix. */
+	provider?: string;
+	/** Usage of every provider seen this session, so a mixed profile resolves. */
+	usageByProvider?: ReadonlyMap<string, ProviderUsage>;
 	changes?: { files: number; added: number; deleted: number; notice?: string };
 	cwd: string;
 	branch: string | null;
@@ -202,6 +208,10 @@ function joinSegments(segments: string[], theme: ShellBarTheme): string {
 // percent is not a number never equals zero, so it keeps its row instead of
 // being dropped in silence. The bar and the panel keep their own contract and
 // still print a zero allowance.
+function bareId(id: string): string {
+	return id.includes("/") ? id.slice(id.lastIndexOf("/") + 1) : id;
+}
+
 function consumedNothing(usedPercent: number): boolean {
 	return Math.round(usedPercent) === 0;
 }
@@ -259,12 +269,14 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 	// profile does not route to is labelled, so an unexpected model is visible.
 	const modelRows = (model.profileModels ?? []).length === 0
 		? []
-		: modelUsageRows(model.profileModels ?? [], model.usage, model.modelId).map((row) => {
-				const name = label(row.name);
+		: modelUsageRows(model.profileModels ?? [], model.usageByProvider, model.modelId, model.provider).map((row) => {
+				// The orchestrator's model is the one running now, so it carries the same
+				// mark the active provider uses elsewhere in this card.
+				const isOrchestrator = model.orchestratorModel !== undefined && bareId(model.orchestratorModel) === row.name;
+				const name = isOrchestrator ? `${theme.fg("accent", "✿")} ${label(row.name)}` : label(row.name);
 				if (row.percent === undefined) return `${name} ${theme.fg("dim", "Unknown")}`;
 				const percent = `${Math.round(row.percent)}%`.padStart(4);
-				const suffix = row.configured ? "" : ` ${theme.fg("dim", "not in profile")}`;
-				return `${name} ${paintGauge(row.percent, theme, SIDEBAR_USAGE_METER_CELLS, model.tick)} ${value(percent)}${suffix}`;
+				return `${name} ${paintGauge(row.percent, theme, SIDEBAR_USAGE_METER_CELLS, model.tick)} ${value(percent)}`;
 			});
 	const groups: Array<{ title: string; lines: string[] }> = [
 		{
