@@ -1033,6 +1033,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		tickClock();
 	});
 
+	// The card lives above the editor, never in the sidebar rail: registered as a
+	// rail part it was parked under the Status card in fullscreen, which is not
+	// where the user looks for the agent they just launched.
 	const showWidget = (ctx: ExtensionContext) => {
 		ui = ctx.hasUI ? ctx.ui : undefined;
 		sessions = ctx.sessionManager;
@@ -1045,7 +1048,12 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			sidebarTui = tui;
 			return {
 				render(width: number) {
-					const lines = renderAgentsCard(visibleTasks(), theme, width, deps.now(), { collapsed, collapseKey, maxRows: widgetRows(tui.terminal?.rows), viewKey });
+					const lines = renderAgentsCard(visibleTasks(), theme, width, deps.now(), {
+						collapsed,
+						collapseKey,
+						maxRows: widgetRows(tui.terminal?.rows),
+						viewKey,
+					});
 					return lines.length === 0 ? [] : [...lines, ""];
 				},
 				invalidate() {},

@@ -2495,6 +2495,8 @@ test("once the last task is done the card asks for one frame when its finished r
 	harness.children[0].emit({ type: "agent_settled" });
 	await tick();
 	assert.match(widget()![1], /✓  explore  Short job/);
+	// The card keeps no history: the finished row leaves on its own window, so an
+	// idle terminal does not accumulate a list of everything that ever ran.
 	const expiry = timers.filter((timer) => !timer.cancelled && timer.ms === 60_000);
 	assert.equal(expiry.length, 1, "exactly one timer waits for the finished row to leave the card");
 	clock += 60_000;
