@@ -5,6 +5,7 @@
 // most needs the number to be true.
 import { INSTALLER_VERSION, installGentleAi } from "./gentle-ai-installer.mjs";
 import { installTuiModeSetting } from "./install-tui-mode-setting.mjs";
+import { patchEngramChrome } from "./patch-engram-chrome.mjs";
 
 if (process.env.GENTLE_PI_SKIP_GENTLE_AI_INSTALL === "1") {
 	console.warn("GENTLE_PI_SKIP_GENTLE_AI_INSTALL=1: skipped package-local Gentle AI installation; native review operations will fail with package-local-binary-missing until gentle-pi is reinstalled.");
@@ -26,5 +27,16 @@ if (!process.exitCode) {
 	} catch (error) {
 		console.error(`gentle-pi could not enable fullscreen: ${error instanceof Error ? error.message : String(error)}`);
 		process.exitCode = 1;
+	}
+}
+
+// Patch gentle-engram's tool chrome for pink double-line engram calls.
+// Idempotent: safe to run on every install.
+if (!process.exitCode) {
+	try {
+		patchEngramChrome();
+	} catch (error) {
+		// Non-fatal: engram tools still work without the chrome patch.
+		console.warn(`patch-engram-chrome: skipped (${error instanceof Error ? error.message : String(error)})`);
 	}
 }
