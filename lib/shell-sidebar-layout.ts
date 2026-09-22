@@ -68,8 +68,13 @@ function railDigest(rail: SidebarRail): string | undefined {
 	}
 }
 
+export interface SidebarOptions {
+	/** Animation frame for the banner; absent leaves it still. */
+	bannerTick?: () => number | undefined;
+}
+
 /** Installs the fullscreen rail: wraps the host layout root with the [rail, transcript] hstack and returns a disposer restoring the original layout. */
-export function installSidebar(tui: TUI, theme: ShellBarTheme): () => void {
+export function installSidebar(tui: TUI, theme: ShellBarTheme, options: SidebarOptions = {}): () => void {
 	if (!tui.terminal) return () => {};
 	const host = tui as Host;
 	const state = sidebarState(tui);
@@ -210,7 +215,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme): () => void {
 				return component ? [[key, component] as [string, SidebarRail]] : [];
 			}));
 			const bottomSections = collect(parts.filter(([key, part]) => !knownKeys.has(key) && !RAIL_EXCLUDED.has(key) && part.placement !== "top"));
-			const branding = headerActive ? [] : renderSidebarBanner(theme, contentWidth - RAIL_PADDING * 2);
+			const branding = headerActive ? [] : renderSidebarBanner(theme, contentWidth - RAIL_PADDING * 2, options.bannerTick?.());
 			const hits: RailHit[] = [];
 			railLines = [];
 			const pushSection = (section: { key: string; component: Component; lines: string[] }) => {

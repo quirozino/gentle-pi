@@ -1159,7 +1159,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					return { handled: true, render: true };
 				},
 			});
-			const uninstall = installSidebar(tui, theme);
+			const uninstall = installSidebar(tui, theme, { bannerTick: () => (gaugeAnimationEnabled() ? gaugeTick.value : undefined) });
 			startIdleGaugeAnimation();
 			return { ...part, dispose() { disposeHeader(); uninstall(); part.dispose(); } };
 		});

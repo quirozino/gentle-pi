@@ -49,6 +49,10 @@ export interface ShellGlyphs {
 	status?: string;
 	/** Title glyph for the Todos card. */
 	todos: string;
+	/** Word the sidebar banner spells out; empty hides the banner. */
+	bannerText: string;
+	/** Ornaments around the banner word; empty removes them. */
+	bannerOrnaments: string;
 	/** Glyph shown in the prompt frame where the flower sits, e.g. a face. */
 	promptFace: string;
 	/**
@@ -91,6 +95,8 @@ export const DEFAULT_SHELL_GLYPHS: ShellGlyphs = {
 	card: "✿",
 	agents: "❀",
 	todos: "❀",
+	bannerText: "Gentle Shell",
+	bannerOrnaments: "✿",
 	promptFace: "✿",
 	promptFaceFrames: ["✿", "❀", "❁", "✾"],
 	gaugeAnimation: "working",
@@ -173,6 +179,18 @@ export function readGlyphConfig(glyphs: Record<string, unknown>): GlyphResolutio
 		else warnings.push("glyphs.todos must be a non-empty printable string; using the default");
 	}
 
+	const bannerText = glyphs.bannerText;
+	if (bannerText !== undefined) {
+		if (bannerText === "" || isValidLabelGlyph(bannerText)) resolved.bannerText = bannerText;
+		else warnings.push("glyphs.bannerText must be a printable string or empty; using the default");
+	}
+
+	const bannerOrnaments = glyphs.bannerOrnaments;
+	if (bannerOrnaments !== undefined) {
+		if (bannerOrnaments === "" || isValidLabelGlyph(bannerOrnaments)) resolved.bannerOrnaments = bannerOrnaments;
+		else warnings.push("glyphs.bannerOrnaments must be a printable string or empty; using the default");
+	}
+
 	const promptFace = glyphs.promptFace;
 	if (promptFace !== undefined) {
 		if (isValidLabelGlyph(promptFace)) {
@@ -219,6 +237,8 @@ function parseGlyphEnv(env: NodeJS.ProcessEnv): Record<string, unknown> {
 		[`${ENV_PREFIX}AGENTS`, "agents"],
 		[`${ENV_PREFIX}STATUS`, "status"],
 		[`${ENV_PREFIX}TODOS`, "todos"],
+		[`${ENV_PREFIX}BANNER_TEXT`, "bannerText"],
+		[`${ENV_PREFIX}BANNER_ORNAMENTS`, "bannerOrnaments"],
 		[`${ENV_PREFIX}PROMPT_FACE`, "promptFace"],
 		[`${ENV_PREFIX}GAUGE_ANIMATION`, "gaugeAnimation"],
 	];
@@ -297,6 +317,8 @@ function envGlyphShape(glyphs: ShellGlyphs): Record<string, unknown> {
 		agents: glyphs.agents,
 		status: glyphs.status,
 		todos: glyphs.todos,
+		bannerText: glyphs.bannerText,
+		bannerOrnaments: glyphs.bannerOrnaments,
 		promptFace: glyphs.promptFace,
 		promptFaceFrames: glyphs.promptFaceFrames,
 		gaugeAnimation: glyphs.gaugeAnimation,
