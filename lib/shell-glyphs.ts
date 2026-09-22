@@ -53,6 +53,8 @@ export interface ShellGlyphs {
 	bannerText: string;
 	/** Ornaments around the banner word; empty removes them. */
 	bannerOrnaments: string;
+	/** Ticks per banner step: 1 is the project default, 2 halves the speed. */
+	bannerStride: number;
 	/** Glyph shown in the prompt frame where the flower sits, e.g. a face. */
 	promptFace: string;
 	/**
@@ -97,6 +99,7 @@ export const DEFAULT_SHELL_GLYPHS: ShellGlyphs = {
 	todos: "❀",
 	bannerText: "Gentle Shell",
 	bannerOrnaments: "✿",
+	bannerStride: 1,
 	promptFace: "✿",
 	promptFaceFrames: ["✿", "❀", "❁", "✾"],
 	gaugeAnimation: "working",
@@ -191,6 +194,13 @@ export function readGlyphConfig(glyphs: Record<string, unknown>): GlyphResolutio
 		else warnings.push("glyphs.bannerOrnaments must be a printable string or empty; using the default");
 	}
 
+	const bannerStride = glyphs.bannerStride;
+	if (bannerStride !== undefined) {
+		const value = typeof bannerStride === "number" ? bannerStride : Number(bannerStride);
+		if (Number.isInteger(value) && value >= 1 && value <= 20) resolved.bannerStride = value;
+		else warnings.push("glyphs.bannerStride must be a whole number between 1 and 20; using the default");
+	}
+
 	const promptFace = glyphs.promptFace;
 	if (promptFace !== undefined) {
 		if (isValidLabelGlyph(promptFace)) {
@@ -239,6 +249,7 @@ function parseGlyphEnv(env: NodeJS.ProcessEnv): Record<string, unknown> {
 		[`${ENV_PREFIX}TODOS`, "todos"],
 		[`${ENV_PREFIX}BANNER_TEXT`, "bannerText"],
 		[`${ENV_PREFIX}BANNER_ORNAMENTS`, "bannerOrnaments"],
+		[`${ENV_PREFIX}BANNER_STRIDE`, "bannerStride"],
 		[`${ENV_PREFIX}PROMPT_FACE`, "promptFace"],
 		[`${ENV_PREFIX}GAUGE_ANIMATION`, "gaugeAnimation"],
 	];
@@ -319,6 +330,7 @@ function envGlyphShape(glyphs: ShellGlyphs): Record<string, unknown> {
 		todos: glyphs.todos,
 		bannerText: glyphs.bannerText,
 		bannerOrnaments: glyphs.bannerOrnaments,
+		bannerStride: glyphs.bannerStride,
 		promptFace: glyphs.promptFace,
 		promptFaceFrames: glyphs.promptFaceFrames,
 		gaugeAnimation: glyphs.gaugeAnimation,

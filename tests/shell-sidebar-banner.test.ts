@@ -57,7 +57,22 @@ test("the rendered banner frames the full word and centres it", () => {
 	assert.match(typing[0] ?? "", /^\s*G\s*$/);
 	assert.doesNotMatch(typing[0] ?? "", /✿/);
 
-	// the hidden beat renders nothing rather than an empty frame
-	const hidden = bannerFrame("Gentle Shell", 11 + 8 + 11 + 1);
-	assert.equal(renderSidebarBanner(theme, 20, 11 + 8 + 11 + 1).length, hidden === "" ? 0 : 1);
+	// the hidden beat holds a blank line so the cards below never jump
+	const hiddenTick = 11 + 8 + 11 + 1;
+	assert.equal(bannerFrame("Gentle Shell", hiddenTick), "");
+	const hidden = renderSidebarBanner(theme, 20, hiddenTick);
+	assert.equal(hidden.length, 1, "the line is held, not dropped");
+	assert.equal(hidden[0], " ".repeat(20), "and it is blank");
+});
+
+test("a stride slows the whole cycle without changing the tick rate", () => {
+	const text = "DDATA";
+	// stride 2 means every two ticks advance one step
+	assert.equal(bannerFrame(text, 0, { stride: 2 }), "D");
+	assert.equal(bannerFrame(text, 1, { stride: 2 }), "D");
+	assert.equal(bannerFrame(text, 2, { stride: 2 }), "DD");
+	assert.equal(bannerFrame(text, 4, { stride: 2 }), "DDA");
+	// and the cycle still completes and loops
+	assert.equal(bannerFrame(text, 2 * (5 + 8), { stride: 2 }), "DATA");
+	assert.equal(bannerFrame(text, 2 * (5 + 8 + 5 + 2), { stride: 2 }), "D");
 });
