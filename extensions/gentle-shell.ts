@@ -38,11 +38,14 @@ import {
 	CODEX_USAGE_URL,
 	KIMI_PROVIDER,
 	KIMI_USAGE_URL,
+	MINIMAX_PROVIDER,
+	MINIMAX_USAGE_URL,
 	NAN_PROVIDER,
 	NAN_QUOTA_URL,
 	parseAnthropicOauthUsage,
 	parseCodexUsage,
 	parseKimiUsage,
+	parseMinimaxUsage,
 	parseNanQuota,
 	parseProviderUsage,
 	parseUsageHeaders,
@@ -910,6 +913,15 @@ export function devBinaryCard(notice: DevBinaryNotice): Card {
 
 const USAGE_REFRESH_MS = 5 * 60_000;
 
+/** Providers that expose a pull usage endpoint (not push/derived). */
+const PULL_USAGE_PROVIDERS: readonly string[] = [
+	CODEX_PROVIDER,
+	NAN_PROVIDER,
+	CLAUDE_BRIDGE_PROVIDER,
+	KIMI_PROVIDER,
+	MINIMAX_PROVIDER,
+];
+
 // The Codex usage endpoint is what the Codex CLI itself reads. The OAuth
 // token pi already holds carries the account id; nothing else is sent.
 export async function fetchCodexUsage(token: string | undefined, fetchFn: typeof fetch, now: number): Promise<ProviderUsage | undefined> {
@@ -1013,6 +1025,24 @@ export async function fetchKimiUsage(token: string | undefined, fetchFn: typeof 
 	}
 }
 
+// MiniMax Token Plan coding_plan endpoint; returns 5-hour and weekly rolling
+// windows for the "general" bucket (text models). The key travels in the
+// Authorization header.
+export async function fetchMinimaxUsage(apiKey: string | undefined, fetchFn: typeof fetch, now: number): Promise<ProviderUsage | undefined> {
+	if (!apiKey) return undefined;
+	try {
+		const response = await fetchFn(MINIMAX_USAGE_URL, {
+			redirect: "error",
+			cache: "no-store",
+			headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json", "User-Agent": "gentle-pi" },
+		});
+		if (!response.ok) return undefined;
+		return parseMinimaxUsage(await response.json(), now);
+	} catch {
+		return undefined;
+	}
+}
+
 export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = process.env, overrides: Partial<ShellDeps> = {}): void {
 	installSessionChangeCapture(pi, env, overrides.resolveWorktree ?? resolveSessionWorktree);
 	if (!shellEnabled(env)) return;
@@ -1052,11 +1082,16 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	const refreshUsage = async (ctx: ExtensionContext, force: boolean) => {
 		const provider = ctx.model?.provider;
 		if (!provider) return;
+		await fetchUsageForProvider(ctx, provider, force);
+	};
+	/** Fetch usage for a single provider, respecting the 5-min throttle. */
+	const fetchUsageForProvider = async (ctx: ExtensionContext, provider: string, force: boolean) => {
 		const source = usageSources.get(provider);
-		if (!source && provider !== CODEX_PROVIDER && provider !== NAN_PROVIDER && provider !== CLAUDE_BRIDGE_PROVIDER && provider !== ANTIGRAVITY_PROVIDER && provider !== KIMI_PROVIDER) return;
+		if (!source && provider !== CODEX_PROVIDER && provider !== NAN_PROVIDER && provider !== CLAUDE_BRIDGE_PROVIDER && provider !== ANTIGRAVITY_PROVIDER && provider !== KIMI_PROVIDER && provider !== MINIMAX_PROVIDER) return;
 		const now = deps.now();
 
 		if (provider === ANTIGRAVITY_PROVIDER) {
+			// Antigravity is derived from session telemetry, not fetched.
 			const modelId = ctx.model?.id ?? "gemini-3.8-flash";
 			const tokens = antigravityTierTokens(ctx, modelId);
 			const usageModel = calculateAntigravityUsage({
@@ -1070,7 +1105,6 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			renderHost?.requestRender();
 			return;
 		}
-
 		if (!force && now - (usageFetchedAt.get(provider) ?? 0) < USAGE_REFRESH_MS) return;
 		usageFetchedAt.set(provider, now);
 		const apiKey = await ctx.modelRegistry.getApiKeyForProvider(provider).catch(() => undefined);
@@ -1084,6 +1118,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		} else if (provider === KIMI_PROVIDER) {
 			const token = await readKimiCodeToken(deps, deps.now());
 			fetched = await fetchKimiUsage(token, deps.fetch, deps.now());
+		} else if (provider === MINIMAX_PROVIDER) {
+			fetched = await fetchMinimaxUsage(apiKey, deps.fetch, deps.now());
 		} else {
 			fetched = await fetchCodexUsage(apiKey, deps.fetch, deps.now());
 		}
@@ -1109,6 +1145,18 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		usageSources.register(source);
 		if (currentContext?.model?.provider === source.provider) void refreshUsage(currentContext, true);
 	});
+	/** Fetch usage for ALL supported providers at startup (one shot, throttled per provider). */
+	const refreshAllUsage = async (ctx: ExtensionContext, force: boolean) => {
+		const providers = new Set<string>([...PULL_USAGE_PROVIDERS]);
+		// Include antigravity if it is among the known providers.
+		providers.add(ANTIGRAVITY_PROVIDER);
+		// The active provider is always covered, even when it is a source an
+		// extension registered on pi.events rather than one of the built-ins above.
+		if (ctx.model?.provider) providers.add(ctx.model.provider);
+		// Independent providers, fetched concurrently: one slow or unreachable
+		// endpoint must never hold up the others.
+		await Promise.allSettled([...providers].map((provider) => fetchUsageForProvider(ctx, provider, force)));
+	};
 	pi.on("model_select", (_event, ctx) => {
 		renderHost?.invalidateSidebar?.();
 		renderHost?.requestRender();
@@ -1272,7 +1320,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			startIdleGaugeAnimation();
 			return { ...part, dispose() { disposeHeader(); uninstall(); part.dispose(); } };
 		});
-		void refreshUsage(ctx, true);
+		void refreshAllUsage(ctx, true).catch(() => undefined);
 		const ownsPrompt = installPrompt(
 			ctx,
 			(created) => {

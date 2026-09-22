@@ -107,6 +107,15 @@ export const CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 // The NaN Cloud dashboard backend; not part of NaN's published OpenAPI, so the
 // fetch that uses it is fixed-origin, redirect-refusing, and schema-validated.
 export const NAN_QUOTA_URL = "https://cloud-api.nan.builders/api/usage/quota";
+// MiniMax Token Plan subscription; the coding_plan endpoint returns 5-hour and
+// weekly rolling windows for the "general" bucket (text models).
+export const MINIMAX_PROVIDER = "minimax";
+export const MINIMAX_USAGE_URL = "https://api.minimax.io/v1/api/openplatform/coding_plan/remains";
+const MINIMAX_MAIN_LIMIT = "minimax";
+const MINIMAX_WINDOWS: ReadonlyArray<[key: string, seconds: number]> = [
+	["5h", 18_000],
+	["week", 604_800],
+];
 // The model's own allowance for the billing period carries no label: the model
 // id names it in the bar, and the reset text says what the window is in the
 // panel. Only a sub-window on top of it (a rolling `4h`) needs a name.
@@ -139,7 +148,7 @@ const ROLE = {
 	SEPARATOR: "muted",
 } as const;
 export const USAGE_EMPTY_MESSAGE = "No subscription usage yet. Usage arrives with the next response, or press r to fetch it.";
-export const SUPPORTED_USAGE_PROVIDERS: readonly string[] = [CODEX_PROVIDER, ANTHROPIC_PROVIDER, NAN_PROVIDER, CLAUDE_BRIDGE_PROVIDER, ANTIGRAVITY_PROVIDER, KIMI_PROVIDER];
+export const SUPPORTED_USAGE_PROVIDERS: readonly string[] = [CODEX_PROVIDER, ANTHROPIC_PROVIDER, NAN_PROVIDER, CLAUDE_BRIDGE_PROVIDER, ANTIGRAVITY_PROVIDER, KIMI_PROVIDER, MINIMAX_PROVIDER];
 const DEFAULT_PENDING_NOTE = "no usage yet · r to fetch";
 const PENDING_NOTE: Record<string, string> = {
 	[CODEX_PROVIDER]: DEFAULT_PENDING_NOTE,
@@ -148,6 +157,7 @@ const PENDING_NOTE: Record<string, string> = {
 	[CLAUDE_BRIDGE_PROVIDER]: "no usage yet · r to fetch",
 	[ANTIGRAVITY_PROVIDER]: "usage arrives with the first response",
 	[KIMI_PROVIDER]: "no usage yet · r to fetch",
+	[MINIMAX_PROVIDER]: "no usage yet · r to fetch",
 };
 const UNSUPPORTED_NOTE = "no subscription usage for this provider";
 const ACTIVE_MARK = "✿";
@@ -350,6 +360,59 @@ export function parseUsageHeaders(headers: Record<string, string>, now: number):
 	return parseCodexHeaders(headers, now) ?? parseAnthropicHeaders(headers, now);
 }
 
+// ---- MiniMax Token Plan ----
+
+interface RawMinimaxRemains {
+	base_resp?: { code?: unknown };
+	model_remains?: Array<{
+		model?: unknown;
+		current_interval_remaining_percent?: unknown;
+		current_weekly_remaining_percent?: unknown;
+	}>
+}
+
+/** MiniMax reports "general" for text models and "video" for video models. */
+function isMinimaxCodingModel(name: string): boolean {
+	return name.toLowerCase() === "general";
+}
+
+/**
+ * Parse the MiniMax Token Plan usage response.
+ *
+ * The endpoint returns `model_remains` with rows like:
+ * - `{ model: "general", current_interval_remaining_percent: 91, current_weekly_remaining_percent: 96 }`
+ * - `{ model: "video", ... }`
+ *
+ * We select the "general" row and derive used percent from the remaining percent.
+ * The endpoint does NOT return raw token counts, only percentages.
+ */
+export function parseMinimaxUsage(payload: unknown, now: number): ProviderUsage | undefined {
+	const raw = (payload ?? {}) as RawMinimaxRemains;
+	if (raw.base_resp?.code !== 0) return undefined;
+	const rows = raw.model_remains ?? [];
+	const general = rows.find((row) => typeof row.model === "string" && isMinimaxCodingModel(row.model));
+	if (!general) return undefined;
+	const intervalRemaining = toFiniteNumber(general.current_interval_remaining_percent);
+	const weeklyRemaining = toFiniteNumber(general.current_weekly_remaining_percent);
+	// remaining percent → used percent (clamped 0–100)
+	const intervalUsed = intervalRemaining !== undefined ? Math.max(0, Math.min(100, 100 - intervalRemaining)) : undefined;
+	const weeklyUsed = weeklyRemaining !== undefined ? Math.max(0, Math.min(100, 100 - weeklyRemaining)) : undefined;
+	const windows: UsageWindow[] = [];
+	if (intervalUsed !== undefined) {
+		windows.push({ label: "5h", usedPercent: intervalUsed, windowSeconds: MINIMAX_WINDOWS[0][1], resetAt: null });
+	}
+	if (weeklyUsed !== undefined) {
+		windows.push({ label: "week", usedPercent: weeklyUsed, windowSeconds: MINIMAX_WINDOWS[1][1], resetAt: null });
+	}
+	if (windows.length === 0) return undefined;
+	return {
+		provider: MINIMAX_PROVIDER,
+		plan: undefined,
+		limits: [{ name: MINIMAX_MAIN_LIMIT, windows, limitReached: windows.some((w) => w.usedPercent >= 100) }],
+		fetchedAt: now,
+	};
+}
+
 // NaN Cloud reports one allowance per model for the billing period, plus the
 // rolling window the model applies on top of it. Percentages follow the
 // dashboard exactly: tokens used over the period allowance, and window tokens
@@ -408,13 +471,12 @@ export function parseNanQuota(payload: unknown, now: number): ProviderUsage {
 			if (typeof model.model !== "string" || model.model.length === 0) continue;
 			const allowance = nanEffectiveAllowance(model);
 			// A model that reports no allowance is not drift — the dashboard draws
-			// nothing for it either, and the live payload carries such entries. A metered
-			// allowance whose usage cannot be read is drift: a partial snapshot would
-			// understate every aggregate it feeds, so the read fails whole and the last
-			// valid snapshot survives instead.
+			// nothing for it either, and the live payload carries such entries.
 			if (allowance === undefined) continue;
 			const tokensUsed = quotaNumber(model.tokensUsed, false);
-			if (tokensUsed === undefined) return { provider: NAN_PROVIDER, plan: undefined, limits: [], fetchedAt: now };
+			// A model whose usage cannot be read is skipped rather than dropping the
+			// entire snapshot: other models' data is still valid.
+			if (tokensUsed === undefined) continue;
 			const resetAt = quotaTimestamp(model.periodEnd) ?? fallbackResetAt;
 			const windows: UsageWindow[] = [nanPeriodWindow(tokensUsed, allowance, resetAt, now)];
 			const rolling = nanRollingWindow(model);

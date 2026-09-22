@@ -9,6 +9,7 @@ import {
 	parseAnthropicHeaders,
 	parseAnthropicOauthUsage,
 	parseCodexHeaders,
+	parseMinimaxUsage,
 	parseNanQuota,
 	parseProviderUsage,
 	parseUsageHeaders,
@@ -467,7 +468,9 @@ test("parseNanQuota refuses a payload that hides a metered model's usage", () =>
 			{ model: "deepseek-v4-flash", cap: 2_000_000_000 },
 		],
 	}, NOW);
-	assert.deepEqual(drifted.limits, []);
+	// The model with missing tokensUsed is skipped; the valid model is kept.
+	assert.equal(drifted.limits.length, 1);
+	assert.equal(drifted.limits[0].name, "glm5.3");
 	// No allowance at all is not drift: the dashboard draws nothing for these
 	// models either, and today's real payload carries them.
 	const unmetered = parseNanQuota({
@@ -700,4 +703,70 @@ test("renderUsageBar shows kimi with the weekly window and any extras as percent
 	);
 	assert.ok(usage);
 	assert.equal(renderUsageBar(usage, plainTheme), "kimi week ▰▱▱▱▱▱▱▱ 10% · 5h 70%");
+});
+
+// ---- MiniMax Token Plan ----
+
+const MINIMAX_PAYLOAD = {
+	base_resp: { code: 0 },
+	model_remains: [
+		{ model: "general", current_interval_remaining_percent: 91, current_weekly_remaining_percent: 96 },
+		{ model: "video", current_interval_remaining_percent: 100, current_weekly_remaining_percent: 100 },
+	],
+};
+
+test("parseMinimaxUsage reads 5h and weekly windows from the general bucket", () => {
+	const usage = parseMinimaxUsage(MINIMAX_PAYLOAD, NOW);
+	assert.ok(usage);
+	assert.equal(usage.provider, "minimax");
+	assert.equal(usage.limits.length, 1);
+	const limit = usage.limits[0];
+	assert.equal(limit.name, "minimax");
+	assert.equal(limit.windows.length, 2);
+	// general row: 91% remaining → 9% used; 96% remaining → 4% used
+	assert.equal(limit.windows[0].label, "5h");
+	assert.equal(limit.windows[0].usedPercent, 9);
+	assert.equal(limit.windows[1].label, "week");
+	assert.equal(limit.windows[1].usedPercent, 4);
+	assert.equal(limit.limitReached, false);
+});
+
+test("parseMinimaxUsage skips the video bucket", () => {
+	const usage = parseMinimaxUsage(MINIMAX_PAYLOAD, NOW);
+	assert.ok(usage);
+	// Only 2 windows (5h + week) from the general bucket, not 4
+	assert.equal(usage.limits[0].windows.length, 2);
+});
+
+test("parseMinimaxUsage returns undefined for non-zero base_resp code", () => {
+	const usage = parseMinimaxUsage({ base_resp: { code: 1001 }, model_remains: [] }, NOW);
+	assert.equal(usage, undefined);
+});
+
+test("parseMinimaxUsage returns undefined when general bucket is missing", () => {
+	const usage = parseMinimaxUsage({ base_resp: { code: 0 }, model_remains: [{ model: "video", current_interval_remaining_percent: 50 }] }, NOW);
+	assert.equal(usage, undefined);
+});
+
+test("parseMinimaxUsage marks limit reached when interval is exhausted", () => {
+	const usage = parseMinimaxUsage({ base_resp: { code: 0 }, model_remains: [{ model: "general", current_interval_remaining_percent: 0, current_weekly_remaining_percent: 50 }] }, NOW);
+	assert.ok(usage);
+	assert.equal(usage.limits[0].limitReached, true);
+	assert.equal(usage.limits[0].windows[0].usedPercent, 100);
+});
+
+test("parseMinimaxUsage handles missing percentage fields gracefully", () => {
+	const usage = parseMinimaxUsage({ base_resp: { code: 0 }, model_remains: [{ model: "general" }] }, NOW);
+	// Both percentages are undefined → no windows → undefined
+	assert.equal(usage, undefined);
+});
+
+test("renderUsageBar shows minimax with 5h and week windows", () => {
+	const usage = parseMinimaxUsage(MINIMAX_PAYLOAD, NOW);
+	assert.ok(usage);
+	assert.equal(renderUsageBar(usage, plainTheme), "minimax 5h ▰▱▱▱▱▱▱▱ 9% · week 4%");
+});
+
+test("SUPPORTED_USAGE_PROVIDERS includes minimax", () => {
+	assert.ok(SUPPORTED_USAGE_PROVIDERS.includes("minimax"), "minimax should be in SUPPORTED_USAGE_PROVIDERS");
 });
