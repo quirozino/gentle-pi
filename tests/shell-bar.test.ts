@@ -554,3 +554,19 @@ test("modelUsageRows matches bare ids, keeps unknown models and labels the unlis
 	// No usage at all still yields one row per model, with no percentage.
 	assert.deepEqual(modelUsageRows(["a", "b"], undefined, undefined, undefined), [{ name: "a" }, { name: "b" }]);
 });
+
+test("a model with no quota source shows what the session spent, or Unknown when nothing did", () => {
+	const lines = renderShellSidebarBar(
+		model({
+			usage: undefined,
+			provider: "minimax",
+			profileModels: ["minimax/MiniMax-M3", "minimax/MiniMax-M2"],
+			localTokens: new Map([["minimax-m3", 1_240_000]]),
+		}),
+		plainTheme,
+		60,
+	);
+	const text = lines.join("\n");
+	assert.match(text, /MiniMax-M3 1\.2M tokens · local/, "the local reading is labelled, never presented as a quota");
+	assert.match(text, /MiniMax-M2 Unknown/, "nothing spent and nothing reported stays unknown");
+});

@@ -84,6 +84,7 @@ interface ShellBarComponent {
 interface BuildOptions {
 	profile?: string;
 	profileModels?: readonly string[];
+	localTokens?: ReadonlyMap<string, number>;
 	orchestratorModel?: string;
 	usageByProvider?: ReadonlyMap<string, ProviderUsage>;
 	home?: string;
@@ -255,6 +256,28 @@ export function sessionTotalTokens(ctx: ExtensionContext): number {
 	return total;
 }
 
+/**
+ * Tokens this session spent per model, keyed by the bare model id. It is the only
+ * reading available for a provider that publishes no quota (Minimax, for one), so
+ * a model with no reported window still shows what it consumed instead of a blank.
+ */
+export function sessionTokensByModel(ctx: ExtensionContext): Map<string, number> {
+	const byModel = new Map<string, number>();
+	for (const entry of ctx.sessionManager.getEntries() as AssistantUsageEntry[]) {
+		if (entry.type !== "message" || entry.message?.role !== "assistant") continue;
+		const id = entry.message.model;
+		if (typeof id !== "string" || id.length === 0) continue;
+		const usage = entry.message.usage;
+		if (!usage) continue;
+		const tokens = usage.totalTokens ?? (usage.input ?? 0) + (usage.output ?? 0);
+		if (!Number.isFinite(tokens) || tokens <= 0) continue;
+		const bare = id.includes("/") ? id.slice(id.lastIndexOf("/") + 1) : id;
+		const key = bare.toLowerCase();
+		byModel.set(key, (byModel.get(key) ?? 0) + tokens);
+	}
+	return byModel;
+}
+
 export function antigravityTierTokens(ctx: ExtensionContext, targetModelId: string): number {
 	const targetTier = getAntigravityModelTier(targetModelId);
 	let total = 0;
@@ -291,6 +314,7 @@ export function buildShellBarModel(
 		profile: options.profile,
 		profileModels: options.profileModels,
 		orchestratorModel: options.orchestratorModel,
+		localTokens: options.localTokens,
 		provider: model?.provider,
 		usageByProvider: options.usageByProvider,
 		branch: footerData.getGitBranch(),
@@ -1216,6 +1240,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					profile: deps.activeProfile(),
 					profileModels: deps.activeProfileModels(),
 					orchestratorModel: deps.profileOrchestrator(),
+					localTokens: sessionTokensByModel(ctx),
 					usageByProvider: new Map(usage.all().map((entry) => [entry.provider, entry])),
 				}),
 				changes: { files: tracker.model.files.length, added: tracker.model.added, deleted: tracker.model.deleted, notice: tracker.model.notice },

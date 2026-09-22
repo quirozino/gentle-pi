@@ -21,6 +21,8 @@ export interface ShellBarModel {
 	profileModels?: readonly string[];
 	/** Model the profile pins as the orchestrator: marked in the usage rows. */
 	orchestratorModel?: string;
+	/** Session tokens per bare model id, for providers that publish no quota. */
+	localTokens?: ReadonlyMap<string, number>;
 	/** Provider of the active model, used when a profile entry omits its prefix. */
 	provider?: string;
 	/** Usage of every provider seen this session, so a mixed profile resolves. */
@@ -274,7 +276,13 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 				// mark the active provider uses elsewhere in this card.
 				const isOrchestrator = model.orchestratorModel !== undefined && bareId(model.orchestratorModel) === row.name;
 				const name = isOrchestrator ? `${theme.fg("accent", "✿")} ${label(row.name)}` : label(row.name);
-				if (row.percent === undefined) return `${name} ${theme.fg("dim", "Unknown")}`;
+				if (row.percent === undefined) {
+					// No quota source for this provider: show what the session spent on the
+					// model, labelled as the local reading it is, rather than a blank.
+					const local = model.localTokens?.get(row.name.toLowerCase()) ?? 0;
+					const reading = local > 0 ? `${formatTokens(local)} tokens · local` : "Unknown";
+					return `${name} ${theme.fg("dim", reading)}`;
+				}
 				const percent = `${Math.round(row.percent)}%`.padStart(4);
 				return `${name} ${paintGauge(row.percent, theme, SIDEBAR_USAGE_METER_CELLS, model.tick)} ${value(percent)}`;
 			});
