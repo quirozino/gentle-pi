@@ -18,6 +18,12 @@ export interface AgentsWidgetOptions {
 	// "… N more" line so the card never pushes the editor off the screen.
 	maxRows?: number;
 	viewKey?: string;
+	/**
+	 * Timeline blocks keep every finished row for this session instead of the
+	 * last-minute window the rail uses: a transcript line that empties itself
+	 * after 60s would look broken.
+	 */
+	keepFinished?: boolean;
 }
 
 interface StatusLook {
@@ -297,12 +303,21 @@ function batchElapsed(tasks: readonly TaskRecord[], now: number): string | undef
 }
 
 export function renderAgentsCard(tasks: readonly TaskRecord[], theme: CardTheme, width: number, now: number, options: AgentsWidgetOptions): string[] {
-	const shown = widgetTasks(tasks, now);
+	const shown = options.keepFinished ? [...tasks].sort(startOrder) : widgetTasks(tasks, now);
 	if (shown.length === 0) return [];
 	const cols = columns(shown, cardInnerWidth(width), now);
 	const { listed, hidden } = options.collapsed ? { listed: [shown[0]], hidden: 0 } : visibleRows(shown, options.maxRows);
 	const hint = options.collapsed && options.collapseKey ? `${options.collapseKey} expand` : shown.length > 1 ? batchElapsed(shown, now) : undefined;
 	const body = listed.flatMap((task) => row(task, theme, cols, now, options.maxRows === undefined));
+	// A failure has to be readable even when the layout dropped the task column:
+	// the reason is the whole point of the row, so it gets its own line there.
+	if (cols.task === 0) {
+		for (const task of listed) {
+			if (task.status !== TASK_STATUS.FAILED && task.status !== TASK_STATUS.TIMED_OUT) continue;
+			if (!task.error) continue;
+			body.push(theme.fg("error", clip(`   ✗ ${task.error}`, cols.inner)));
+		}
+	}
 	if (hidden > 0) body.push(overflowRow(hidden, theme, options.viewKey));
 	return renderCard(
 		{ title: "Agents", subtitle: counts(shown), body, tone: tone(shown), glyph: AGENTS_GLYPH },

@@ -2390,7 +2390,12 @@ test("subagent_list_agents and subagent_run in task mode launch a child with the
 	await fire("session_shutdown", ctx);
 	await tick();
 	assert.deepEqual(harness.children[1].killed, ["SIGTERM"], "closing pi stops the running children");
-	assert.match(tools.get("subagent_run")!.renderCall({ agent: "explore" }, plainTheme).render(60).join(""), /❀ agent run · explore/);
+	// The timeline block is the Agents card itself, not a bare "agent run" line:
+	// the agent, its model and its elapsed time belong where the work happens.
+	const callCard = tools.get("subagent_run")!.renderCall({ agent: "explore" }, plainTheme).render(60).join("\n");
+	assert.match(callCard, /❀ Agents/);
+	assert.match(callCard, /explore/);
+	assert.match(callCard, /◐|○|\?|✓/);
 });
 
 test("the Agents widget never registers a sidebar rail part and stays visible even while the fullscreen sidebar owns the host", async () => {

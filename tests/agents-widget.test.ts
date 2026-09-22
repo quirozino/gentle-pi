@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { TASK_STATUS, type TaskRecord } from "../lib/agents-protocol.ts";
+import { TASK_STATUS, type TaskRecord, type TaskStatus } from "../lib/agents-protocol.ts";
 import { formatElapsed, renderAgentsCard, widgetExpiryMs, widgetRows, widgetTasks } from "../lib/agents-widget.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 
@@ -226,4 +226,22 @@ test("renderAgentsCard caps the rows at maxRows, keeps active tasks ahead of fin
 	assert.match(renderAgentsCard(tasks, plainTheme, 80, 5000, { collapsed: false, maxRows: 4 }).map(stripAnsi)[4], /^│ … 4 more +│$/, "no view key, no hint");
 	const waiting = [...tasks, task({ id: "ask", status: TASK_STATUS.WAITING, lastStep: "asked: Delete?", createdAt: 4000, startedAt: 4000 })];
 	assert.match(renderAgentsCard(waiting, plainTheme, 80, 5000, { collapsed: false, maxRows: 2 }).map(stripAnsi)[1], /^│ \?  sdd-explore  asked: Delete\?/, "a question is never hidden");
+});
+
+test("a timeline block keeps finished rows that the rail would have expired", () => {
+	const now = 10_000_000;
+	const task = (id: string, status: TaskStatus, endedAt: number | null): TaskRecord => ({
+		id, agent: id, mode: "task", prompt: "p", label: "p", cwd: "/tmp", parentSessionId: "s1",
+		status, createdAt: 1, startedAt: 1, endedAt, model: "MiniMax-M3", thinking: "high",
+		sessionPath: null, error: null, result: null, lastStep: "done", lastActivityAt: endedAt ?? 1,
+		turns: 1, toolCalls: 1, tokens: 10, cost: 0.01,
+	});
+	// finished well past the one-minute window the rail uses
+	const old = task("nala", TASK_STATUS.COMPLETED, now - 10 * 60_000);
+
+	assert.deepEqual(renderAgentsCard([old], plainTheme, 60, now, { collapsed: false }), [], "the rail drops it");
+	const timeline = renderAgentsCard([old], plainTheme, 60, now, { collapsed: false, keepFinished: true });
+	assert.notEqual(timeline.length, 0, "the timeline keeps it");
+	assert.match(stripAnsi(timeline.join("\n")), /nala/);
+	assert.match(stripAnsi(timeline.join("\n")), /MiniMax-M3/);
 });

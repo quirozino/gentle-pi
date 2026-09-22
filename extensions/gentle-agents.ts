@@ -1204,6 +1204,14 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		}
 	};
 
+	// Reuses the sidebar's own card renderer, so the timeline block and the
+	// Agents rail can never drift apart.
+	const agentToolCard = (theme: ExtensionContext["ui"]["theme"], width: number): string[] => {
+		const tasks = store.list(activeSessionId());
+		const lines = renderAgentsCard(tasks, theme, width, deps.now(), { collapsed: false, maxRows: widgetRows(undefined), keepFinished: true });
+		return lines;
+	};
+
 	const tool = (name: string, description: string, parameters: Record<string, unknown>, execute: (params: Record<string, unknown>, ctx: ExtensionContext, signal?: AbortSignal) => Promise<ToolText>) => {
 		pi.registerTool({
 			name: `${TOOL_PREFIX}${name}`,
@@ -1211,13 +1219,24 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			label: `Agent ${name.replace(/_/g, " ")}`,
 			description,
 			parameters: { type: "object", additionalProperties: false, ...parameters } as never,
-			renderCall(args, theme) {
-				const params = args as { agent?: string; task_id?: string };
-				return new Text(theme.fg("toolTitle", `${AGENTS_GLYPH} agent ${name.replace(/_/g, " ")}${params.agent ? ` · ${params.agent}` : params.task_id ? ` · ${params.task_id}` : ""}`), 0, 0);
+			renderCall(_args, theme) {
+				// The timeline shows the Agents card itself rather than a bare
+				// "agent run · name" line, so the model, the elapsed time and any
+				// failure are readable where the work happens. Concurrent calls
+				// each render their own block, so several agents stack naturally.
+				return { render: (width: number) => agentToolCard(theme, width), invalidate() {} };
 			},
 			renderResult(result, options, theme) {
 				const body = result.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
-				return new Text(options.expanded ? body : theme.fg("muted", body.split("\n")[0] ?? ""), 0, 0);
+				const answer = options.expanded ? body.split("\n") : [body.split("\n")[0] ?? ""];
+				return {
+					invalidate() {},
+					render: (width: number) => [
+						...agentToolCard(theme, width),
+						"",
+						...answer.map((line) => theme.fg("muted", line)),
+					],
+				};
 			},
 			async execute(_id, params, signal, _onUpdate, ctx) {
 				return execute(params as Record<string, unknown>, ctx, signal);
