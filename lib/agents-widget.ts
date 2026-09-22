@@ -11,6 +11,17 @@ import { SHELL_GLYPHS } from "./shell-glyphs.ts";
 
 export const AGENTS_GLYPH = SHELL_GLYPHS.agents;
 
+/**
+ * The card glyph for a tick: the configured wink cycle when there is one, the
+ * static glyph otherwise. Pure, so the caller owns the frame rate.
+ */
+export function agentsGlyph(tick?: number): string {
+	const frames = SHELL_GLYPHS.agentsFrames;
+	if (frames.length === 0 || tick === undefined || !Number.isFinite(tick)) return AGENTS_GLYPH;
+	const phase = ((Math.trunc(tick) % frames.length) + frames.length) % frames.length;
+	return frames[phase] as string;
+}
+
 export interface AgentsWidgetOptions {
 	collapsed: boolean;
 	collapseKey?: string;
@@ -30,6 +41,8 @@ export interface AgentsWidgetOptions {
 	 * instead of leaving a finished row behind.
 	 */
 	activeOnly?: boolean;
+	/** Animation frame for the card glyph; absent keeps it static. */
+	tick?: number;
 }
 
 interface StatusLook {
@@ -330,7 +343,7 @@ export function renderAgentsCard(tasks: readonly TaskRecord[], theme: CardTheme,
 	}
 	if (hidden > 0) body.push(overflowRow(hidden, theme, options.viewKey));
 	return renderCard(
-		{ title: "Agents", subtitle: counts(shown), body, tone: tone(shown), glyph: AGENTS_GLYPH },
+		{ title: "Agents", subtitle: counts(shown), body, tone: tone(shown), glyph: agentsGlyph(options.tick) },
 		theme,
 		width,
 		{ expanded: true, hint },

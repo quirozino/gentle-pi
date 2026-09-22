@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { TASK_STATUS, type TaskRecord, type TaskStatus } from "../lib/agents-protocol.ts";
-import { formatElapsed, renderAgentsCard, widgetExpiryMs, widgetRows, widgetTasks } from "../lib/agents-widget.ts";
+import { AGENTS_GLYPH, agentsGlyph, formatElapsed, renderAgentsCard, widgetExpiryMs, widgetRows, widgetTasks } from "../lib/agents-widget.ts";
+import { SHELL_GLYPHS } from "../lib/shell-glyphs.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 
 // Gentle Agents widget: the card above the editor that shows what the
@@ -266,4 +267,20 @@ test("activeOnly shows the work in flight and never a finished agent", () => {
 	// With nothing running the card renders nothing at all, so it disappears with
 	// the last task instead of keeping a finished row.
 	assert.deepEqual(renderAgentsCard([...history], plainTheme, 108, now, { collapsed: false, activeOnly: true }), []);
+});
+
+test("the card glyph winks through the configured frames and stays static without them", () => {
+	// The default install keeps the static rose.
+	assert.equal(agentsGlyph(0), AGENTS_GLYPH);
+	assert.equal(agentsGlyph(7), AGENTS_GLYPH);
+	assert.equal(agentsGlyph(undefined), AGENTS_GLYPH);
+	// The resolver's frames drive the cycle once they exist.
+	const frames = SHELL_GLYPHS.agentsFrames;
+	if (frames.length > 1) {
+		assert.equal(agentsGlyph(0), frames[0]);
+		assert.equal(agentsGlyph(1), frames[1 % frames.length]);
+		assert.equal(agentsGlyph(frames.length), frames[0], "the cycle wraps");
+		assert.equal(agentsGlyph(-1), frames[frames.length - 1], "negative ticks wrap");
+	}
+	assert.match(renderAgentsCard([], plainTheme, 60, 1, { collapsed: false, tick: 1 }).join(""), /^$/);
 });

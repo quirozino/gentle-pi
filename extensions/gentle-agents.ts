@@ -30,6 +30,7 @@ import { AgentsView } from "../lib/agents-view.ts";
 import { PresencePublisher } from "../lib/orchestrator-presence.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
 import { AGENTS_GLYPH, renderAgentsCard, widgetExpiryMs, widgetRows } from "../lib/agents-widget.ts";
+import { SHELL_GLYPHS } from "../lib/shell-glyphs.ts";
 import { CARD_TONE, renderCard } from "../lib/shell-card.ts";
 import { openInExternalEditor } from "./gentle-shell.ts";
 import { resolveGentlePiAgentHome, gentlePiConfigHome } from "../lib/agent-home.ts";
@@ -51,6 +52,9 @@ export const AGENTS_ORCHESTRATOR_MESSAGE_TYPE = "gentle-agents.orchestrator-mess
 export const AGENTS_STALE_RESULT_TYPE = "gentle-agents.stale-result";
 const RENDER_COALESCE_MS = 400;
 const CLOCK_TICK_MS = 1000;
+// Half the prompt face's 80ms frame rate, so both animations read as the same
+// family without the card twitching.
+const AGENTS_WINK_MS = 160;
 const TOOL_PREFIX = "subagent_";
 const SHIPPED_SDD_AGENT_NAME_SET = new Set(SHIPPED_SDD_AGENT_NAMES);
 
@@ -643,10 +647,14 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		if (!sessions) return;
 		const tasks = visibleTasks();
 		if (tasks.some((task) => !isFinished(task.status))) {
+			// The clock also carries the card glyph animation; when a wink cycle is
+			// configured it has to tick at the wink rate, not once a second. The
+			// elapsed label is derived from the clock, so it stays correct either way.
+			const interval = SHELL_GLYPHS.agentsFrames.length > 1 ? AGENTS_WINK_MS : CLOCK_TICK_MS;
 			cancelClock = deps.schedule(() => {
 				requestRender();
 				tickClock();
-			}, CLOCK_TICK_MS);
+			}, interval);
 			return;
 		}
 		// Nothing to expire: the card holds only running tasks, so it disappears
@@ -1056,6 +1064,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 						maxRows: widgetRows(tui.terminal?.rows),
 						viewKey,
 						activeOnly: true,
+						tick: Math.floor(deps.now() / AGENTS_WINK_MS),
 					});
 					return lines.length === 0 ? [] : [...lines, ""];
 				},

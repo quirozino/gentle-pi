@@ -45,6 +45,11 @@ export interface ShellGlyphs {
 	card: string;
 	/** Title glyph for the agents card. */
 	agents: string;
+	/**
+	 * Frames the agents card glyph cycles through while an agent works, e.g.
+	 * ["[O_O]", "[O_-]"] for a wink. Empty keeps the static glyph.
+	 */
+	agentsFrames: string[];
 	/** Title glyph for the Status card; unset keeps the card untitled by design. */
 	status?: string;
 	/** Title glyph for the Todos card. */
@@ -96,6 +101,7 @@ export const DEFAULT_SHELL_GLYPHS: ShellGlyphs = {
 	gauge: { filled: "▰", empty: "▱" },
 	card: "✿",
 	agents: "❀",
+	agentsFrames: [],
 	todos: "❀",
 	bannerText: "Gentle Shell",
 	bannerOrnaments: "✿",
@@ -176,6 +182,17 @@ export function readGlyphConfig(glyphs: Record<string, unknown>): GlyphResolutio
 		else warnings.push("glyphs.status must be a non-empty printable string; using the default");
 	}
 
+	const agentsFrames = glyphs.agentsFrames;
+	if (agentsFrames !== undefined) {
+		const frames = Array.isArray(agentsFrames) ? agentsFrames : undefined;
+		if (frames && frames.every((frame) => isValidLabelGlyph(frame))) {
+			resolved.agentsFrames = frames as string[];
+			if (frames.length > 0) resolved.agents = frames[0] as string;
+		} else {
+			warnings.push("glyphs.agentsFrames must be an array of printable strings; using the default");
+		}
+	}
+
 	const todos = glyphs.todos;
 	if (todos !== undefined) {
 		if (isValidLabelGlyph(todos)) resolved.todos = todos;
@@ -245,6 +262,7 @@ function parseGlyphEnv(env: NodeJS.ProcessEnv): Record<string, unknown> {
 		[`${ENV_PREFIX}GAUGE_EMPTY`, "gaugeEmpty"],
 		[`${ENV_PREFIX}CARD`, "card"],
 		[`${ENV_PREFIX}AGENTS`, "agents"],
+		[`${ENV_PREFIX}AGENTS_FRAMES`, "agentsFrames"],
 		[`${ENV_PREFIX}STATUS`, "status"],
 		[`${ENV_PREFIX}TODOS`, "todos"],
 		[`${ENV_PREFIX}BANNER_TEXT`, "bannerText"],
@@ -326,6 +344,7 @@ function envGlyphShape(glyphs: ShellGlyphs): Record<string, unknown> {
 		gaugeEmpty: glyphs.gauge.empty,
 		card: glyphs.card,
 		agents: glyphs.agents,
+		agentsFrames: glyphs.agentsFrames,
 		status: glyphs.status,
 		todos: glyphs.todos,
 		bannerText: glyphs.bannerText,
