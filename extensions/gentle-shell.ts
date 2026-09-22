@@ -3,7 +3,7 @@ import type { EditorTheme, TUI } from "@earendil-works/pi-tui";
 import { execFile, spawnSync } from "node:child_process";
 import { statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { profilesFilePath, readProfilesFileResult } from "../lib/agent-profiles.ts";
+import { profilesFilePath, readProfilesFileResult, summarizeProfile } from "../lib/agent-profiles.ts";
 import * as os from "node:os";
 import { join } from "node:path";
 import { buildShellHeaderModel, renderShellBar, renderShellHeaderBar, renderShellHeaderRule, renderShellSidebarBar, shellEnabled, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
@@ -83,6 +83,7 @@ interface ShellBarComponent {
 
 interface BuildOptions {
 	profile?: string;
+	profileModels?: readonly string[];
 	home?: string;
 	dirty?: number;
 	usage?: ProviderUsage;
@@ -92,6 +93,8 @@ export type DevBinaryNotice = { state: "active"; path: string; sha256: string } 
 
 export interface ShellDeps {
 	activeProfile(): string | undefined;
+	/** Distinct models the active profile routes to; empty when unknown. */
+	activeProfileModels(): readonly string[];
 	fetch: typeof fetch;
 	now(): number;
 	devBinary(): DevBinaryNotice | undefined;
@@ -104,6 +107,37 @@ export interface ShellDeps {
 // The rail digest runs every frame. Cache parsing by file identity and metadata,
 // not just mtime: profile writes replace the store atomically. Keep the cache
 // local to this shell instance and recheck on the next frame after panel edits.
+/**
+ * Distinct models the active profile routes to. The Profile panel is where a
+ * person decides which models their agents may use, so the usage block lists
+ * exactly those, one per model, instead of whatever the provider happened to
+ * report. Cached by file fingerprint like the profile name reader, and empty
+ * whenever the store is unreadable.
+ */
+export function createActiveProfileModelsReader(env: NodeJS.ProcessEnv = process.env): () => string[] {
+	const path = profilesFilePath(env.GENTLE_PI_CONFIG_HOME ?? join(os.homedir(), ".pi", "gentle-ai"));
+	let fingerprint: string | undefined;
+	let models: string[] = [];
+	return () => {
+		try {
+			const stat = statSync(path, { bigint: true });
+			const next = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
+			if (next !== fingerprint) {
+				const result = readProfilesFileResult(path);
+				const active = result.status === "valid" ? result.file.active : undefined;
+				const config = active === undefined ? undefined : result.status === "valid" ? result.file.profiles[active] : undefined;
+				models = config === undefined ? [] : summarizeProfile(config).models.map((entry) => entry.model);
+				fingerprint = next;
+			}
+			return models;
+		} catch {
+			fingerprint = undefined;
+			models = [];
+			return models;
+		}
+	};
+}
+
 export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env): () => string | undefined {
 	const path = profilesFilePath(env.GENTLE_PI_CONFIG_HOME ?? join(os.homedir(), ".pi", "gentle-ai"));
 	let fingerprint: string | undefined;
@@ -136,7 +170,7 @@ function ambientDevBinary(): DevBinaryNotice | undefined {
 	}
 }
 
-const defaultShellDeps: Omit<ShellDeps, "activeProfile"> = {
+const defaultShellDeps: Omit<ShellDeps, "activeProfile" | "activeProfileModels"> = {
 	fetch: (...args) => globalThis.fetch(...args),
 	now: () => Date.now(),
 	devBinary: ambientDevBinary,
@@ -222,6 +256,7 @@ export function buildShellBarModel(
 	return {
 		cwd: shortenHome(ctx.sessionManager.getCwd(), home),
 		profile: options.profile,
+		profileModels: options.profileModels,
 		branch: footerData.getGitBranch(),
 		dirty: options.dirty,
 		sessionName: ctx.sessionManager.getSessionName(),
@@ -921,7 +956,12 @@ export async function fetchKimiUsage(token: string | undefined, fetchFn: typeof 
 export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = process.env, overrides: Partial<ShellDeps> = {}): void {
 	installSessionChangeCapture(pi, env, overrides.resolveWorktree ?? resolveSessionWorktree);
 	if (!shellEnabled(env)) return;
-	const deps: ShellDeps = { ...defaultShellDeps, activeProfile: createActiveProfileReader(env), ...overrides };
+	const deps: ShellDeps = {
+		...defaultShellDeps,
+		activeProfile: createActiveProfileReader(env),
+		activeProfileModels: createActiveProfileModelsReader(env),
+		...overrides,
+	};
 	const usage = new UsageStore();
 	// Providers gentle-shell has never heard of get a usage source too, when
 	// the extension that owns them registers one on pi.events; see the
@@ -1133,7 +1173,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			// statuses. The digest is what keeps the fullscreen memo honest, and it
 			// rebuilds the model exactly as the narrow bottom bar does every frame.
 			const footerModel = (): ShellBarModel => ({
-				...buildShellBarModel(pi, ctx, footerData, { dirty: tracker.model.files.length, usage: usage.get(ctx.model?.provider ?? ""), profile: deps.activeProfile() }),
+				...buildShellBarModel(pi, ctx, footerData, { dirty: tracker.model.files.length, usage: usage.get(ctx.model?.provider ?? ""), profile: deps.activeProfile(), profileModels: deps.activeProfileModels() }),
 				changes: { files: tracker.model.files.length, added: tracker.model.added, deleted: tracker.model.deleted, notice: tracker.model.notice },
 				tick: gaugeAnimationEnabled() ? gaugeTick.value : undefined,
 			});

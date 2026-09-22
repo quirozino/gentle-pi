@@ -263,7 +263,8 @@ test("the fullscreen Status rail carries a live digest so a profile switch refre
 	const { pi, handlers } = fakePi();
 	let profile: string | undefined = "team";
 	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { activeProfile: () => profile });
-	const { ctx, ui } = fakeContext();
+	const entries: unknown[] = [];
+	const { ctx, ui } = fakeContext({ entries });
 	await fire(handlers, "session_start", ctx);
 
 	const statuses = new Map<string, string>();
@@ -284,6 +285,24 @@ test("the fullscreen Status rail carries a live digest so a profile switch refre
 		assert.match(rail.render(46).join("\n"), /Profile.*other/);
 		profile = undefined;
 		assert.doesNotMatch(rail.render(46).join("\n"), /Profile/);
+
+		const beforeModel = live();
+		(ctx.model as { id: string }).id = "gpt-5.6";
+		// The id itself no longer renders here (it lives in the header row now),
+		// but it is still part of the digest: the rail must not reuse a prepared
+		// render keyed to the old model.
+		assert.notEqual(live(), beforeModel, "/model must change the digest");
+
+		const beforeUsage = live();
+		(ctx as unknown as { getContextUsage: () => unknown }).getContextUsage = () => ({ tokens: 200_000, contextWindow: 272_000, percent: 74 });
+		assert.notEqual(live(), beforeUsage, "context usage must change the digest");
+		// The reading itself lives under the prompt field now, so the rail only has
+		// to notice that it changed.
+
+		const beforeCost = live();
+		entries.push(assistantEntry({ input: 100, output: 20, cost: 0.42 }));
+		assert.notEqual(live(), beforeCost, "session cost must change the digest");
+
 
 		const beforeStatus = live();
 		statuses.set("mcp", "MCP: 3 servers enabled");

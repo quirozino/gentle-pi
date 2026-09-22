@@ -15,6 +15,7 @@ import {
 	type ShellBarModel,
 	type ShellBarTheme,
 } from "../lib/shell-bar.ts";
+import { modelUsageRows, parseNanQuota } from "../lib/shell-usage.ts";
 
 // The Gentle Shell bar replaces pi's three-line footer with one line of
 // segments. Rendering is pure so it can be verified without a TUI.
@@ -53,6 +54,13 @@ function model(overrides: Partial<ShellBarModel> = {}): ShellBarModel {
 		statuses: [],
 		...overrides,
 	};
+}
+
+function sidebarUsageRows(lines: string[]): string[] {
+	const body = lines.filter((line) => line.startsWith("│ ")).map((line) => line.slice(2, -2).trim());
+	const start = body.indexOf("Usage");
+	const end = body.indexOf("Integrations");
+	return body.slice(start + 1, end).filter((line) => /[▰▱]/.test(line) && !line.startsWith("Context"));
 }
 
 test("renderGauge fills cells proportionally to the percentage", () => {
@@ -150,7 +158,58 @@ test("renderShellBar keeps its own zero-window contract independent of the sideb
 			{ label: "week", usedPercent: 0, windowSeconds: 604_800, resetAt: null },
 		] }],
 	};
+	const lines = renderShellSidebarBar(model({ usage }), plainTheme, 60);
+	assert.deepEqual(sidebarUsageRows(lines), []);
+	const text = lines.join("\n");
+	assert.match(text, /Usage/);
+	assert.doesNotMatch(text, /Context ▰/);
+	assert.doesNotMatch(text, /Cost/);
+	// The bar keeps its own contract: only the sidebar gives zero rows the boot.
 	assert.match(renderShellBar(model({ usage }), plainTheme, 200)[0], /codex 5h ▱▱▱▱▱▱▱▱ 0% · week 0%$/);
+});
+
+test("sidebar keeps the Usage group when nothing was consumed", () => {
+	const usage = parseNanQuota({
+		periodEnd: "2026-10-01T00:00:00.000Z",
+		models: [
+			{ model: "glm5.3", cap: 3_000_000_000, tokensUsed: 0 },
+			{ model: "glm5.2", cap: 3_000_000_000, tokensUsed: 0 },
+		],
+	}, 0);
+	const lines = renderShellSidebarBar(model({ usage }), plainTheme, 60);
+	const text = lines.join("\n");
+	assert.deepEqual(sidebarUsageRows(lines), []);
+	assert.match(text, /Usage/);
+	assert.match(text, /Integrations/);
+	// Context, capacity and cost live under the prompt field now, so the block
+	// carries quota rows only.
+	assert.doesNotMatch(text, /Context ▰/);
+});
+
+test("sidebar hides exactly the rows that would print 0%, rounding included", () => {
+	// The row's own rounding is the only threshold: a fraction below half a
+	// percent is a 0% row and leaves; half a percent keeps its row and prints 1%.
+	const usage = (usedPercent: number) => ({
+		provider: "openai-codex",
+		plan: "pro",
+		fetchedAt: 0,
+		limits: [{ name: "codex", limitReached: false, windows: [{ label: "5h", usedPercent, windowSeconds: 18_000, resetAt: null }] }],
+	});
+	assert.deepEqual(sidebarUsageRows(renderShellSidebarBar(model({ usage: usage(0.4) }), plainTheme, 60)), []);
+	assert.deepEqual(sidebarUsageRows(renderShellSidebarBar(model({ usage: usage(0.5) }), plainTheme, 60)), ["codex 5h ▱▱▱▱▱▱▱▱ 1%"]);
+});
+
+test("sidebar reads a limit without windows as nothing to draw, not as zero consumption", () => {
+	const usage = {
+		provider: "openai-codex",
+		plan: "pro",
+		fetchedAt: 0,
+		limits: [{ name: "codex", limitReached: false, windows: [] }],
+	};
+	const lines = renderShellSidebarBar(model({ usage }), plainTheme, 60);
+	assert.deepEqual(sidebarUsageRows(lines), []);
+	// The block still renders its heading; the reading it carries is quota-only.
+	assert.match(lines.join("\n"), /Usage/);
 });
 
 test("renderShellBar shows an unknown context as a question mark after compaction", () => {
@@ -250,7 +309,7 @@ test("sidebar profile wraps long names without changing the compact bar", () => 
 	assert.deepEqual(renderShellBar(active, plainTheme, 120), renderShellBar(base, plainTheme, 120));
 });
 
-test("sidebar Status card drops Model, Effort, Context, Cost and Usage, keeping Project, Changes and Integrations", () => {
+test("sidebar Status card drops Model, Effort and the Context/Cost summary, keeping Project, Changes, Usage and Integrations", () => {
 	const usage = {
 		provider: "openai-codex",
 		plan: "pro",
@@ -259,14 +318,13 @@ test("sidebar Status card drops Model, Effort, Context, Cost and Usage, keeping 
 	};
 	const data = model({ profile: "team", sessionName: "session", usage, changes: { files: 1, added: 2, deleted: 1 }, statuses: ["MCP connected"] });
 	const text = renderShellSidebarBar(data, plainTheme, 60).join("\n");
-	assert.doesNotMatch(text, /Usage/);
 	assert.doesNotMatch(text, /Model/);
 	assert.doesNotMatch(text, /Effort/);
-	assert.doesNotMatch(text, /Context/);
-	assert.doesNotMatch(text, /Cost/);
 	assert.doesNotMatch(text, /\$9\.49/);
-	assert.doesNotMatch(text, /codex 5h/);
-	for (const heading of ["Status", "Project", "Changes", "Integrations"]) assert.match(text, new RegExp(heading));
+	// Context, capacity and cost now sit under the prompt field; the Usage
+	// block that remains is quota rows only.
+	assert.match(text, /codex 5h/);
+	for (const heading of ["Status", "Project", "Changes", "Usage", "Integrations"]) assert.match(text, new RegExp(heading));
 	assert.match(text, /Branch.*main/);
 	assert.match(text, /Session.*session/);
 	assert.match(text, /Profile.*team/);
@@ -434,4 +492,53 @@ test("renderShellHeaderRule paints one full-width line in the editor frame color
 	assert.equal(renderShellHeaderRule(plainTheme, 12), "─".repeat(12), "the rule spans the full width");
 	assert.equal(renderShellHeaderRule(plainTheme, 0), "");
 	assert.equal(renderShellHeaderRule(plainTheme, -3), "", "negative widths clamp to an empty rule");
+});
+
+test("the Usage block lists one row per profile model, with Unknown when nothing reported it", () => {
+	const usage = {
+		provider: "nan",
+		plan: "pro",
+		fetchedAt: 0,
+		limits: [
+			{ name: "deepseek-v4-flash", limitReached: false, windows: [{ label: "", usedPercent: 54, windowSeconds: 18_000, resetAt: null }] },
+			{ name: "qwen3.8-flash", limitReached: false, windows: [{ label: "", usedPercent: 31, windowSeconds: 18_000, resetAt: null }] },
+			{ name: "surprise-model", limitReached: false, windows: [{ label: "", usedPercent: 12, windowSeconds: 18_000, resetAt: null }] },
+		],
+	};
+	const lines = renderShellSidebarBar(
+		model({ usage, profileModels: ["nan/deepseek-v4-flash", "qwen3.8-flash", "glm5.3-flash"] }),
+		plainTheme,
+		60,
+	);
+	const text = lines.join("\n");
+	assert.match(text, /deepseek-v4-flash ▰+▱+ +54%/);
+	assert.match(text, /qwen3\.8-flash ▰+▱+ +31%/);
+	// A model the profile routes to but the provider never reported is still a row.
+	assert.match(text, /glm5\.3-flash Unknown/);
+	// And a model the provider reports that the profile does not route to is visible
+	// as an extra, labelled row rather than silently missing.
+	assert.match(text, /surprise-model .*12% not in profile/);
+});
+
+test("modelUsageRows matches bare ids, keeps unknown models and labels the unlisted ones", () => {
+	const usage = {
+		provider: "nan",
+		plan: "pro",
+		fetchedAt: 0,
+		limits: [
+			{ name: "nan/deepseek-v4-flash", limitReached: false, windows: [{ label: "", usedPercent: 54, windowSeconds: 18_000, resetAt: null }] },
+			{ name: "unlisted", limitReached: false, windows: [{ label: "", usedPercent: 9, windowSeconds: 18_000, resetAt: null }] },
+		],
+	};
+	const rows = modelUsageRows(["deepseek-v4-flash", "no-data"], usage, "deepseek-v4-flash");
+	assert.deepEqual(rows, [
+		{ name: "deepseek-v4-flash", percent: 54, configured: true },
+		{ name: "no-data", configured: true },
+		{ name: "unlisted", percent: 9, configured: false },
+	]);
+	// No usage at all still yields one explicit unknown row per model.
+	assert.deepEqual(modelUsageRows(["a", "b"], undefined, undefined), [
+		{ name: "a", configured: true },
+		{ name: "b", configured: true },
+	]);
 });

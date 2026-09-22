@@ -1,6 +1,6 @@
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { GAUGE_CELLS, gaugeTone, paintGauge, renderGauge, type GaugeTone } from "./shell-gauge.ts";
-import { allowanceGroupsSupported, groupUsageLimits, renderUsageBar, selectUsageLimit, type ProviderUsage, type UsageWindow } from "./shell-usage.ts";
+import { allowanceGroupsSupported, groupUsageLimits, modelUsageRows, renderUsageBar, selectUsageLimit, type ProviderUsage, type UsageWindow } from "./shell-usage.ts";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 import { CARD_TONE, cardInnerWidth, renderCard } from "./shell-card.ts";
 import { SHELL_GLYPHS } from "./shell-glyphs.ts";
@@ -13,6 +13,12 @@ export { gaugeTone, renderGauge, type GaugeTone };
 
 export interface ShellBarModel {
 	profile?: string;
+	/**
+	 * Models the active profile routes to. The Usage block lists one row per
+	 * model so consumption is readable per model, not only for whichever one the
+	 * provider happened to report.
+	 */
+	profileModels?: readonly string[];
 	changes?: { files: number; added: number; deleted: number; notice?: string };
 	cwd: string;
 	branch: string | null;
@@ -248,6 +254,18 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 	const innerWidth = cardInnerWidth(width);
 	const inset = Math.min(1, innerWidth - 1);
 	const usageLines = model.usage ? sidebarUsageLines(model.usage, model.modelId, theme, innerWidth - inset, model.tick) : [];
+	// One row per model, worst window, animated bar. A model with no reported
+	// window says so instead of vanishing; a model the provider reports but the
+	// profile does not route to is labelled, so an unexpected model is visible.
+	const modelRows = (model.profileModels ?? []).length === 0
+		? []
+		: modelUsageRows(model.profileModels ?? [], model.usage, model.modelId).map((row) => {
+				const name = label(row.name);
+				if (row.percent === undefined) return `${name} ${theme.fg("dim", "Unknown")}`;
+				const percent = `${Math.round(row.percent)}%`.padStart(4);
+				const suffix = row.configured ? "" : ` ${theme.fg("dim", "not in profile")}`;
+				return `${name} ${paintGauge(row.percent, theme, SIDEBAR_USAGE_METER_CELLS, model.tick)} ${value(percent)}${suffix}`;
+			});
 	const groups: Array<{ title: string; lines: string[] }> = [
 		{
 			title: "Project",
@@ -270,12 +288,9 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 		},
 		{
 			title: "Usage",
-			lines: [
-				`${label("Context")} ${paintGauge(model.contextPercent, theme, undefined, model.tick)} ${value(percent)}`,
-				capacity,
-				`${label("Cost")} ${value(formatCost(model.costTotal, model.subscription))}`,
-				...usageLines,
-			],
+			// Context, capacity and cost now sit under the prompt field, so this
+			// block is only about quota: one row per model the profile routes to.
+			lines: modelRows.length > 0 ? modelRows : usageLines,
 		},
 		{ title: "Integrations", lines: model.statuses.length
 			? model.statuses.map((status) => theme.fg(ROLE.STATUS, sanitizeStatus(status)))

@@ -720,6 +720,61 @@ function paintMeter(percent: number, cells: number, theme: UsageTheme, tick?: nu
 	return paintGauge(percent, theme, cells, tick);
 }
 
+export interface ModelUsageRow {
+	/** Model id without its provider prefix, as the routing config writes it. */
+	name: string;
+	/** Worst consumed window for this model, or undefined when nothing reported it. */
+	percent?: number;
+	/** False for a model the provider reports but the profile does not route to. */
+	configured: boolean;
+}
+
+function bareModelId(id: string): string {
+	return id.includes("/") ? id.slice(id.lastIndexOf("/") + 1) : id;
+}
+
+/**
+ * One row per model the active profile routes to, plus any model the provider
+ * reports that the profile does not mention (marked as such). A model with no
+ * reported window is kept as an explicit unknown instead of disappearing, so a
+ * missing quota reads as missing rather than as fine.
+ */
+export function modelUsageRows(
+	models: readonly string[],
+	usage: ProviderUsage | undefined,
+	activeModelId: string | undefined,
+): ModelUsageRow[] {
+	const limits = usage?.limits ?? [];
+	const claimed = new Set<number>();
+	// Half a percent is the threshold the shell already uses before a row is worth
+	// drawing; the worst window is the one that decides whether a model still has
+	// room, so that is what the row shows.
+	const spent = (usedPercent: number) => usedPercent >= 0.5;
+	const worstPercent = (limit: UsageLimit): number | undefined => {
+		const windows = limit.windows.filter((window) => spent(window.usedPercent));
+		if (windows.length === 0) return limit.windows[0]?.usedPercent;
+		return Math.max(...windows.map((window) => window.usedPercent));
+	};
+	const rows: ModelUsageRow[] = [];
+	for (const model of models) {
+		const key = bareModelId(model).toLowerCase();
+		const index = limits.findIndex(
+			(limit, position) => !claimed.has(position) && (limit.name === model || bareModelId(limit.name).toLowerCase() === key),
+		);
+		if (index >= 0) {
+			claimed.add(index);
+			rows.push({ name: bareModelId(model), percent: worstPercent(limits[index] as UsageLimit), configured: true });
+		} else {
+			rows.push({ name: bareModelId(model), configured: true });
+		}
+	}
+	limits.forEach((limit, index) => {
+		if (claimed.has(index)) return;
+		rows.push({ name: bareModelId(limit.name), percent: worstPercent(limit), configured: false });
+	});
+	return rows;
+}
+
 export function renderUsageBar(usage: ProviderUsage, theme: UsageTheme, activeModelId?: string, tick?: number): string | undefined {
 	const main = selectUsageLimit(usage, activeModelId);
 	const [first, ...rest] = main?.windows ?? [];
