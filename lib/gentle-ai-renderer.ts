@@ -94,10 +94,14 @@ export class GentleAiCallCard {
 		this.open = running;
 	}
 
-	/** Elapsed time, right-aligned in the top rule, from the first running update. */
+	/**
+	 * Elapsed time, right-aligned in the top rule, from the first running update.
+	 * Labelled as a duration: a bare "2s" next to the expand key read as anything
+	 * but the time the operation took.
+	 */
 	private elapsedHint(): string | undefined {
 		if (this.startedAt === undefined) return this.hint;
-		const elapsed = formatElapsed((this.endedAt ?? Date.now()) - this.startedAt);
+		const elapsed = `took ${formatElapsed((this.endedAt ?? Date.now()) - this.startedAt)}`;
 		return this.hint ? `${elapsed} · ${this.hint}` : elapsed;
 	}
 

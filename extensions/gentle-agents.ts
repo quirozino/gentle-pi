@@ -649,7 +649,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			}, CLOCK_TICK_MS);
 			return;
 		}
-		const expiry = widgetExpiryMs(tasks, deps.now());
+		// Nothing to expire: the card holds only running tasks, so it disappears
+		// with the last one instead of waiting for a window.
+		const expiry = widgetExpiryMs(tasks.filter((task) => !isFinished(task.status)), deps.now());
 		if (expiry === undefined) return;
 		cancelClock = deps.schedule(() => {
 			if (sidebarTui) invalidateSidebar(sidebarTui);
@@ -1053,6 +1055,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 						collapseKey,
 						maxRows: widgetRows(tui.terminal?.rows),
 						viewKey,
+						activeOnly: true,
 					});
 					return lines.length === 0 ? [] : [...lines, ""];
 				},

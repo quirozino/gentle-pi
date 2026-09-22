@@ -24,6 +24,12 @@ export interface AgentsWidgetOptions {
 	 * after 60s would look broken.
 	 */
 	keepFinished?: boolean;
+	/**
+	 * Show only the tasks still running. The above-editor card uses it: the agent
+	 * is visible while it works and the card is gone the moment it finishes,
+	 * instead of leaving a finished row behind.
+	 */
+	activeOnly?: boolean;
 }
 
 interface StatusLook {
@@ -303,7 +309,11 @@ function batchElapsed(tasks: readonly TaskRecord[], now: number): string | undef
 }
 
 export function renderAgentsCard(tasks: readonly TaskRecord[], theme: CardTheme, width: number, now: number, options: AgentsWidgetOptions): string[] {
-	const shown = options.keepFinished ? [...tasks].sort(startOrder) : widgetTasks(tasks, now);
+	const shown = options.keepFinished
+		? [...tasks].sort(startOrder)
+		: options.activeOnly
+			? tasks.filter((task) => !isFinished(task.status)).sort(startOrder)
+			: widgetTasks(tasks, now);
 	if (shown.length === 0) return [];
 	const cols = columns(shown, cardInnerWidth(width), now);
 	const { listed, hidden } = options.collapsed ? { listed: [shown[0]], hidden: 0 } : visibleRows(shown, options.maxRows);

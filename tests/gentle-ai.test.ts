@@ -1748,7 +1748,7 @@ test("registered Gentle Review capture tools name the lens they run", () => {
 	// The lens travels as its own row: joined into the subtitle it buried the state
 	// and pushed the elapsed time out of the frame.
 	assert.equal(cardTitle(renderComponent(single)), "🌹︎ Gentle AI · running · review capture");
-	assert.equal(cardBody(renderComponent(single)).trim().replace(/<\/?[a-zA-Z]+>/g, ""), "• risk");
+	assert.match(cardBody(renderComponent(single)).trim().replace(/<\/?[a-zA-Z]+>/g, ""), /^• risk( · .+)?$/, "the lens, with the reviewer model the routing resolves when it has one");
 	const bare = tools.get("gentle_review_capture")!.renderCall({ lineageId: "l", collectBinding: "{not json" }, lifecycleTheme, lifecycleContext({ executionStarted: true }));
 	assert.equal(cardTitle(renderComponent(bare)), "🌹︎ Gentle AI · running · review capture");
 	assert.equal(cardBody(renderComponent(bare)).trim().replace(/<\/?[a-zA-Z]+>/g, ""), "");
@@ -1758,10 +1758,11 @@ test("registered Gentle Review capture tools name the lens they run", () => {
 		lifecycleContext({ executionStarted: true }),
 	);
 	assert.equal(cardTitle(renderComponent(group)), "🌹︎ Gentle AI · running · review capture group");
-	assert.deepEqual(
-		cardBody(renderComponent(group)).trim().split("\n").map((line) => line.replace(/<\/?[a-zA-Z]+>/g, "").trim()),
-		["• risk", "• resilience", "• readability", "• reliability"],
-	);
+	const rows = cardBody(renderComponent(group)).trim().split("\n").map((line) => line.replace(/<\/?[a-zA-Z]+>/g, "").trim());
+	assert.equal(rows.length, 4, "one row per lens");
+	["risk", "resilience", "readability", "reliability"].forEach((lens, index) => {
+		assert.match(rows[index] ?? "", new RegExp(`^• ${lens}( · .+)?$`), lens);
+	});
 });
 
 test("bash tool_call confirms a late guarded npm publish and denies on non-approval", async () => {

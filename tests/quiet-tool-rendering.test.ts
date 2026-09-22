@@ -1352,7 +1352,7 @@ test("quiet tool rendering puts the expand key in the finished call card's top r
 	const tool = tools.get("bash");
 	const command = "gentle-ai review status";
 	const running = renderToString(tool.renderCall({ command }, passthroughTheme, routineRenderContext({ args: { command }, executionStarted: true, isPartial: true })));
-	assert.match(cardHint(running) ?? "", /^\d+s$/, "a running call shows its elapsed time instead of an expand key");
+	assert.match(cardHint(running) ?? "", /^took \d+s$/, "a running call shows its elapsed time instead of an expand key");
 	const completed = renderToString(tool.renderCall({ command }, passthroughTheme, routineRenderContext({ args: { command }, executionStarted: true, isPartial: false, expanded: false })));
 	assert.match(cardHint(completed) ?? "", /to expand$/);
 	assert.equal(cardTitle(completed), "🌹︎ Gentle AI · completed · review status");

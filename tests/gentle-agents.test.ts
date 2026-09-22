@@ -2383,7 +2383,8 @@ test("subagent_list_agents and subagent_run in task mode launch a child with the
 	const result = await running;
 	assert.equal(result.content[0].text, "lib has three agent files.");
 	assert.equal((result.details.gentleAgents as { status: string }).status, "completed");
-	assert.match(widget()![1], /✓  explore  map lib modules/);
+	// The card holds only running work, so it is gone the moment the task ends.
+	assert.deepEqual(widget(), [], "the card leaves with the task");
 	const orphan = tools.get("subagent_run")!.execute("c9", { agent: "explore", task: "Orphan", mode: "background" }, undefined, undefined, ctx);
 	await orphan;
 	await tick();
@@ -2471,7 +2472,7 @@ test("background runs return at once; status, result, send_message, cancel, and 
 	assert.match((await tools.get("subagent_run")!.execute("c11", { agent: "ghost", task: "x" }, undefined, undefined, ctx)).content[0].text, /no subagent named "ghost"\. Known: explore/);
 });
 
-test("once the last task is done the card asks for one frame when its finished row expires, so an idle terminal clears it", async () => {
+test("the card holds only the agent that is running and is gone when it finishes", async () => {
 	const { pi, tools, fire } = fakePi();
 	const harness = deps();
 	let clock = 1000;
@@ -2485,26 +2486,20 @@ test("once the last task is done the card asks for one frame when its finished r
 		};
 	};
 	gentleAgents(pi, {}, harness.deps);
-	let frames = 0;
-	const { ctx, widget } = fakeContext({ requestRender: () => (frames += 1) });
+	const { ctx, widget } = fakeContext();
 	await fire("session_start", ctx);
 	await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Short job", mode: "background" }, undefined, undefined, ctx);
 	await tick();
-	widget();
+	assert.match(widget()![1], /◐  explore  Short job/, "the running agent is listed");
+
 	harness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "Done." }] }] });
 	harness.children[0].emit({ type: "agent_settled" });
 	await tick();
-	assert.match(widget()![1], /✓  explore  Short job/);
-	// The card keeps no history: the finished row leaves on its own window, so an
-	// idle terminal does not accumulate a list of everything that ever ran.
+	assert.deepEqual(widget(), [], "the card leaves with the task, no finished row is kept");
+
+	// And no window is armed: nothing lingers, so nothing has to expire.
 	const expiry = timers.filter((timer) => !timer.cancelled && timer.ms === 60_000);
-	assert.equal(expiry.length, 1, "exactly one timer waits for the finished row to leave the card");
-	clock += 60_000;
-	const before = frames;
-	expiry[0].fn();
-	assert.equal(frames, before + 1, "the expiry asks the terminal for a frame");
-	assert.deepEqual(widget(), [], "the card is gone");
-	assert.equal(timers.filter((timer) => !timer.cancelled && timer.ms === 60_000).length, 0, "nothing is rescheduled once the card is empty");
+	assert.equal(expiry.length, 0, "no expiry timer for a card that keeps no finished rows");
 });
 
 test("completionText names the outcome before the answer", () => {

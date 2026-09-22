@@ -8852,8 +8852,28 @@ function createGentleAiExtensionForTesting(
 	};
 	// Lenses travel as one row each: joined into the subtitle they made the card
 	// title so long that it buried the state and could not fit the elapsed time.
-	const lensRows = (lenses: readonly (string | undefined)[]): string[] =>
-		lenses.filter((lens): lens is string => lens !== undefined).map((lens) => `• ${lens}`);
+	// The reviewer model comes from the lens's entry in the agent model routing,
+	// which is the same resolution the host relay uses to launch it.
+	const lensRows = (lenses: readonly (string | undefined)[]): string[] => {
+		// Render-time only: the routing config resolves from the project the Pi
+		// process runs in, and a read failure yields {} rather than throwing.
+		const config = (() => {
+			try {
+				return readModelConfig(process.cwd());
+			} catch {
+				return {};
+			}
+		})();
+		return lenses
+			.filter((lens): lens is string => lens !== undefined)
+			.map((lens) => {
+				const model = reviewHostRelayLaunchSelection(lens, config, process.env).reviewerModel;
+				// The provider prefix adds noise next to the lens name; the agents card
+				// shows the bare model id for the same reason.
+				const label = model === undefined ? undefined : model.includes("/") ? model.slice(model.lastIndexOf("/") + 1) : model;
+				return label === undefined ? `• ${lens}` : `• ${lens} · ${label}`;
+			});
+	};
 
 	pi.registerTool({
 		name: "gentle_review_capture_group",

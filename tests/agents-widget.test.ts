@@ -245,3 +245,25 @@ test("a timeline block keeps finished rows that the rail would have expired", ()
 	assert.match(stripAnsi(timeline.join("\n")), /nala/);
 	assert.match(stripAnsi(timeline.join("\n")), /MiniMax-M3/);
 });
+
+test("activeOnly shows the work in flight and never a finished agent", () => {
+	const now = 5_000_000;
+	const task = (id: string, status: TaskStatus, endedAt: number | null, seq: number): TaskRecord => ({
+		id, agent: id, mode: "task", prompt: "p", label: `${id} job`, cwd: "/tmp", parentSessionId: "s1",
+		status, createdAt: seq, startedAt: 1, endedAt, model: "glm5.3-flash", thinking: "high",
+		sessionPath: null, error: null, result: null, lastStep: "x", lastActivityAt: endedAt ?? 1,
+		turns: 1, toolCalls: 1, tokens: 2_100_000, cost: 0.4,
+	});
+	const history = [1, 2, 3, 4, 5, 6].map((i) => task(`old${i}`, TASK_STATUS.COMPLETED, now - 3_600_000 * i, i));
+	const running = task("titina", TASK_STATUS.RUNNING, null, 9);
+
+	const lines = renderAgentsCard([...history, running], plainTheme, 108, now, { collapsed: false, activeOnly: true });
+	const text = stripAnsi(lines.join("\n"));
+	assert.match(text, /titina/, "the running agent is listed");
+	assert.match(lines[0] ?? "", /1 active/, "the counts describe the running work only");
+	for (const old of history) assert.doesNotMatch(text, new RegExp(old.id), `${old.id} must not be listed`);
+
+	// With nothing running the card renders nothing at all, so it disappears with
+	// the last task instead of keeping a finished row.
+	assert.deepEqual(renderAgentsCard([...history], plainTheme, 108, now, { collapsed: false, activeOnly: true }), []);
+});
