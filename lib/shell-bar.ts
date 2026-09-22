@@ -274,8 +274,7 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 		: modelUsageRows(model.profileModels ?? [], model.usageByProvider, model.modelId, model.provider).map((row) => {
 				// The orchestrator's model is the one running now, so it carries the same
 				// mark the active provider uses elsewhere in this card.
-				const isOrchestrator = model.orchestratorModel !== undefined && bareId(model.orchestratorModel) === row.name;
-				const name = isOrchestrator ? `${theme.fg("accent", "✿")} ${label(row.name)}` : label(row.name);
+				const name = label(row.name);
 				if (row.percent === undefined) {
 					// No quota source for this provider: show what the session spent on the
 					// model, labelled as the local reading it is, rather than a blank.
