@@ -1492,7 +1492,11 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		}
 	});
 	pi.on("agent_end", async (_event, ctx) => {
-		await refreshChanges(ctx);
-		void refreshUsage(ctx, false);
+		try {
+			await refreshChanges(ctx);
+		} catch {
+			// refreshChanges failure must not crash Pi.
+		}
+		void refreshUsage(ctx, false).catch(() => undefined);
 	});
 }
