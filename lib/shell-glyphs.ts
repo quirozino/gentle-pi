@@ -45,6 +45,10 @@ export interface ShellGlyphs {
 	card: string;
 	/** Title glyph for the agents card. */
 	agents: string;
+	/** Title glyph for the Status card; unset keeps the card untitled by design. */
+	status?: string;
+	/** Title glyph for the Todos card. */
+	todos: string;
 	/** Glyph shown in the prompt frame where the flower sits, e.g. a face. */
 	promptFace: string;
 	/**
@@ -86,6 +90,7 @@ export const DEFAULT_SHELL_GLYPHS: ShellGlyphs = {
 	gauge: { filled: "▰", empty: "▱" },
 	card: "✿",
 	agents: "❀",
+	todos: "❀",
 	promptFace: "✿",
 	promptFaceFrames: ["✿", "❀", "❁", "✾"],
 	gaugeAnimation: "working",
@@ -156,6 +161,18 @@ export function readGlyphConfig(glyphs: Record<string, unknown>): GlyphResolutio
 		else warnings.push("glyphs.agents must be a non-empty printable string; using the default");
 	}
 
+	const status = glyphs.status;
+	if (status !== undefined) {
+		if (isValidLabelGlyph(status)) resolved.status = status;
+		else warnings.push("glyphs.status must be a non-empty printable string; using the default");
+	}
+
+	const todos = glyphs.todos;
+	if (todos !== undefined) {
+		if (isValidLabelGlyph(todos)) resolved.todos = todos;
+		else warnings.push("glyphs.todos must be a non-empty printable string; using the default");
+	}
+
 	const promptFace = glyphs.promptFace;
 	if (promptFace !== undefined) {
 		if (isValidLabelGlyph(promptFace)) {
@@ -200,6 +217,8 @@ function parseGlyphEnv(env: NodeJS.ProcessEnv): Record<string, unknown> {
 		[`${ENV_PREFIX}GAUGE_EMPTY`, "gaugeEmpty"],
 		[`${ENV_PREFIX}CARD`, "card"],
 		[`${ENV_PREFIX}AGENTS`, "agents"],
+		[`${ENV_PREFIX}STATUS`, "status"],
+		[`${ENV_PREFIX}TODOS`, "todos"],
 		[`${ENV_PREFIX}PROMPT_FACE`, "promptFace"],
 		[`${ENV_PREFIX}GAUGE_ANIMATION`, "gaugeAnimation"],
 	];
@@ -276,6 +295,8 @@ function envGlyphShape(glyphs: ShellGlyphs): Record<string, unknown> {
 		gaugeEmpty: glyphs.gauge.empty,
 		card: glyphs.card,
 		agents: glyphs.agents,
+		status: glyphs.status,
+		todos: glyphs.todos,
 		promptFace: glyphs.promptFace,
 		promptFaceFrames: glyphs.promptFaceFrames,
 		gaugeAnimation: glyphs.gaugeAnimation,
