@@ -1162,12 +1162,12 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		renderHost?.requestRender();
 		const provider = ctx?.model?.provider;
 		if (ctx && (provider === ANTIGRAVITY_PROVIDER || provider === KIMI_PROVIDER)) {
-			void refreshUsage(ctx, true);
+			void refreshUsage(ctx, true).catch(() => undefined);
 		}
 	});
 	pi.on("after_provider_response", (event, ctx) => {
 		if (ctx && ctx.model?.provider === ANTIGRAVITY_PROVIDER) {
-			void refreshUsage(ctx, true);
+			void refreshUsage(ctx, true).catch(() => undefined);
 			return;
 		}
 		const parsed = parseUsageHeaders(event.headers, deps.now());
@@ -1250,7 +1250,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		if (!currentContext || !registry || (data as { sessionId?: string } | undefined)?.sessionId !== registry.sessionId) return;
 		const notice = (data as { notice?: string } | undefined)?.notice;
 		if (notice) { if (changes) changes.notice = notice; currentContext.ui.notify(notice, "warning"); }
-		void refreshChanges(currentContext);
+		void refreshChanges(currentContext).catch(() => undefined);
 	});
 	pi.registerTool({
 		name: "session_worktree_register",
