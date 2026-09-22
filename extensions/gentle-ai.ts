@@ -8850,10 +8850,10 @@ function createGentleAiExtensionForTesting(
 			return undefined;
 		}
 	};
-	const withLenses = (operation: string, lenses: readonly (string | undefined)[]): string => {
-		const named = lenses.filter((lens): lens is string => lens !== undefined);
-		return named.length === 0 ? operation : `${operation} · ${named.join(" · ")}`;
-	};
+	// Lenses travel as one row each: joined into the subtitle they made the card
+	// title so long that it buried the state and could not fit the elapsed time.
+	const lensRows = (lenses: readonly (string | undefined)[]): string[] =>
+		lenses.filter((lens): lens is string => lens !== undefined).map((lens) => `• ${lens}`);
 
 	pi.registerTool({
 		name: "gentle_review_capture_group",
@@ -8870,7 +8870,13 @@ function createGentleAiExtensionForTesting(
 		renderCall(args, theme, context) {
 			const bindings = (args as { collectBindings?: unknown }).collectBindings;
 			const lenses = Array.isArray(bindings) ? bindings.map(collectBindingLens) : [];
-			return renderGentleAiLifecycleCall(withLenses("review capture group", lenses), theme, context as GentleAiRenderContext | undefined);
+			return renderGentleAiLifecycleCall(
+				"review capture group",
+				theme,
+				context as GentleAiRenderContext | undefined,
+				undefined,
+				lensRows(lenses),
+			);
 		},
 		renderResult(result, options, theme, context) {
 			return renderGentleAiResult(result, options, theme, context as GentleAiRenderContext | undefined);
@@ -8910,9 +8916,11 @@ function createGentleAiExtensionForTesting(
 		executionMode: "sequential",
 		renderCall(args, theme, context) {
 			return renderGentleAiLifecycleCall(
-				withLenses("review capture", [collectBindingLens((args as { collectBinding?: unknown }).collectBinding)]),
+				"review capture",
 				theme,
 				context as GentleAiRenderContext | undefined,
+				undefined,
+				lensRows([collectBindingLens((args as { collectBinding?: unknown }).collectBinding)]),
 			);
 		},
 		renderResult(result, options, theme, context) {

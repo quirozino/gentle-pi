@@ -258,8 +258,8 @@ test("registered Gentle Review tools render reusable rose lifecycle call rows", 
 		assert.strictEqual(initial, running);
 		assert.strictEqual(running, completed);
 		assert.strictEqual(completed, failed);
-		assert.equal(cardTitle(initialText), `🌹︎ Gentle AI · running · ${operationPath}`); assert.equal(cardTone(initialText), "warning");
-		assert.equal(cardTitle(runningText), `🌹︎ Gentle AI · running · ${operationPath}`); assert.equal(cardTone(runningText), "warning");
+		assert.equal(cardTitle(initialText), `🌹︎ Gentle AI · running · ${operationPath}`); assert.equal(cardTone(initialText), "customMessageLabel");
+		assert.equal(cardTitle(runningText), `🌹︎ Gentle AI · running · ${operationPath}`); assert.equal(cardTone(runningText), "customMessageLabel");
 		assert.equal(cardTitle(completedText), `🌹︎ Gentle AI · completed · ${operationPath}`); assert.equal(cardTone(completedText), "success");
 		assert.equal(cardTitle(failedText), `🌹︎ Gentle AI · failed · ${operationPath}`); assert.equal(cardTone(failedText), "error");
 		assert.doesNotMatch(renderComponent(failed), /future-operation|secret|private/);
@@ -1745,15 +1745,23 @@ test("registered Gentle Review capture tools name the lens they run", () => {
 	const tools = registeredGentleTools();
 	const binding = (lens: string) => JSON.stringify({ name: "reviewer_result", captureOperation: "review.capture-result", arguments: [], artifactSubject: { lens } });
 	const single = tools.get("gentle_review_capture")!.renderCall({ lineageId: "l", collectBinding: binding("review-risk") }, lifecycleTheme, lifecycleContext({ executionStarted: true }));
-	assert.equal(cardTitle(renderComponent(single)), "🌹︎ Gentle AI · running · review capture · risk");
+	// The lens travels as its own row: joined into the subtitle it buried the state
+	// and pushed the elapsed time out of the frame.
+	assert.equal(cardTitle(renderComponent(single)), "🌹︎ Gentle AI · running · review capture");
+	assert.equal(cardBody(renderComponent(single)).trim().replace(/<\/?[a-zA-Z]+>/g, ""), "• risk");
 	const bare = tools.get("gentle_review_capture")!.renderCall({ lineageId: "l", collectBinding: "{not json" }, lifecycleTheme, lifecycleContext({ executionStarted: true }));
 	assert.equal(cardTitle(renderComponent(bare)), "🌹︎ Gentle AI · running · review capture");
+	assert.equal(cardBody(renderComponent(bare)).trim().replace(/<\/?[a-zA-Z]+>/g, ""), "");
 	const group = tools.get("gentle_review_capture_group")!.renderCall(
 		{ lineageId: "l", collectBindings: [binding("review-risk"), binding("review-resilience"), binding("review-readability"), binding("review-reliability")] },
 		lifecycleTheme,
 		lifecycleContext({ executionStarted: true }),
 	);
-	assert.equal(cardTitle(renderComponent(group)), "🌹︎ Gentle AI · running · review capture group · risk · resilience · readability · reliability");
+	assert.equal(cardTitle(renderComponent(group)), "🌹︎ Gentle AI · running · review capture group");
+	assert.deepEqual(
+		cardBody(renderComponent(group)).trim().split("\n").map((line) => line.replace(/<\/?[a-zA-Z]+>/g, "").trim()),
+		["• risk", "• resilience", "• readability", "• reliability"],
+	);
 });
 
 test("bash tool_call confirms a late guarded npm publish and denies on non-approval", async () => {

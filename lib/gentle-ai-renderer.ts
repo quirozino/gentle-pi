@@ -2,6 +2,7 @@ import { keyHint, type AgentToolResult } from "@earendil-works/pi-coding-agent";
 import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { CARD_TONE, cardBottom, cardInnerWidth, cardLine, cardTop, type Card, type CardTheme, type CardTone } from "./shell-card.ts";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
+import { formatElapsed } from "./agents-widget.ts";
 
 // Gentle AI tool cards: every call into the gentle-ai binary and every
 // gentle_review tool draws the same card as the other Gentle notices. The
@@ -40,9 +41,13 @@ const LIFECYCLE_STATUS = {
 
 type LifecycleStatus = (typeof LIFECYCLE_STATUS)[keyof typeof LIFECYCLE_STATUS];
 
+// The frame stays on the info tone while an operation runs instead of turning
+// amber: a long-running review would otherwise paint every border in the warning
+// colour. The status word in the subtitle still says what is happening, and a
+// failure keeps the error tone.
 const STATUS_TONE: Record<LifecycleStatus, CardTone> = {
-	[LIFECYCLE_STATUS.PREPARING]: CARD_TONE.WARNING,
-	[LIFECYCLE_STATUS.RUNNING]: CARD_TONE.WARNING,
+	[LIFECYCLE_STATUS.PREPARING]: CARD_TONE.INFO,
+	[LIFECYCLE_STATUS.RUNNING]: CARD_TONE.INFO,
 	[LIFECYCLE_STATUS.COMPLETED]: CARD_TONE.SUCCESS,
 	[LIFECYCLE_STATUS.FAILED]: CARD_TONE.ERROR,
 };
@@ -72,19 +77,34 @@ export class GentleAiCallCard {
 	private theme: GentleAiRenderTheme = passthroughTheme;
 	private detail: string | undefined;
 	private hint: string | undefined;
+	private rows: string[] = [];
 	private open = true;
+	private startedAt: number | undefined;
+	private endedAt: number | undefined;
 
-	update(status: LifecycleStatus, operationPath: string, theme: GentleAiRenderTheme, detail?: string, hint?: string): void {
+	update(status: LifecycleStatus, operationPath: string, theme: GentleAiRenderTheme, detail?: string, hint?: string, rows: readonly string[] = []): void {
+		const running = status === LIFECYCLE_STATUS.RUNNING || status === LIFECYCLE_STATUS.PREPARING;
+		if (running && this.startedAt === undefined) this.startedAt = Date.now();
+		if (!running) this.endedAt ??= Date.now();
 		this.card = { title: CARD_TITLE, subtitle: `${status} · ${operationPath}`, body: [], tone: STATUS_TONE[status], glyph: CARD_GLYPH };
 		this.theme = theme;
 		this.detail = detail;
+		this.rows = [...rows];
 		this.hint = hint;
-		this.open = status === LIFECYCLE_STATUS.RUNNING || status === LIFECYCLE_STATUS.PREPARING;
+		this.open = running;
+	}
+
+	/** Elapsed time, right-aligned in the top rule, from the first running update. */
+	private elapsedHint(): string | undefined {
+		if (this.startedAt === undefined) return this.hint;
+		const elapsed = formatElapsed((this.endedAt ?? Date.now()) - this.startedAt);
+		return this.hint ? `${elapsed} · ${this.hint}` : elapsed;
 	}
 
 	render(width: number): string[] {
-		const lines = [cardTop(this.card, this.theme, width, this.hint)];
+		const lines = [cardTop(this.card, this.theme, width, this.elapsedHint())];
 		if (this.detail) lines.push(cardLine(this.theme.fg(DETAIL_ROLE, this.detail), this.card.tone, this.theme, width));
+		for (const row of this.rows) lines.push(cardLine(this.theme.fg(DETAIL_ROLE, row), this.card.tone, this.theme, width));
 		if (this.open) lines.push(cardBottom(this.card.tone, this.theme, width));
 		return lines;
 	}
@@ -165,6 +185,7 @@ export function renderGentleAiLifecycleCall(
 	theme: GentleAiRenderTheme,
 	context?: GentleAiRenderContext,
 	detail?: string,
+	rows: readonly string[] = [],
 ): GentleAiCallCard {
 	// A finished execution is completed even when pi replays it without
 	// argsComplete (session reload); preparing only applies before it starts.
@@ -183,6 +204,6 @@ export function renderGentleAiLifecycleCall(
 		: new GentleAiCallCard();
 	if (state) state.lifecycleComponent = true;
 	const hint = finished ? keyHint("app.tools.expand", context?.expanded ? "to collapse" : "to expand") : undefined;
-	component.update(status, operationPath, theme, detail ? sanitizeTerminalText(detail) : undefined, hint);
+	component.update(status, operationPath, theme, detail ? sanitizeTerminalText(detail) : undefined, hint, rows.map(sanitizeTerminalText));
 	return component;
 }

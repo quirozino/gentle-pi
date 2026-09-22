@@ -566,8 +566,10 @@ test("quiet tool rendering transitions one Gentle AI header through lifecycle st
 	assert.strictEqual(initial, running);
 	assert.strictEqual(running, completed);
 	assert.strictEqual(completed, failed);
-	assert.equal(cardTitle(initialText), "🌹︎ Gentle AI · running · review status"); assert.equal(cardTone(initialText), "warning");
-	assert.equal(cardTitle(runningText), "🌹︎ Gentle AI · running · review status"); assert.equal(cardTone(runningText), "warning");
+	// The frame stays on the info tone while running so a long review is not painted
+	// entirely in the warning colour; the status word carries the state instead.
+	assert.equal(cardTitle(initialText), "🌹︎ Gentle AI · running · review status"); assert.equal(cardTone(initialText), "customMessageLabel");
+	assert.equal(cardTitle(runningText), "🌹︎ Gentle AI · running · review status"); assert.equal(cardTone(runningText), "customMessageLabel");
 	assert.equal(cardTitle(completedText), "🌹︎ Gentle AI · completed · review status"); assert.equal(cardTone(completedText), "success");
 	assert.equal(cardTitle(failedText), "🌹︎ Gentle AI · failed · review status"); assert.equal(cardTone(failedText), "error");
 	assert.doesNotMatch(failedText, /private-change/);
@@ -751,7 +753,7 @@ test("quiet tool rendering recognizes only the exact resolved dev binary", () =>
 	] as const;
 	for (const [command, operationPath] of cases) {
 		const call = renderToString(tool.renderCall({ command }, statusTheme, routineRenderContext({ args: { command } })));
-		assert.equal(cardTitle(call), `🌹︎ Gentle AI · running · ${operationPath}`, command); assert.equal(cardTone(call), "warning", command);
+		assert.equal(cardTitle(call), `🌹︎ Gentle AI · running · ${operationPath}`, command); assert.equal(cardTone(call), "customMessageLabel", command);
 		assert.doesNotMatch(call, /gentle-ai-main|private|secret|hidden/);
 	}
 	const command = `${devPath} review status --prompt hidden-prompt --lineage lineage-secret --body private-body`;
@@ -1350,7 +1352,7 @@ test("quiet tool rendering puts the expand key in the finished call card's top r
 	const tool = tools.get("bash");
 	const command = "gentle-ai review status";
 	const running = renderToString(tool.renderCall({ command }, passthroughTheme, routineRenderContext({ args: { command }, executionStarted: true, isPartial: true })));
-	assert.equal(cardHint(running), undefined, "a running call has nothing to expand yet");
+	assert.match(cardHint(running) ?? "", /^\d+s$/, "a running call shows its elapsed time instead of an expand key");
 	const completed = renderToString(tool.renderCall({ command }, passthroughTheme, routineRenderContext({ args: { command }, executionStarted: true, isPartial: false, expanded: false })));
 	assert.match(cardHint(completed) ?? "", /to expand$/);
 	assert.equal(cardTitle(completed), "🌹︎ Gentle AI · completed · review status");
