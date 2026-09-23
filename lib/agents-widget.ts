@@ -43,6 +43,12 @@ export interface AgentsWidgetOptions {
 	activeOnly?: boolean;
 	/** Animation frame for the card glyph; absent keeps it static. */
 	tick?: number;
+	/**
+	 * A RUNNING task with no streamed delta for at least this long gets an
+	 * explicit "idle Xm" marker instead of looking identical to a busy one.
+	 * Absent (the default) renders exactly as before: no idle marker on any row.
+	 */
+	idleAfterMs?: number;
 }
 
 interface StatusLook {
@@ -69,6 +75,8 @@ interface MetaFields {
 	exec: string;
 	tokens: string;
 	cost: string;
+	// Empty unless idleAfterMs is set and this row qualifies (see idleField).
+	idle: string;
 	elapsed: string;
 }
 
@@ -76,6 +84,7 @@ interface MetaColumnWidths {
 	exec: number;
 	tokens: number;
 	cost: number;
+	idle: number;
 	elapsed: number;
 }
 
@@ -109,6 +118,9 @@ const COLUMN_GAP = "  ";
 const NAME_ROLE = "text";
 const TASK_ROLE = "muted";
 const META_ROLE = "dim";
+// The idle marker is the one meta field that means "something may be wrong",
+// so it borrows the warning role instead of blending into the dim usage row.
+const IDLE_ROLE = "warning";
 const ELLIPSIS = "…";
 
 export function formatElapsed(ms: number): string {
@@ -203,42 +215,60 @@ function narrowMetaText(task: TaskRecord): string {
 	return task.status === TASK_STATUS.QUEUED ? "queued" : executionLabel(task);
 }
 
+// A RUNNING task with no streamed delta for idleAfterMs gets an explicit
+// marker built from the same elapsed formatter as the time column, just
+// measuring silence (now - lastActivityAt) instead of the task's own age.
+// Every other status -- QUEUED already reads "queued" in the elapsed column,
+// WAITING is blocked on the user rather than idle, and a finished task has no
+// "now" to be idle relative to -- and idleAfterMs itself being unset both
+// stay blank, so a caller that never opts in sees no behavior change at all.
+function idleField(task: TaskRecord, now: number, idleAfterMs: number | undefined): string {
+	if (idleAfterMs === undefined || task.status !== TASK_STATUS.RUNNING) return "";
+	const silence = now - task.lastActivityAt;
+	return silence >= idleAfterMs ? `idle ${formatElapsed(silence)}` : "";
+}
+
 // Queued rows carry no model, token, or cost data yet, so every field but
 // elapsed stays blank — and elapsed itself becomes the literal word "queued"
 // rather than the empty string startedAt === null would otherwise produce.
-function metaFields(task: TaskRecord, now: number): MetaFields {
-	if (task.status === TASK_STATUS.QUEUED) return { exec: "", tokens: "", cost: "", elapsed: "queued" };
+function metaFields(task: TaskRecord, now: number, idleAfterMs: number | undefined): MetaFields {
+	if (task.status === TASK_STATUS.QUEUED) return { exec: "", tokens: "", cost: "", idle: "", elapsed: "queued" };
 	return {
 		exec: executionLabel(task),
 		tokens: task.tokens > 0 ? formatTokens(task.tokens) : "",
 		cost: task.cost > 0 ? `$${task.cost.toFixed(2)}` : "",
+		idle: idleField(task, now, idleAfterMs),
 		elapsed: elapsed(task, now),
 	};
 }
 
-function metaColumnWidths(tasks: readonly TaskRecord[], now: number): MetaColumnWidths {
-	const fields = tasks.map((task) => metaFields(task, now));
+function metaColumnWidths(tasks: readonly TaskRecord[], now: number, idleAfterMs: number | undefined): MetaColumnWidths {
+	const fields = tasks.map((task) => metaFields(task, now, idleAfterMs));
 	const widest = (pick: (field: MetaFields) => string) => Math.max(0, ...fields.map((field) => visibleWidth(pick(field))));
-	return { exec: widest((field) => field.exec), tokens: widest((field) => field.tokens), cost: widest((field) => field.cost), elapsed: widest((field) => field.elapsed) };
+	return { exec: widest((field) => field.exec), tokens: widest((field) => field.tokens), cost: widest((field) => field.cost), idle: widest((field) => field.idle), elapsed: widest((field) => field.elapsed) };
 }
 
 // A column whose widest value is empty across every shown task (e.g. no task
-// carries a cost yet) is dropped entirely, together with its separator —
-// exactly like the old joined string dropped an empty field, but decided once
-// for the whole card rather than per row, so the remaining columns still align.
+// carries a cost yet, or none is idle) is dropped entirely, together with its
+// separator — exactly like the old joined string dropped an empty field, but
+// decided once for the whole card rather than per row, so the remaining
+// columns still align.
 function metaTotalWidth(widths: MetaColumnWidths): number {
-	const active = [widths.exec, widths.tokens, widths.cost, widths.elapsed].filter((width) => width > 0);
+	const active = [widths.exec, widths.tokens, widths.cost, widths.idle, widths.elapsed].filter((width) => width > 0);
 	return active.reduce((sum, width) => sum + width, 0) + Math.max(0, active.length - 1) * visibleWidth(" · ");
 }
 
-function metaRowText(task: TaskRecord, now: number, widths: MetaColumnWidths): string {
-	const fields = metaFields(task, now);
+// Every field but idle shares the dim meta role; idle borrows warning so a
+// stalled worker reads as visually distinct under any theme, not just in text.
+function metaRowText(task: TaskRecord, now: number, widths: MetaColumnWidths, theme: CardTheme, idleAfterMs: number | undefined): string {
+	const fields = metaFields(task, now, idleAfterMs);
 	const parts: string[] = [];
-	if (widths.exec > 0) parts.push(fields.exec.padStart(widths.exec));
-	if (widths.tokens > 0) parts.push(fields.tokens.padStart(widths.tokens));
-	if (widths.cost > 0) parts.push(fields.cost.padStart(widths.cost));
-	if (widths.elapsed > 0) parts.push(fields.elapsed.padStart(widths.elapsed));
-	return parts.join(" · ");
+	if (widths.exec > 0) parts.push(theme.fg(META_ROLE, fields.exec.padStart(widths.exec)));
+	if (widths.tokens > 0) parts.push(theme.fg(META_ROLE, fields.tokens.padStart(widths.tokens)));
+	if (widths.cost > 0) parts.push(theme.fg(META_ROLE, fields.cost.padStart(widths.cost)));
+	if (widths.idle > 0) parts.push(theme.fg(fields.idle ? IDLE_ROLE : META_ROLE, fields.idle.padStart(widths.idle)));
+	if (widths.elapsed > 0) parts.push(theme.fg(META_ROLE, fields.elapsed.padStart(widths.elapsed)));
+	return parts.join(theme.fg(META_ROLE, " · "));
 }
 
 function taskText(task: TaskRecord): string {
@@ -249,19 +279,22 @@ function taskText(task: TaskRecord): string {
 
 // Narrow cards degrade per column, decided once for the whole card so the
 // surviving columns keep lining up: the task text goes first, then the
-// model·effort label, then tokens, then cost. Elapsed is the one value the
-// reader cannot rebuild from anything else on screen, so it is the last to go
-// (gentle-shell#1143). Only when even elapsed alone does not fit does the row
-// fall back to the clipped single-string label.
-function columns(tasks: readonly TaskRecord[], inner: number, now: number): Columns {
+// model·effort label, then tokens, then cost, then the idle marker. Elapsed
+// is the one value the reader cannot rebuild from anything else on screen, so
+// it is the last to go (gentle-shell#1143); idle goes just before it because
+// it is the next most useful signal once the card is already this tight, and
+// itself never appears without idleAfterMs having been set by the caller.
+// Only when even elapsed alone does not fit does the row fall back to the
+// clipped single-string label.
+function columns(tasks: readonly TaskRecord[], inner: number, now: number, idleAfterMs: number | undefined): Columns {
 	const name = Math.max(0, Math.min(NAME_MAX, inner - 3, Math.max(...tasks.map((task) => visibleWidth(task.agent)))));
 	const fixed = 1 + GLYPH_GAP.length + name + COLUMN_GAP.length;
-	const metaWidths = metaColumnWidths(tasks, now);
+	const metaWidths = metaColumnWidths(tasks, now, idleAfterMs);
 	const full = metaTotalWidth(metaWidths);
 	const task = inner - fixed - full - COLUMN_GAP.length;
 	if (task >= TASK_MIN) return { inner, name, meta: full, task, columnar: true, metaWidths };
 	let widths = metaWidths;
-	for (const drop of ["exec", "tokens", "cost"] as const) {
+	for (const drop of ["exec", "tokens", "cost", "idle"] as const) {
 		if (metaTotalWidth(widths) <= inner - fixed) break;
 		widths = { ...widths, [drop]: 0 };
 	}
@@ -271,12 +304,17 @@ function columns(tasks: readonly TaskRecord[], inner: number, now: number): Colu
 	return { inner, name, meta: Math.max(0, Math.min(inner - fixed, narrow)), task: 0, columnar: false };
 }
 
-function row(task: TaskRecord, theme: CardTheme, cols: Columns, now: number, allowMetadataRow: boolean): string[] {
+function row(task: TaskRecord, theme: CardTheme, cols: Columns, now: number, allowMetadataRow: boolean, idleAfterMs: number | undefined): string[] {
 	const look = LOOK[task.status];
 	const name = clip(task.agent, cols.name);
 	const head = `${theme.fg(look.role, look.glyph)}${GLYPH_GAP}${theme.fg(NAME_ROLE, name)}${" ".repeat(cols.name - visibleWidth(name))}`;
-	const metadata = cols.columnar && cols.metaWidths ? metaRowText(task, now, cols.metaWidths) : task.status === TASK_STATUS.QUEUED ? clip("queued", cols.meta) : executionLabel(task, cols.meta);
-	const tail = theme.fg(META_ROLE, " ".repeat(Math.max(0, cols.meta - visibleWidth(metadata))) + metadata);
+	// The columnar path colors its own fields (the idle marker needs its own
+	// warning role, unlike the rest), so only the narrow single-string
+	// fallback still needs a blanket dim wrap here.
+	const metadata = cols.columnar && cols.metaWidths
+		? metaRowText(task, now, cols.metaWidths, theme, idleAfterMs)
+		: theme.fg(META_ROLE, task.status === TASK_STATUS.QUEUED ? clip("queued", cols.meta) : executionLabel(task, cols.meta));
+	const tail = " ".repeat(Math.max(0, cols.meta - visibleWidth(metadata))) + metadata;
 	if (cols.inner < 3) return [theme.fg(look.role, clip(look.glyph, cols.inner))];
 	// The scrollable sidebar can preserve identity and execution metadata on
 	// separate rows. The height-capped above-editor widget keeps its row budget.
@@ -328,10 +366,10 @@ export function renderAgentsCard(tasks: readonly TaskRecord[], theme: CardTheme,
 			? tasks.filter((task) => !isFinished(task.status)).sort(startOrder)
 			: widgetTasks(tasks, now);
 	if (shown.length === 0) return [];
-	const cols = columns(shown, cardInnerWidth(width), now);
+	const cols = columns(shown, cardInnerWidth(width), now, options.idleAfterMs);
 	const { listed, hidden } = options.collapsed ? { listed: [shown[0]], hidden: 0 } : visibleRows(shown, options.maxRows);
 	const hint = options.collapsed && options.collapseKey ? `${options.collapseKey} expand` : shown.length > 1 ? batchElapsed(shown, now) : undefined;
-	const body = listed.flatMap((task) => row(task, theme, cols, now, options.maxRows === undefined));
+	const body = listed.flatMap((task) => row(task, theme, cols, now, options.maxRows === undefined, options.idleAfterMs));
 	// A failure has to be readable even when the layout dropped the task column:
 	// the reason is the whole point of the row, so it gets its own line there.
 	if (cols.task === 0) {

@@ -284,3 +284,45 @@ test("the card glyph winks through the configured frames and stays static withou
 	}
 	assert.match(renderAgentsCard([], plainTheme, 60, 1, { collapsed: false, tick: 1 }).join(""), /^$/);
 });
+
+test("a RUNNING task idle past idleAfterMs shows an explicit idle marker in the warning role; within it, queued, or finished it never does", () => {
+	const now = 500_000;
+	const idleTheme = { fg: (role: string, text: string) => `<${role}>${text}</${role}>` };
+	const stalled = task({ id: "stalled", status: TASK_STATUS.RUNNING, lastActivityAt: now - 200_000 });
+	const busy = task({ id: "busy", status: TASK_STATUS.RUNNING, lastActivityAt: now - 5_000 });
+	const finished = task({ id: "finished", status: TASK_STATUS.COMPLETED, endedAt: now - 1_000, lastActivityAt: now - 500_000 });
+
+	// idleAfterMs unset (the default): no behavior change at all, even for a
+	// task that has been silent far longer than any sensible threshold.
+	assert.doesNotMatch(renderAgentsCard([stalled], plainTheme, 90, now, { collapsed: false }).join("\n"), /idle/);
+
+	const plain = renderAgentsCard([stalled, busy, finished], plainTheme, 100, now, { collapsed: false, idleAfterMs: 120_000 }).map(stripAnsi);
+	assert.match(plain[1], /idle 3m20s/, "past the threshold, the running row gets the idle marker");
+	assert.doesNotMatch(plain[2], /idle/, "well within the threshold, the running row has no marker");
+	assert.doesNotMatch(plain[3], /idle/, "a finished task never shows one, however stale its lastActivityAt is");
+
+	const tagged = renderAgentsCard([stalled], idleTheme, 90, now, { collapsed: false, idleAfterMs: 120_000 }).join("\n");
+	assert.match(tagged, /<warning>idle 3m20s<\/warning>/, "the idle marker itself carries the warning role, not the dim meta role");
+});
+
+test("queued tasks keep their literal 'queued' elapsed text and never show an idle marker even with idleAfterMs set", () => {
+	const now = 500_000;
+	const queued = task({ id: "q", status: TASK_STATUS.QUEUED, createdAt: now - 500_000, startedAt: null, lastActivityAt: now - 500_000, tokens: 0, cost: 0 });
+	const lines = renderAgentsCard([queued], plainTheme, 90, now, { collapsed: false, idleAfterMs: 1 }).map(stripAnsi);
+	assert.doesNotMatch(lines[1], /idle/);
+	assert.match(lines[1], /queued/);
+});
+
+// gentle-shell#1143's drop order (task, model·effort, tokens, cost, elapsed)
+// gains one more rung: idle sits just before elapsed, since it is the next
+// most useful signal once the card is already this tight, and elapsed itself
+// never gives up its place as the last column standing.
+test("the idle column degrades like the others as the card narrows, and elapsed alone still survives", () => {
+	const now = 5_000;
+	const stalled = task({ id: "a", model: "anthropic/claude-sonnet-4-5-20250929", tokens: 12_345, cost: 0.42, startedAt: now - 184_000, lastActivityAt: now - 184_000 });
+	const wide = renderAgentsCard([stalled], plainTheme, 90, now, { collapsed: false, idleAfterMs: 120_000 }).map(stripAnsi);
+	assert.match(wide[1], /idle 3m04s · 3m04s │$/, "wide enough for both idle and elapsed, idle sits just before it");
+	const dropped = renderAgentsCard([stalled], plainTheme, 34, now, { collapsed: false, idleAfterMs: 120_000 }).map(stripAnsi);
+	assert.doesNotMatch(dropped[1], /idle/, "idle is the first of the two to go");
+	assert.match(dropped[1], /3m04s │$/, "elapsed alone still fits and remains the last column standing");
+});
