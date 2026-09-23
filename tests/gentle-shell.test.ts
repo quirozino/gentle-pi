@@ -254,6 +254,25 @@ test("gentleShell installs the footer on session_start when a UI exists", () => 
 		plainTheme,
 		{ getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} },
 	);
+	// GENTLE_PI_SHELL_BAR defaults off: the fullscreen header (or, outside
+	// fullscreen, the sidebar Status card) already carries this same data, so
+	// the compact bottom bar stays hidden unless explicitly asked for.
+	assert.deepEqual(component.render(120), []);
+});
+
+test("GENTLE_PI_SHELL_BAR=1 restores the compact bottom bar", () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_SHELL_BAR: "1" });
+	const { ctx, ui } = fakeContext();
+	for (const handler of handlers.get("session_start") ?? []) handler({}, ctx);
+	assert.equal(typeof ui.footerFactory, "function");
+
+	const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, footerData: unknown) => { render(width: number): string[] };
+	const component = factory(
+		{ requestRender() {} },
+		plainTheme,
+		{ getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} },
+	);
 	const lines = component.render(120);
 	assert.equal(lines.length, 1);
 	assert.match(lines[0], /main ⟡ gpt-5\.5 · medium/);
@@ -1335,6 +1354,11 @@ test("Gentle replaces its retained factory on reload so new lifecycle handlers o
 
 const footerData = { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} };
 
+// These tests assert what the compact bottom bar DRAWS, so they opt into it.
+// GENTLE_PI_SHELL_BAR defaults off -- the header already carries the same data
+// -- and that default has its own two tests above; nothing here is about it.
+const BAR_ON = { GENTLE_PI_SHELL_BAR: "1" } as const;
+
 function renderFooter(ui: FakeUi): string {
 	const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, footerData: unknown) => { render(width: number): string[] };
 	return factory(fakeTui, plainTheme, footerData).render(160)[0];
@@ -1350,7 +1374,7 @@ function sessionChange(ctx: ExtensionContext, id: string, root: string, path: st
 
 test("captured changes update the widget and bar without repository scans", async () => {
  const { pi, handlers, git } = fakePi([{numstat:"999\t0\tforeign.ts\n",porcelain:"?? foreign.ts\0"}]);
- gentleShell(pi,{});
+ gentleShell(pi, { ...BAR_ON,});
  const {ctx,ui}=fakeContext();
  await fire(handlers,"session_start",ctx);
  assert.equal(git.length,0);
@@ -1423,7 +1447,7 @@ test("overlay groups captured roots and refreshes same-count diffs without HEAD 
 });
 
 test("new sessions ignore inherited captures, while reload restores the same session", async () => {
- const h=fakePi(); gentleShell(h.pi,{});
+ const h=fakePi(); gentleShell(h.pi, { ...BAR_ON });
  const first=fakeContext();
  sessionChange(first.ctx,"a","/repo","own.ts");
  await fire(h.handlers,"session_start",first.ctx);
@@ -1573,7 +1597,7 @@ test("gentleShell binds the changes shortcut to the same handler as the command"
 
 test("external edits do not pollute Changes or trigger background Git scans", async () => {
  const {pi,handlers,git}=fakePi([{numstat:"4\t2\texternal.ts\n",porcelain:" M external.ts\0"}]);
- gentleShell(pi,{GENTLE_PI_SHELL_CHANGES_WATCH_MS:"5"});
+ gentleShell(pi, { ...BAR_ON,GENTLE_PI_SHELL_CHANGES_WATCH_MS:"5"});
  const {ctx,ui}=fakeContext();
  await fire(handlers,"session_start",ctx);
  await new Promise(resolve=>setTimeout(resolve,30));
@@ -1661,7 +1685,7 @@ test("fetchNanUsage degrades to no snapshot without ever throwing", async () => 
 test("gentleShell fetches NaN quota on session start and shows it in the bar", async () => {
 	const { pi, handlers } = fakePi();
 	const { fetchFn, calls } = fakeFetch(NAN_QUOTA_PAYLOAD);
-	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fetchFn, now: () => 1_788_600_000_000, readFile: async () => { throw new Error("not found"); } });
+	gentleShell(pi, { ...BAR_ON, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fetchFn, now: () => 1_788_600_000_000, readFile: async () => { throw new Error("not found"); } });
 	const { ctx, ui } = fakeContext({ token: "sk-nan-secret" });
 	(ctx as unknown as { model: { provider: string } }).model.provider = "nan";
 	await fire(handlers, "session_start", ctx);
@@ -1691,7 +1715,7 @@ test("a failed NaN refresh keeps the last valid snapshot", async () => {
 		return { ok: true, json: async () => NAN_QUOTA_PAYLOAD } as Response;
 	}) as typeof fetch;
 	let now = 1_788_600_000_000;
-	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fetchFn, now: () => now });
+	gentleShell(pi, { ...BAR_ON, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fetchFn, now: () => now });
 	const { ctx, ui } = fakeContext({ token: "sk-nan-secret" });
 	(ctx as unknown as { model: { provider: string } }).model.provider = "nan";
 	await fire(handlers, "session_start", ctx);
@@ -1710,7 +1734,7 @@ test("a failed NaN refresh keeps the last valid snapshot", async () => {
 test("gentleShell fetches Codex usage on session start and shows it in the bar", async () => {
 	const { pi, handlers } = fakePi();
 	const { fetchFn, calls } = fakeFetch();
-	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fetchFn, now: () => 1_788_600_000_000, readFile: async () => { throw new Error("not found"); } });
+	gentleShell(pi, { ...BAR_ON, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fetchFn, now: () => 1_788_600_000_000, readFile: async () => { throw new Error("not found"); } });
 	const { ctx, ui } = fakeContext({ token: JWT });
 	await fire(handlers, "session_start", ctx);
 	await new Promise((resolve) => setTimeout(resolve, 0));
@@ -1773,7 +1797,7 @@ function acmeSource(onFetch: (apiKey: string | undefined) => void, plan = "Acme 
 test("gentleShell fetches usage through a source registered before session start", async () => {
 	const { pi, handlers } = fakePi();
 	const seen: Array<string | undefined> = [];
-	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, {
+	gentleShell(pi, { ...BAR_ON, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, {
 		now: () => 1_788_600_000_000,
 		fetch: (async () => { throw new TypeError("no network in tests"); }) as typeof fetch,
 		readFile: async () => { throw new Error("not found"); },
@@ -1790,7 +1814,7 @@ test("gentleShell fetches usage through a source registered before session start
 test("gentleShell forces one refresh when a usage source registers after session start for the active provider", async () => {
 	const { pi, handlers } = fakePi();
 	let calls = 0;
-	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { now: () => 1_788_600_000_000 });
+	gentleShell(pi, { ...BAR_ON, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { now: () => 1_788_600_000_000 });
 	const { ctx, ui } = fakeContext({ token: "acme-token" });
 	(ctx as unknown as { model: { provider: string } }).model.provider = "acme-cloud";
 	await fire(handlers, "session_start", ctx);
@@ -1806,7 +1830,7 @@ test("gentleShell forces one refresh when a usage source registers after session
 test("a usage source registered for a different provider does not force a refresh", async () => {
 	const { pi, handlers } = fakePi();
 	let calls = 0;
-	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { now: () => 1_788_600_000_000 });
+	gentleShell(pi, { ...BAR_ON, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { now: () => 1_788_600_000_000 });
 	const { ctx, ui } = fakeContext({ token: "acme-token" });
 	(ctx as unknown as { model: { provider: string } }).model.provider = "openai-codex";
 	await fire(handlers, "session_start", ctx);
@@ -1834,7 +1858,7 @@ test("gentleShell shows the unsupported note for a provider with no built-in or 
 
 test("gentleShell ignores a malformed usage-source registration payload", async () => {
 	const { pi, handlers } = fakePi();
-	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { now: () => 1_788_600_000_000 });
+	gentleShell(pi, { ...BAR_ON, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { now: () => 1_788_600_000_000 });
 	pi.events.emit(USAGE_SOURCE_EVENT, { schema: "wrong-schema", provider: "acme-cloud", fetch: async () => undefined });
 	pi.events.emit(USAGE_SOURCE_EVENT, { schema: USAGE_SOURCE_SCHEMA, provider: "acme-cloud", fetch: "not-a-function" });
 	pi.events.emit(USAGE_SOURCE_EVENT, "not-an-object");
@@ -1863,7 +1887,7 @@ test("a registered source's rejecting fetch never crashes the shell or poisons t
 			throw new Error("acme is down");
 		},
 	});
-	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, {
+	gentleShell(pi, { ...BAR_ON, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, {
 		now: () => 1_788_600_000_000,
 		fetch: (async () => { throw new TypeError("no network in tests"); }) as typeof fetch,
 		readFile: async () => { throw new Error("not found"); },
@@ -1913,7 +1937,7 @@ test("a registered source's rejecting fetch never crashes the shell or poisons t
 test("a registered source resolving usage for another provider is rejected without overwriting that provider's snapshot", async () => {
 	const { pi, handlers } = fakePi();
 	const { fetchFn } = fakeFetch(NAN_QUOTA_PAYLOAD);
-	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fetchFn, now: () => 1_788_600_000_000 });
+	gentleShell(pi, { ...BAR_ON, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fetchFn, now: () => 1_788_600_000_000 });
 	const { ctx, ui } = fakeContext({ token: "sk-nan-secret" });
 	(ctx as unknown as { model: { provider: string } }).model.provider = "nan";
 	await fire(handlers, "session_start", ctx);
@@ -1935,7 +1959,7 @@ test("a registered source resolving usage for another provider is rejected witho
 
 test("gentleShell leaves the pending note when a registered source resolves a malformed usage", async () => {
 	const { pi, handlers, commands } = fakePi();
-	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { now: () => 1_788_600_000_000 });
+	gentleShell(pi, { ...BAR_ON, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { now: () => 1_788_600_000_000 });
 	pi.events.emit(USAGE_SOURCE_EVENT, {
 		schema: USAGE_SOURCE_SCHEMA,
 		provider: "acme-cloud",
@@ -1957,7 +1981,7 @@ test("gentleShell leaves the pending note when a registered source resolves a ma
 
 test("a slow fetch from a replaced source never records after its replacement resolves", async () => {
 	const { pi, handlers } = fakePi();
-	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { now: () => 1_788_600_000_000 });
+	gentleShell(pi, { ...BAR_ON, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { now: () => 1_788_600_000_000 });
 	const { ctx, ui } = fakeContext({ token: "acme-token" });
 	(ctx as unknown as { model: { provider: string } }).model.provider = "acme-cloud";
 
@@ -1993,7 +2017,7 @@ test("a slow fetch from a replaced source never records after its replacement re
 
 test("gentleShell records SSE rate-limit headers from provider responses", async () => {
 	const { pi, handlers } = fakePi();
-	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fakeFetch({}, false).fetchFn, now: () => 0 });
+	gentleShell(pi, { ...BAR_ON, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fakeFetch({}, false).fetchFn, now: () => 0 });
 	const { ctx, ui } = fakeContext();
 	await fire(handlers, "session_start", ctx);
 	for (const handler of handlers.get("after_provider_response") ?? []) {
@@ -2250,7 +2274,7 @@ test("kimi-coding usage is fetched with the subscription bearer token and lands 
 		},
 		homedir: () => "/home/alan",
 	};
-	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, deps);
+	gentleShell(pi, { ...BAR_ON, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, deps);
 	const { ctx, ui } = fakeContext({ token: "kimi-key" });
 	(ctx as unknown as { model: { provider: string; id: string } }).model.provider = "kimi-coding";
 	(ctx as unknown as { model: { provider: string; id: string } }).model.id = "kimi-for-coding";
@@ -2278,7 +2302,7 @@ test("kimi-coding usage skips the fetch when no bearer token is available", asyn
 		readFile: async () => { throw new Error("not found"); },
 		homedir: () => "/home/alan",
 	};
-	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, deps);
+	gentleShell(pi, { ...BAR_ON, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, deps);
 	const { ctx, ui } = fakeContext({ token: undefined });
 	(ctx as unknown as { model: { provider: string; id: string } }).model.provider = "kimi-coding";
 	(ctx as unknown as { model: { provider: string; id: string } }).model.id = "kimi-for-coding";

@@ -124,6 +124,15 @@ export function shellEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
 	return !(value === "0" || value === "false" || value === "off");
 }
 
+// The compact bottom bar duplicates what the fullscreen header row (or, in
+// narrow/regular mode, the sidebar Status card) already carries: model,
+// context, cost, usage. Unlike shellEnabled(), this defaults OFF — the bar
+// stays hidden unless explicitly asked for.
+export function shellBarEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+	const value = env.GENTLE_PI_SHELL_BAR?.trim().toLowerCase();
+	return value === "1" || value === "true" || value === "on";
+}
+
 export function formatTokens(count: number): string {
 	if (count < 1000) return count.toString();
 	if (count < 10_000) return `${(count / 1000).toFixed(1)}k`;
