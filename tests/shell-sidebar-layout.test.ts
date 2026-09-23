@@ -639,6 +639,24 @@ test("an active header wraps the hstack in a vstack and removes the banner from 
 	assert.notEqual(rail[1]?.trim(), "", "the first card starts on the second row");
 });
 
+// The "header" key shares state.parts with the rail sections
+// (footer/agents/todo), so without an explicit exclusion it also gets
+// collected as a generic bottom section and painted a second time, at the
+// narrow rail width, right under Status. That duplicate is a defect, not a
+// preference, so no flag brings it back: the full-width header row asserted
+// here is the only draw there ever is.
+test("the header never paints a second time inside the rail body", (t) => {
+	const f = fixture();
+	sidebarHeader(f.tui, { render: (width: number) => [`HEADER ${width}`], invalidate() {} });
+	t.after(installSidebar(f.tui, theme));
+
+	const header = (f.root[NODE]() as unknown as HstackNode).entries[0].component as { render(width: number): string[] };
+	assert.deepEqual(header.render(0), ["HEADER 138"], "the full-width header row still renders");
+
+	const rail = railWithHeader(f).render(50);
+	assert.doesNotMatch(rail.join("\n"), /HEADER \d+/, "the header text must not leak into the rail body");
+});
+
 test("the header leaf carries the rule row: a two-line header renders both lines at full width", (t) => {
 	const f = fixture();
 	sidebarHeader(f.tui, {

@@ -186,8 +186,14 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, options: SidebarO
 			const contentWidth = scroll.getContentWidth(RAIL_WIDTH);
 			// v3.1 unified the changes rail into Status; keep upstream's canonical
 			// set and never render the standalone changes part in the rail.
+			// "header" shares state.parts with the rail sections so its
+			// digest/invalidate plumbing stays consistent, but it is already painted
+			// above the hstack as its own full-width sibling row. Left in the generic
+			// section collection it renders a second time, at the narrow rail width,
+			// as a stray section right under Status — a duplicate nothing wants, so
+			// the exclusion is unconditional rather than tied to any flag.
 			const KNOWN = ["footer", "agents", "todo"];
-			const RAIL_EXCLUDED = new Set(["changes"]);
+			const RAIL_EXCLUDED = new Set(["changes", "header"]);
 			const knownKeys = new Set(KNOWN);
 			const collectCached = (keys: Array<[string, SidebarRail]>, keepBlank = false) => keys.map(([key, component]) => {
 				const digest = railDigest(component);
