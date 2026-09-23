@@ -55,6 +55,11 @@ const CLOCK_TICK_MS = 1000;
 // Half the prompt face's 80ms frame rate, so both animations read as the same
 // family without the card twitching.
 const AGENTS_WINK_MS = 160;
+// Two minutes with no streamed delta on a RUNNING task is long enough that a
+// stalled worker and a merely slow one need to look different: below this a
+// quiet task still reads as "thinking", above it the row calls out the idle
+// gap explicitly (see agents-widget.ts's idle marker).
+const AGENTS_IDLE_AFTER_MS = 120_000;
 const TOOL_PREFIX = "subagent_";
 const SHIPPED_SDD_AGENT_NAME_SET = new Set(SHIPPED_SDD_AGENT_NAMES);
 
@@ -503,6 +508,19 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	let renderQueued = false;
 	let cancelClock: (() => void) | undefined;
 	const ownedTaskIds = new Set<string>();
+	// Scopes a timeline block to the one task its own tool call launched or
+	// addressed, so a transcript with five subagent_* calls draws five small
+	// blocks instead of redrawing the whole Agents card five times. A Map
+	// preserves insertion order, so the eviction below always drops the call
+	// this session is least likely to still be rendering.
+	const callTaskIds = new Map<string, string>();
+	const CALL_TASK_IDS_MAX = 256;
+	const rememberCallTask = (callId: string, taskId: string): void => {
+		callTaskIds.set(callId, taskId);
+		if (callTaskIds.size <= CALL_TASK_IDS_MAX) return;
+		const oldest = callTaskIds.keys().next().value;
+		if (oldest !== undefined) callTaskIds.delete(oldest);
+	};
 	// One diagnostic note per (task, guard): a dropped mutation says why once,
 	// not once per file, so a chatty child cannot flood its own thread.
 	const droppedAttributionGuards = new Set<string>();
@@ -522,6 +540,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		metricsOwner = {};
 		for (const taskId of metricTasks.keys()) runner.discardResponseObservations(taskId);
 		metricTasks.clear();
+		callTaskIds.clear();
 	};
 	pi.on("session_start", clearTaskMetrics);
 	pi.on("session_shutdown", () => {
@@ -1065,6 +1084,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 						viewKey,
 						activeOnly: true,
 						tick: Math.floor(deps.now() / AGENTS_WINK_MS),
+						idleAfterMs: AGENTS_IDLE_AFTER_MS,
 					});
 					return lines.length === 0 ? [] : [...lines, ""];
 				},
@@ -1158,7 +1178,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		};
 	};
 
-	const launch = async (ctx: ExtensionContext, request: TaskRequest, signal?: AbortSignal): Promise<ToolText> => {
+	const launch = async (ctx: ExtensionContext, request: TaskRequest, signal?: AbortSignal, callId?: string): Promise<ToolText> => {
 		if (ctx.mode === "print" && request.mode === AGENT_MODE.BACKGROUND) {
 			throw new Error("Background subagents are unavailable in print mode: pi -p exits before a parent session can receive results. Use task mode, RPC mode, or interactive Pi.");
 		}
@@ -1194,6 +1214,10 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		});
 		if (observe) metricTasks.set(task.id, metrics);
 		ownedTaskIds.add(task.id);
+		// Lets the launching tool call's own timeline block find this task by
+		// toolCallId once it exists, instead of redrawing the whole Agents card.
+		if (callId !== undefined) rememberCallTask(callId, task.id);
+		requestRender();
 		store.subscribe(task.id, () => { publishActivity(); requestRender(); });
 		if (request.mode === AGENT_MODE.BACKGROUND) return text(`Started ${task.agent} in the background as task ${task.id}. Retain that id; completion is pushed automatically. Never sleep or periodically poll subagent_status/subagent_result for completion or cache maintenance. Inspect status only at a real orchestration decision boundary; never relaunch equivalent queued/running work.`, taskDetails(task));
 		// A tool call aborted by the host (a human interrupting the turn, a timeout)
@@ -1224,42 +1248,70 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		}
 	};
 
-	// Reuses the sidebar's own card renderer, so the timeline block and the
-	// Agents rail can never drift apart.
-	const agentToolCard = (theme: ExtensionContext["ui"]["theme"], width: number): string[] => {
-		const tasks = store.list(activeSessionId());
-		const lines = renderAgentsCard(tasks, theme, width, deps.now(), { collapsed: false, maxRows: widgetRows(undefined), keepFinished: true });
-		return lines;
+	// One tool call, one task's row -- not the whole session's Agents card.
+	// Reuses the sidebar's own card renderer (scoped to a single-task list), so
+	// a timeline block and the rail can never draw that task's row differently.
+	// With no resolvable task (args still streaming, or a listing tool with no
+	// task of its own) it renders nothing: a bare "agent run · name" line would
+	// be worse than no card at all, and renderResult still has the answer text.
+	const agentToolCard = (theme: ExtensionContext["ui"]["theme"], width: number, taskId: string | undefined): string[] => {
+		if (taskId === undefined) return [];
+		const task = store.get(taskId);
+		if (!task) return [];
+		return renderAgentsCard([task], theme, width, deps.now(), { collapsed: false, maxRows: widgetRows(undefined), keepFinished: true, idleAfterMs: AGENTS_IDLE_AFTER_MS });
 	};
 
-	const tool = (name: string, description: string, parameters: Record<string, unknown>, execute: (params: Record<string, unknown>, ctx: ExtensionContext, signal?: AbortSignal) => Promise<ToolText>) => {
+	// Tools whose task_id parameter names the task the call is about, so a
+	// render can trust it outright. subagent_continue also declares a
+	// task_id, but it names the PREVIOUS (finished) task being resumed, not
+	// the new one this call launches -- that one is only known through
+	// callTaskIds, exactly like subagent_run, so continue is deliberately
+	// left out here.
+	const EXPLICIT_TASK_ID_TOOLS: ReadonlySet<string> = new Set(["status", "result", "reply", "cancel", "send_message"]);
+
+	// Explicit task_id args win for the tools above; otherwise fall back to
+	// the task this exact call launched, recorded by launch() through
+	// callTaskIds. A tool with neither (subagent_list_agents, _list_tasks,
+	// subagent_run/_continue before launch(), or args still streaming in)
+	// resolves to no task, which agentToolCard renders as nothing rather than
+	// the whole session's card.
+	const resolveRenderTaskId = (name: string, args: unknown, toolCallId: string | undefined): string | undefined => {
+		if (EXPLICIT_TASK_ID_TOOLS.has(name)) {
+			const explicit = args && typeof args === "object" && typeof (args as Record<string, unknown>).task_id === "string" ? ((args as Record<string, unknown>).task_id as string) : undefined;
+			if (explicit) return explicit;
+		}
+		return toolCallId === undefined ? undefined : callTaskIds.get(toolCallId);
+	};
+
+	const tool = (name: string, description: string, parameters: Record<string, unknown>, execute: (params: Record<string, unknown>, ctx: ExtensionContext, signal: AbortSignal | undefined, callId: string) => Promise<ToolText>) => {
 		pi.registerTool({
 			name: `${TOOL_PREFIX}${name}`,
 			renderShell: "self",
 			label: `Agent ${name.replace(/_/g, " ")}`,
 			description,
 			parameters: { type: "object", additionalProperties: false, ...parameters } as never,
-			renderCall(_args, theme) {
-				// The timeline shows the Agents card itself rather than a bare
+			renderCall(args, theme, context) {
+				// The timeline shows this call's own task row rather than a bare
 				// "agent run · name" line, so the model, the elapsed time and any
 				// failure are readable where the work happens. Concurrent calls
-				// each render their own block, so several agents stack naturally.
-				return { render: (width: number) => agentToolCard(theme, width), invalidate() {} };
+				// each render their own block, scoped to their own task.
+				const taskId = resolveRenderTaskId(name, args, context?.toolCallId);
+				return { render: (width: number) => agentToolCard(theme, width, taskId), invalidate() {} };
 			},
 			renderResult(result, options, theme) {
 				const body = result.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
 				const answer = options.expanded ? body.split("\n") : [body.split("\n")[0] ?? ""];
+				// Only the answer: pi keeps the call component mounted and appends
+				// this one under it, and the call's card reads the live store every
+				// frame, so it already shows the finished status. Drawing the card
+				// here too printed the same block twice for a single call.
 				return {
 					invalidate() {},
-					render: (width: number) => [
-						...agentToolCard(theme, width),
-						"",
-						...answer.map((line) => theme.fg("muted", line)),
-					],
+					render: () => answer.map((line) => theme.fg("muted", line)),
 				};
 			},
-			async execute(_id, params, signal, _onUpdate, ctx) {
-				return execute(params as Record<string, unknown>, ctx, signal);
+			async execute(id, params, signal, _onUpdate, ctx) {
+				return execute(params as Record<string, unknown>, ctx, signal, id);
 			},
 		});
 	};
@@ -1363,7 +1415,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				mode: { type: "string", enum: ["task", "background"], description: "task waits for the result (default); background returns immediately." },
 			},
 		},
-		async (params, ctx, signal) => {
+		async (params, ctx, signal, callId) => {
 			const { agents } = discoverAgents(roots(ctx));
 			const agent = agents.find((candidate) => candidate.name === params.agent);
 			if (!agent) return text(`Error: no subagent named "${String(params.agent)}". Known: ${agents.map((candidate) => candidate.name).join(", ") || "none"}`, { error: "unknown agent" });
@@ -1375,7 +1427,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			let sddChange: SddChangeSelection | undefined;
 			try { sddChange = parseSddChange(params.sdd_change, agent.name); }
 			catch (error) { return text(`Error: ${error instanceof Error ? error.message : String(error)}`, { error: "invalid sdd_change" }); }
-			return launch(ctx, buildRequest(ctx, agent, String(params.task ?? ""), typeof params.label === "string" ? params.label : undefined, typeof params.context === "string" ? params.context : undefined, mode, undefined, typeof params.workspace_root === "string" ? params.workspace_root : undefined, sddChange, params.research_selection, params.remediation), signal);
+			return launch(ctx, buildRequest(ctx, agent, String(params.task ?? ""), typeof params.label === "string" ? params.label : undefined, typeof params.context === "string" ? params.context : undefined, mode, undefined, typeof params.workspace_root === "string" ? params.workspace_root : undefined, sddChange, params.research_selection, params.remediation), signal, callId);
 		},
 	);
 
@@ -1417,7 +1469,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		"continue",
 		"Resume a finished subagent task in its own session with a follow-up prompt.",
 		{ required: ["task_id", "prompt"], properties: { research_selection: RESEARCH_SELECTION_SCHEMA, task_id: { type: "string" }, prompt: { type: "string" }, label: { type: "string", description: "Three to six words naming the follow-up." }, remediation: REMEDIATION_SCHEMA, sdd_change: { type: "object", additionalProperties: false, required: ["changeName", "workspaceRoot", "phase"], properties: { changeName: { type: "string" }, workspaceRoot: { type: "string" }, failedEvidenceRevision: { type: "string" }, phase: { type: "string", enum: ["apply", "verify", "archive", "remediate"] } }, description: "Fresh launch-local selected SDD identity, required when continuing an SDD phase agent." }, mode: { type: "string", enum: ["task", "background"] } } },
-		async (params, ctx, signal) => {
+		async (params, ctx, signal, callId) => {
 			const previous = await resolveTask(String(params.task_id));
 			if (!previous) return text(`Error: no task ${String(params.task_id)}`, { error: "unknown task" });
 			if (!isFinished(previous.status) || !previous.sessionPath) return text(`Error: task ${previous.id} cannot be continued yet (${previous.status}).`, { error: "not continuable" });
@@ -1432,7 +1484,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			catch (error) { return text(`Error: ${error instanceof Error ? error.message : String(error)}`, { error: "invalid sdd_change" }); }
 			if (sddPhaseForAgent(agent.name) && !sddChange) return text("Error: continuing an SDD phase agent requires a fresh sdd_change selection.", { error: "missing sdd_change" });
 
-			return launch(ctx, buildRequest(ctx, agent, String(params.prompt ?? ""), typeof params.label === "string" ? params.label : undefined, previous.sddPreflightContext, mode, previous.sessionPath, sddChange?.workspaceRoot ?? previous.cwd, sddChange, params.research_selection, params.remediation), signal);
+			return launch(ctx, buildRequest(ctx, agent, String(params.prompt ?? ""), typeof params.label === "string" ? params.label : undefined, previous.sddPreflightContext, mode, previous.sessionPath, sddChange?.workspaceRoot ?? previous.cwd, sddChange, params.research_selection, params.remediation), signal, callId);
 		},
 	);
 

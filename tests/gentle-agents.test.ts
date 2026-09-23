@@ -37,7 +37,7 @@ interface Registered {
 	renderShell?: string;
 	name: string;
 	execute(id: string, params: unknown, signal: AbortSignal | undefined, onUpdate: undefined, ctx: ExtensionContext): Promise<{ content: Array<{ text: string }>; details: Record<string, unknown> }>;
-	renderCall(args: unknown, theme: unknown): { render(width: number): string[] };
+	renderCall(args: unknown, theme: unknown, context?: { toolCallId?: string }): { render(width: number): string[] };
 }
 
 const plainTheme = { fg: (_color: string, text: string) => text };
@@ -2388,15 +2388,72 @@ test("subagent_list_agents and subagent_run in task mode launch a child with the
 	const orphan = tools.get("subagent_run")!.execute("c9", { agent: "explore", task: "Orphan", mode: "background" }, undefined, undefined, ctx);
 	await orphan;
 	await tick();
-	await fire("session_shutdown", ctx);
-	await tick();
-	assert.deepEqual(harness.children[1].killed, ["SIGTERM"], "closing pi stops the running children");
-	// The timeline block is the Agents card itself, not a bare "agent run" line:
-	// the agent, its model and its elapsed time belong where the work happens.
-	const callCard = tools.get("subagent_run")!.renderCall({ agent: "explore" }, plainTheme).render(60).join("\n");
+	// The timeline block is that call's own task row, not the whole Agents
+	// card: the agent, its model and its elapsed time belong where the work
+	// happens, scoped by the toolCallId launch() recorded for "c9".
+	const callCard = tools.get("subagent_run")!.renderCall({ agent: "explore" }, plainTheme, { toolCallId: "c9" }).render(60).join("\n");
 	assert.match(callCard, /❀ Agents/);
 	assert.match(callCard, /explore/);
 	assert.match(callCard, /◐|○|\?|✓/);
+	// A call with no resolvable task (args missing task_id, no matching
+	// toolCallId) renders nothing rather than the whole session's card.
+	assert.deepEqual(tools.get("subagent_run")!.renderCall({ agent: "explore" }, plainTheme, { toolCallId: "unknown-call" }).render(60), []);
+	await fire("session_shutdown", ctx);
+	await tick();
+	assert.deepEqual(harness.children[1].killed, ["SIGTERM"], "closing pi stops the running children");
+});
+
+// The bug this guards against: five subagent_* tool calls in a transcript
+// each redrawing the whole "Agents · N done" card with every task, instead of
+// each call's block showing only the one task it is about.
+test("each subagent_run timeline block is scoped to only the task it launched, never the session's other tasks", async () => {
+	const { pi, tools, fire } = fakePi();
+	const harness = deps();
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+
+	const first = tools.get("subagent_run")!.execute("call-a", { agent: "explore", task: "First task", label: "first job", mode: "background" }, undefined, undefined, ctx);
+	await first;
+	await tick();
+	const second = tools.get("subagent_run")!.execute("call-b", { agent: "explore", task: "Second task", label: "second job", mode: "background" }, undefined, undefined, ctx);
+	await second;
+	await tick();
+
+	const cardA = tools.get("subagent_run")!.renderCall({ agent: "explore" }, plainTheme, { toolCallId: "call-a" }).render(72).join("\n");
+	assert.match(cardA, /first job/);
+	assert.doesNotMatch(cardA, /second job/, "the block scoped to call-a must not draw call-b's row");
+
+	const cardB = tools.get("subagent_run")!.renderCall({ agent: "explore" }, plainTheme, { toolCallId: "call-b" }).render(72).join("\n");
+	assert.match(cardB, /second job/);
+	assert.doesNotMatch(cardB, /first job/, "the block scoped to call-b must not draw call-a's row");
+
+	// A tool call with no resolvable task -- a fresh toolCallId that never
+	// launched anything, and args with no task_id -- renders nothing, not the
+	// whole session's card (subagent_list_agents never launches a task).
+	const noTask = tools.get("subagent_list_agents")!.renderCall({}, plainTheme, { toolCallId: "never-launched" }).render(72);
+	assert.deepEqual(noTask, []);
+
+	// renderResult carries the answer text and nothing else. Pi keeps the call
+	// component mounted and appends the result under it, so a card drawn here
+	// too would print the same block twice for one call.
+	const listResult = await tools.get("subagent_list_agents")!.execute("call-c", {}, undefined, undefined, ctx);
+	const rendered = (tools.get("subagent_list_agents") as unknown as { renderResult(result: unknown, options: { expanded: boolean; isPartial: boolean }, theme: unknown, context: { args: unknown; toolCallId: string }): { render(width: number): string[] } }).renderResult(
+		listResult, { expanded: true, isPartial: false }, plainTheme, { args: {}, toolCallId: "call-c" },
+	).render(72);
+	assert.deepEqual(rendered, ["- explore (global): maps things"], "the answer text alone, unchanged");
+
+	// The launching tools are where the duplicate showed: call-a's block draws
+	// the card once, and its result adds only the tool's own output under it.
+	const runResult = await tools.get("subagent_run")!.execute("call-d", { agent: "explore", task: "Third task", label: "third job", mode: "background" }, undefined, undefined, ctx);
+	const runRendered = (tools.get("subagent_run") as unknown as { renderResult(result: unknown, options: { expanded: boolean; isPartial: boolean }, theme: unknown, context: { args: unknown; toolCallId: string }): { render(width: number): string[] } }).renderResult(
+		runResult, { expanded: true, isPartial: false }, plainTheme, { args: { agent: "explore" }, toolCallId: "call-d" },
+	).render(72).join("\n");
+	assert.doesNotMatch(runRendered, /❀ Agents/, "the result must not redraw the card the call already drew");
+	assert.match(runRendered, /third job|Third task|call-d|task/i, "the result still carries the tool's own answer");
+
+	await fire("session_shutdown", ctx);
+	await tick();
 });
 
 test("the Agents widget never registers a sidebar rail part and stays visible even while the fullscreen sidebar owns the host", async () => {
