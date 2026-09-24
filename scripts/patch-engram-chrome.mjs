@@ -234,15 +234,20 @@ export function patchChromeFile(target) {
   return { changed: true, ok: true };
 }
 
-function patchChrome(engramDir) {
+function patchChrome(engramDir, quiet) {
   const target = join(engramDir, "memory-tool-chrome.js");
   const result = patchChromeFile(target);
   if (!result.ok) {
+    // A failed match is always worth surfacing, quiet or not: it means the
+    // patch anchors drifted from gentle-engram's real shape and the chrome
+    // silently stopped applying.
     console.error("patch-engram-chrome: failed to apply chrome patch.");
     return false;
   }
-  if (result.changed) console.log(`patch-engram-chrome: patched ${target}`);
-  else console.log("patch-engram-chrome: chrome already patched; skipping.");
+  if (!quiet) {
+    if (result.changed) console.log(`patch-engram-chrome: patched ${target}`);
+    else console.log("patch-engram-chrome: chrome already patched; skipping.");
+  }
   return true;
 }
 
@@ -316,10 +321,10 @@ export function patchIndexFile(target) {
   return { changed: true, ok: true };
 }
 
-function patchIndex(engramDir) {
+function patchIndex(engramDir, quiet) {
   const target = join(engramDir, "index.ts");
   if (!existsSync(target)) {
-    console.warn("patch-engram-chrome: index.ts not found; skipping width-aware render patch.");
+    if (!quiet) console.warn("patch-engram-chrome: index.ts not found; skipping width-aware render patch.");
     return true;
   }
   const result = patchIndexFile(target);
@@ -327,37 +332,51 @@ function patchIndex(engramDir) {
     console.error("patch-engram-chrome: failed to apply index.ts render patch.");
     return false;
   }
-  if (result.changed) console.log(`patch-engram-chrome: patched ${target}`);
-  else console.log("patch-engram-chrome: index.ts already patched; skipping.");
+  if (!quiet) {
+    if (result.changed) console.log(`patch-engram-chrome: patched ${target}`);
+    else console.log("patch-engram-chrome: index.ts already patched; skipping.");
+  }
   return true;
 }
 
-function patchTests(engramDir) {
+function patchTests(engramDir, quiet) {
   const testFile = join(engramDir, "test", "memory-tool-chrome.test.mjs");
   if (!existsSync(testFile)) return;
   const content = readFileSync(testFile, "utf8");
   if (content.includes("ENGRAM_CHROME_PATCHED_V4")) {
-    console.log("patch-engram-chrome: tests already patched; skipping.");
+    if (!quiet) console.log("patch-engram-chrome: tests already patched; skipping.");
     return;
   }
   const patchedTest = join(__dirname, "..", "tests", "engram-chrome-patched-test.mjs");
   if (!existsSync(patchedTest)) {
-    console.warn("patch-engram-chrome: patched test template not found; skipping test patch.");
+    if (!quiet) console.warn("patch-engram-chrome: patched test template not found; skipping test patch.");
     return;
   }
   writeFileSync(testFile, readFileSync(patchedTest, "utf8"), "utf8");
-  console.log(`patch-engram-chrome: patched ${testFile}`);
+  if (!quiet) console.log(`patch-engram-chrome: patched ${testFile}`);
 }
 
-export function patchEngramChrome() {
+/**
+ * Apply (or re-heal) the chrome patch against the currently installed
+ * gentle-engram. Idempotent and safe to call repeatedly -- from postinstall,
+ * and also from gentle-pi's own extension-load self-heal (see
+ * extensions/engram-chrome-selfheal.ts), which is why every routine-status
+ * console line here can be silenced with `{ quiet: true }`: a self-heal runs
+ * on every Pi start, including the vast majority where nothing needs fixing,
+ * and postinstall's own narration would otherwise repeat on every launch. A
+ * genuine patch failure (anchors no longer matching gentle-engram's real
+ * shape) is always logged, quiet or not, because that is never routine.
+ */
+export function patchEngramChrome(options = {}) {
+  const quiet = options.quiet ?? false;
   const engramDir = findEngramDir();
   if (!engramDir) {
-    console.warn("patch-engram-chrome: gentle-engram not found; skipping.");
+    if (!quiet) console.warn("patch-engram-chrome: gentle-engram not found; skipping.");
     return false;
   }
-  const chromeOk = patchChrome(engramDir);
-  const indexOk = patchIndex(engramDir);
-  patchTests(engramDir);
+  const chromeOk = patchChrome(engramDir, quiet);
+  const indexOk = patchIndex(engramDir, quiet);
+  patchTests(engramDir, quiet);
   return chromeOk && indexOk;
 }
 
