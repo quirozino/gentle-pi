@@ -6,6 +6,7 @@ import { execFile } from "node:child_process";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { resolveAnimationPolicy } from "../lib/animation-policy.ts";
+import { activeThemeName, paintWordmarkLine, resolveWordmark, type WordmarkMap } from "../lib/theme-wordmark.ts";
 
 const PI_AGENT_DIR = join(os.homedir(), ".pi", "agent");
 const PI_NPM_DIR = join(PI_AGENT_DIR, "npm", "node_modules");
@@ -15,6 +16,10 @@ interface BannerConfig {
   showRose: boolean;
   showTextLogo: boolean;
   color: BannerColor;
+  // Optional theme -> wordmark map read by resolveWordmark(); unvalidated here
+  // on purpose so a malformed or future-shaped entry still round-trips through
+  // /gentle:banner instead of being silently dropped on the next write.
+  wordmarks?: WordmarkMap;
 }
 const DEFAULT_BANNER_CONFIG: BannerConfig = {
   showRose: true,
@@ -78,10 +83,19 @@ function bannerConfigPath(): string {
 function normalizeBannerConfig(value: unknown): BannerConfig {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return { ...DEFAULT_BANNER_CONFIG };
   const record = value as Record<string, unknown>;
+  // wordmarks is passed through as-is (shape-checked, not deep-validated): the
+  // per-theme entries are validated on demand by resolveWordmark() at render
+  // time, so an entry another gentle-pi version understands keeps round-tripping
+  // through /gentle:banner even while this build cannot render it.
+  const wordmarks =
+    typeof record.wordmarks === "object" && record.wordmarks !== null && !Array.isArray(record.wordmarks)
+      ? (record.wordmarks as WordmarkMap)
+      : undefined;
   return {
     showRose: typeof record.showRose === "boolean" ? record.showRose : DEFAULT_BANNER_CONFIG.showRose,
     showTextLogo: typeof record.showTextLogo === "boolean" ? record.showTextLogo : DEFAULT_BANNER_CONFIG.showTextLogo,
     color: BANNER_COLORS.includes(record.color as BannerColor) ? record.color as BannerColor : DEFAULT_BANNER_CONFIG.color,
+    ...(wordmarks !== undefined ? { wordmarks } : {}),
   };
 }
 
@@ -128,7 +142,12 @@ type CellType =
   | "value"
   | "dim"
   | "accent"
-  | "none";
+  | "none"
+  // Holds an already fully rendered (pre-coloured) string as its single
+  // cell -- see LayoutBuilder.addRaw(). Used by the theme wordmark, whose
+  // colouring comes from paintWordmarkLine()/theme.fg() rather than from
+  // the per-cell switch below.
+  | "raw";
 type LayoutCell = { char: string; type: CellType };
 type LogoCellType = Extract<
   CellType,
@@ -457,6 +476,30 @@ class LayoutBuilder {
     for (const char of text) row.push({ char, type });
   }
 
+  // Pushes ONE cell whose `char` holds an already fully rendered string (e.g.
+  // a wordmark line pre-coloured by paintWordmarkLine, ANSI escapes and all)
+  // instead of splitting it into one cell per code point like add() does.
+  // Splitting would make center()'s cell-count math (and per-cell colouring
+  // below) treat invisible escape bytes as columns, so a pre-rendered line
+  // must stay a single opaque cell all the way to the output loop.
+  addRaw(text: string) {
+    const row = this.lines[this.lines.length - 1];
+    row.push({ char: text, type: "raw" });
+  }
+
+  // Same padding as center(), but measured against a caller-supplied plain
+  // (uncoloured) width instead of the row's cell count -- required for a row
+  // built with addRaw(), whose single cell does not carry a visible length.
+  centerWithWidth(width: number, plainWidth: number) {
+    const row = this.lines[this.lines.length - 1];
+    const pad = Math.max(0, Math.floor((width - plainWidth) / 2));
+    const prefix: LayoutCell[] = Array.from({ length: pad }, () => ({
+      char: " ",
+      type: "none" as const,
+    }));
+    this.lines[this.lines.length - 1] = prefix.concat(row);
+  }
+
   center(width: number) {
     const row = this.lines[this.lines.length - 1];
     const pad = Math.max(0, Math.floor((width - row.length) / 2));
@@ -633,6 +676,13 @@ export default function (pi: ExtensionAPI) {
     const palette = BANNER_PALETTES[bannerConfig.color];
     const roseBase = padLines(normalizeAscii(ROSE_LARGE_RAW));
     const logoBase = padLines(TEXT_LOGO);
+    // Resolved ONCE per session, like roseBase/logoBase above: a theme-keyed
+    // wordmark, when present for the active pi theme, takes over the rose and
+    // text-logo slot below so there is a single owner of the header instead of
+    // two extensions racing setHeader.
+    const wordmark = resolveWordmark(bannerConfig, activeThemeName());
+    const wordmarkWide = wordmark ? padLines(normalizeAscii(wordmark.art)) : undefined;
+    const wordmarkCompact = wordmark?.compact ? padLines(normalizeAscii(wordmark.compact)) : undefined;
     void warmupLetterStrokes();
 
     let gitBranch = "Not a git repo";
@@ -788,7 +838,21 @@ export default function (pi: ExtensionAPI) {
             b.addRow();
             b.center(width);
 
-            if (state.mode === "minimal") {
+            if (wordmark && wordmarkWide) {
+              // A resolved theme wordmark takes over the rose/text-logo slot
+              // entirely, in every mode: it is the ONE owner of this header,
+              // not a third layout alongside the other two. Falls back to the
+              // compact form only when it exists and the wide art would not
+              // fit; with no compact form, the wide art is kept and simply
+              // clipped by truncateToWidth() below like any other overflow.
+              const useCompact = wordmarkCompact !== undefined && width < wordmarkWide.width + 2;
+              const block = useCompact ? wordmarkCompact! : wordmarkWide;
+              for (let i = 0; i < block.lines.length; i++) {
+                b.addRow();
+                b.addRaw(paintWordmarkLine(block.lines, i, tick, theme, wordmark.effect));
+                b.centerWithWidth(width, block.width);
+              }
+            } else if (state.mode === "minimal") {
               if (bannerConfig.showTextLogo) for (let logoI = 0; logoI < logoBase.lines.length; logoI++) {
                 const logoLine = logoBase.lines[logoI];
                 b.addRow();
@@ -983,6 +1047,11 @@ export default function (pi: ExtensionAPI) {
 
               for (let x = 0; x < row.length; x++) {
                 const cell = row[x] || { char: " ", type: "none" as const };
+                if (cell.type === "raw") {
+                  // Already fully rendered by paintWordmarkLine(); emit as-is.
+                  line += cell.char;
+                  continue;
+                }
                 if (cell.char === " ") {
                   line += " ";
                   continue;
