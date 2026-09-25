@@ -9,7 +9,7 @@ and remove the `setHeader` race that currently decides the banner by luck.
 Two extensions both claim pi's header on `session_start`, and the last
 caller wins:
 
-- `~/.pi/agent/extensions/ddata-logo.ts` installs its wordmark immediately
+- a workstation logo extension installs its wordmark immediately
   and reinstalls once at `setTimeout(..., 750)` — its own comment says the
   750ms exists to outlast gentle-pi.
 - `extensions/startup-banner.ts:720` installs at `setTimeout(..., 50)`, but
@@ -26,9 +26,10 @@ owner of `setHeader`, so the race disappears rather than widening.
 
 ## Why generic
 
-`DDATA` is a client brand and gentle-pi is a public project; the wordmark
-must not be hardcoded upstream. The mechanism ships in gentle-pi, the art
-lives in the user's own `~/.pi/gentle-ai/banner.json`.
+A workstation wordmark is the operator's own identity — often a client
+brand — and gentle-pi is a public project, so it must not be hardcoded
+upstream. The mechanism ships in gentle-pi; the art lives in the operator's
+own `~/.pi/gentle-ai/banner.json` and is never committed here.
 
 ## Evidence
 
@@ -48,7 +49,8 @@ lives in the user's own `~/.pi/gentle-ai/banner.json`.
 
 Authorized: extensions/startup-banner.ts, a new lib module for the wordmark
 config/render, tests, and the user's own ~/.pi/gentle-ai/banner.json.
-Also authorized: retiring ~/.pi/agent/extensions/ddata-logo.ts.
+Also authorized: retiring the workstation logo extension that owns the
+header today.
 Out of scope: lib/shell-bar.ts and the uncommitted feat/configurable-glyphs
 work; the antigravity quota feature; any other extension.
 
@@ -76,15 +78,15 @@ work; the antigravity quota feature; any other extension.
       `dim` -> `muted` -> `success` -> `accent` role ladder, driven by the
       existing tick and animation policy.
 - [x] T5 Write the user's ~/.pi/gentle-ai/banner.json mapping Matrix-Green
-      to the DDATA art, and retire ddata-logo.ts.
+      to the workstation art, and retire the logo extension.
 - [x] T6 Tests: theme read, config validation, role-only colouring, policy
       respect, and unchanged behaviour with no wordmark configured.
 
 ## Acceptance
 
-With theme Matrix-Green the startup banner shows the DDATA wordmark in the
-theme's own greens with a visible sweep, ddata-logo.ts is gone, and repeated
-boots are identical (no race). Switching to another theme restores
+With theme Matrix-Green the startup banner shows the configured wordmark in
+the theme's own greens with a visible sweep, the logo extension is retired,
+and repeated boots are identical (no race). Switching to another theme restores
 gentle-pi's normal banner. Suite green.
 
 ## Progress
@@ -112,10 +114,10 @@ bytes as columns. Hence `addRaw()` (one opaque cell holding the rendered
 line), `centerWithWidth(width, plainWidth)`, and a `"raw"` cell type emitted
 as-is.
 
-Out of the commit by design: `~/.pi/gentle-ai/banner.json` (the DDATA art)
-and the retirement of `~/.pi/agent/extensions/ddata-logo.ts` to
-`ddata-logo.ts.disabled-startup-banner-owns-wordmark` both live outside this
-repo — the mechanism ships here, the brand stays on the workstation.
+Out of the commit by design: `~/.pi/gentle-ai/banner.json` (the art itself)
+and the retirement of the workstation logo extension, renamed with the
+repo's `.disabled-<reason>` convention, both live outside this repo — the
+mechanism ships here, the brand stays on the workstation.
 
 Not verified: the banner inside a live pi TUI. Real pi boots are what orphan
 detached `agy` children, so that check waits for the user's own restart.
