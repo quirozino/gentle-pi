@@ -7,6 +7,14 @@ import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { resolveAnimationPolicy } from "../lib/animation-policy.ts";
 import { activeThemeName, paintWordmarkLine, resolveWordmark, type WordmarkMap } from "../lib/theme-wordmark.ts";
+import {
+  bannerSuppressed,
+  headerOwnershipVerdict,
+  pickIntroMode,
+  type HeaderOwnership,
+  type HeaderOwnershipVerdict,
+  type IntroMode,
+} from "../lib/banner-visibility.ts";
 
 const PI_AGENT_DIR = join(os.homedir(), ".pi", "agent");
 const PI_NPM_DIR = join(PI_AGENT_DIR, "npm", "node_modules");
@@ -511,20 +519,13 @@ class LayoutBuilder {
   }
 }
 
-const FULL_INTRO_MIN_ROWS = 30;
-const FULL_INTRO_MIN_COLS = 80;
-const MINIMAL_INTRO_MIN_ROWS = 20;
-const MINIMAL_INTRO_MIN_COLS = 40;
 const RESIZE_DEBOUNCE_MS = 150;
 const RESIZE_GRACE_PERIOD_MS = 300;
-
-type IntroMode = "full" | "minimal" | "skip";
-
-function pickIntroMode(rows: number, cols: number): IntroMode {
-  if (rows >= FULL_INTRO_MIN_ROWS && cols >= FULL_INTRO_MIN_COLS) return "full";
-  if (rows >= MINIMAL_INTRO_MIN_ROWS && cols >= MINIMAL_INTRO_MIN_COLS) return "minimal";
-  return "skip";
-}
+// Grace window before concluding whether gentle-pi still owns the header
+// (last-writer-wins on ctx.ui.setHeader): long enough that a normal boot's
+// first render() has already landed, short enough that "taken" is reported
+// well before the session is doing real work.
+const HEADER_OWNERSHIP_GRACE_MS = 5000;
 
 function currentIntroMode(): IntroMode {
   // process.stdout.rows/columns reflejan el tamaño real del TTY del proceso;
@@ -587,13 +588,30 @@ export function readGitBranch(cwd: string, run: typeof execFile = execFile): Pro
   });
 }
 
+function describeHeaderOwnership(verdict: HeaderOwnershipVerdict): string {
+  switch (verdict) {
+    case "owned":
+      return "Header: owned by gentle-pi";
+    case "taken":
+      return "Header: taken over by another extension";
+    case "not-installed":
+      return "Header: not installed (intro skipped)";
+  }
+}
+
 export default function (pi: ExtensionAPI) {
   let disposeHeader = () => {};
+  // Header-ownership tracking (Problem B): reset at the start of every
+  // session_start so /clone, /resume and /reload re-arm detection instead of
+  // carrying a stale verdict or a burned notify budget across sessions.
+  let ownership: HeaderOwnership = { installed: false, rendered: false };
+  let ownershipReported = false;
   pi.on("session_shutdown", () => disposeHeader());
   const notifyBannerConfig = (ctx: any, config: BannerConfig) => {
     ctx.ui.notify(
       [
         `Startup banner: rose=${config.showRose ? "on" : "off"}, text logo=${config.showTextLogo ? "on" : "off"}, color=${config.color}`,
+        describeHeaderOwnership(headerOwnershipVerdict(ownership)),
         `Config: ${bannerConfigPath()}`,
         "Changes apply on the next startup banner render.",
       ].join("\n"),
@@ -660,6 +678,8 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     disposeHeader();
+    ownership = { installed: false, rendered: false };
+    ownershipReported = false;
     if (!ctx.hasUI) return;
 
     // Si se está ejecutando un comando de CLI como "pi update" o "pi install", no mostramos la intro animada.
@@ -693,7 +713,13 @@ export default function (pi: ExtensionAPI) {
     // installed. So `skip` still suppresses the rose and the text logo, and
     // never a resolved wordmark, which is seven rows and needs no animation
     // to be worth drawing.
-    if (wordmark === undefined && currentIntroMode() === "skip") return;
+    //
+    // This calls the SAME bannerSuppressed() predicate as the header
+    // render() gate below, ON PURPOSE: the two gates must never be able to
+    // disagree again. Fixing only one of them is exactly how the wordmark
+    // once vanished -- this early return let a resolved wordmark through,
+    // but render() still silently dropped it with its own separate check.
+    if (bannerSuppressed(currentIntroMode(), wordmark !== undefined)) return;
     void warmupLetterStrokes();
 
     let gitBranch = "Not a git repo";
@@ -827,12 +853,19 @@ export default function (pi: ExtensionAPI) {
         return {
           /** Renders the persistent header grid; memoized per width, tick, mode and stats so static passes reuse the built lines. */
           render(width: number): string[] {
+            // Recorded before any early return: a legitimately suppressed
+            // (skip mode, no wordmark) call still means gentle-pi's header
+            // is the one the TUI is asking to paint, i.e. we still own it.
+            ownership.rendered = true;
             // Same reasoning as the session_start gate above: `skip` drops the
             // intro, not the identity. A resolved wordmark keeps painting at
             // any size -- the render below already falls back to the compact
             // form and lets truncateToWidth clip what still does not fit --
             // so a narrow pane shows a smaller wordmark rather than none.
-            if (state.mode === "skip" && wordmark === undefined) return [];
+            //
+            // This calls the SAME bannerSuppressed() predicate as the
+            // session_start gate above, ON PURPOSE -- see the comment there.
+            if (bannerSuppressed(state.mode, wordmark !== undefined)) return [];
             const headerKey = `${width}|${tick}|${state.mode}|${gitBranch}|${mcpServersCount}|${extensionsCount}|${packagesCount}|${sddAgentsCount}|${ctx.cwd}|${skills.length}|${customTools.length}`;
             if (headerCache?.key === headerKey) return headerCache.out;
 
@@ -1158,6 +1191,25 @@ export default function (pi: ExtensionAPI) {
           },
         };
       });
+      // Detection arms only now, right after setHeader() returned -- never
+      // before, or a deliberate skip (no wordmark, undersized terminal)
+      // would be misreported as a takeover. unref() so this timer never
+      // keeps the process alive on its own.
+      ownership.installed = true;
+      setTimeout(() => {
+        const verdict = headerOwnershipVerdict(ownership);
+        // Detection only reports; it never reinstalls, retries, or changes
+        // what is painted -- reinstalling is the setHeader race this work
+        // removed. Quiet by default: "owned" and "not-installed" notify no
+        // one, and "taken" notifies at most once per session.
+        if (verdict === "taken" && !ownershipReported && ctx.hasUI) {
+          ownershipReported = true;
+          ctx.ui.notify(
+            "Another extension replaced the startup header. gentle-pi will not reinstall it (see /gentle:banner).",
+            "info",
+          );
+        }
+      }, HEADER_OWNERSHIP_GRACE_MS)?.unref?.();
     }, 50);
   });
 }
