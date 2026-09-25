@@ -97,6 +97,32 @@ Evidence:
   pre-existing, unrelated.
 - `node scripts/build-runtime-modules.mjs --check`: runtime matches sources;
   `shell-usage` is not a generated module, so no build step is required.
-Commit: HELD. The worktree carries unrelated uncommitted work for
-`feat/configurable-glyphs` in extensions/gentle-shell.ts and lib/shell-bar.ts;
-committing would sweep it in. User decides when to separate them.
+Commit: 326aa2a6 `feat(shell): read real Antigravity quota from the agy CLI`.
+The unrelated `feat/configurable-glyphs` WIP (lib/shell-bar.ts, plus the
+gaugeTick argument on the headerBar line of extensions/gentle-shell.ts) was
+held OUT of the commit by staging a copy with that one line reverted, and
+remains uncommitted in the worktree. Proof the commit stands alone: a
+`git checkout-index` export of the staged tree passes shell-usage 62/62,
+gentle-shell 107/107 and shell-bar 39/39 — the 5 renderShellHeaderBar
+failures seen in the dirty worktree are absent, confirming they belong to
+the WIP.
+
+## Durability against future agy updates
+
+`/usage` is an undocumented slash command inside a self-updating Google
+binary, so the contract is pinned three ways:
+
+1. `parseAntigravityQuota` fails closed — a reshaped payload, an unknown
+   window tag or a non-/usage command degrades to `undefined` and the panel
+   keeps the provider's pending note. It never fabricates a reading.
+2. `tests/fixtures/antigravity-usage.json` is a verbatim capture of a real
+   response; the unit tests read it, so a refactor cannot silently change
+   how the shipped shape is interpreted.
+3. `pnpm run check:antigravity-contract` asks the INSTALLED CLI for a fresh
+   response and diffs its group/window/model shape against that fixture.
+   Exit 0 holds, 1 drift, 2 could-not-check (never reported as success).
+   Deliberately outside `pnpm test`: it needs the CLI and a logged-in
+   account. Run it after an agy update.
+4. A group that stops describing its members falls back to matching through
+   its own slug, so `models` never goes empty — which would otherwise hand
+   every model the FIRST group's number through the aggregate fallback.
