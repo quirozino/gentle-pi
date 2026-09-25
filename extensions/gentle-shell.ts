@@ -31,8 +31,6 @@ import {
 	ANTHROPIC_OAUTH_BETA,
 	ANTHROPIC_USAGE_URL,
 	ANTIGRAVITY_PROVIDER,
-	calculateAntigravityUsage,
-	getAntigravityModelTier,
 	CLAUDE_BRIDGE_PROVIDER,
 	CODEX_PROVIDER,
 	CODEX_USAGE_URL,
@@ -43,6 +41,7 @@ import {
 	NAN_PROVIDER,
 	NAN_QUOTA_URL,
 	parseAnthropicOauthUsage,
+	parseAntigravityQuota,
 	parseCodexUsage,
 	parseKimiUsage,
 	parseMinimaxUsage,
@@ -110,6 +109,8 @@ export interface ShellDeps {
 	gitRunner(cwd: string): GitRunner;
 	readFile(path: string, encoding: "utf8"): Promise<string>;
 	homedir(): string;
+	/** Spawns a child process; overridable so antigravity's agy CLI spawn never touches a real binary in tests. */
+	execFile: typeof execFile;
 }
 
 // The rail digest runs every frame. Cache parsing by file identity and metadata,
@@ -215,6 +216,7 @@ const defaultShellDeps: Omit<ShellDeps, "activeProfile" | "activeProfileModels" 
 	gitRunner: shellGitRunner,
 	readFile: (path, encoding) => readFile(path, encoding),
 	homedir: () => os.homedir(),
+	execFile,
 };
 
 interface AssistantUsageEntry {
@@ -279,25 +281,6 @@ export function sessionTokensByModel(ctx: ExtensionContext): Map<string, number>
 		byModel.set(key, (byModel.get(key) ?? 0) + tokens);
 	}
 	return byModel;
-}
-
-export function antigravityTierTokens(ctx: ExtensionContext, targetModelId: string): number {
-	const targetTier = getAntigravityModelTier(targetModelId);
-	let total = 0;
-	for (const entry of ctx.sessionManager.getEntries() as AssistantUsageEntry[]) {
-		if (entry.type !== "message" || entry.message?.role !== "assistant") continue;
-		// If the entry explicitly mentions provider, ensure it's antigravity
-		if (entry.message.provider && entry.message.provider !== ANTIGRAVITY_PROVIDER) continue;
-		// If entry has a model, filter by matching model tier family
-		if (entry.message.model) {
-			const entryTier = getAntigravityModelTier(entry.message.model);
-			if (entryTier.tierKey !== targetTier.tierKey) continue;
-		}
-		const u = entry.message.usage;
-		if (!u) continue;
-		total += (u.totalTokens ?? (u.input ?? 0) + (u.output ?? 0));
-	}
-	return total;
 }
 
 export function buildShellBarModel(
@@ -1049,6 +1032,59 @@ export async function fetchMinimaxUsage(apiKey: string | undefined, fetchFn: typ
 	}
 }
 
+// --- Antigravity (agy CLI) usage ---
+//
+// agy has no usage endpoint pi can call directly; the real quota lives
+// behind its own `/usage` print command, so fetching it means spawning the
+// CLI rather than hitting a URL. --print-timeout bounds agy's own attempt
+// at 30s; the watchdog below runs 5s past that so agy's clean timeout exit
+// always wins the race over our kill.
+const ANTIGRAVITY_USAGE_PRINT_TIMEOUT_S = 30;
+const ANTIGRAVITY_USAGE_WATCHDOG_MS = (ANTIGRAVITY_USAGE_PRINT_TIMEOUT_S + 5) * 1000;
+const ANTIGRAVITY_USAGE_CAP_BYTES = 1_000_000;
+
+/**
+ * Resolve the agy CLI binary: an explicit override first (AGY_BIN, matching
+ * the bridge's own env var), then the CLI's own default install location,
+ * then a bare name so ordinary PATH resolution still applies for anyone who
+ * installed it elsewhere.
+ */
+export function resolveAgyBinary(env: NodeJS.ProcessEnv, home: string): string {
+	if (env.AGY_BIN && env.AGY_BIN.length > 0) return env.AGY_BIN;
+	const local = join(home, ".local", "bin", "agy");
+	try {
+		if (statSync(local).isFile()) return local;
+	} catch {
+		/* not installed there; PATH resolution below still applies */
+	}
+	return "agy";
+}
+
+/**
+ * Spawn agy's `/usage` print command and return its raw stdout, or undefined
+ * on any failure — a missing binary, a non-zero exit, the watchdog timeout,
+ * or the output cap — the same fail-closed contract every fetch* function in
+ * this file already follows, so a broken or absent CLI never throws into the
+ * caller.
+ */
+export function spawnAntigravityUsage(binary: string, run: typeof execFile = execFile): Promise<string | undefined> {
+	return new Promise((resolve) => {
+		run(
+			binary,
+			["--print", "/usage", "--output-format", "json", "--print-timeout", `${ANTIGRAVITY_USAGE_PRINT_TIMEOUT_S}s`],
+			{ encoding: "utf8", shell: false, windowsHide: true, timeout: ANTIGRAVITY_USAGE_WATCHDOG_MS, maxBuffer: ANTIGRAVITY_USAGE_CAP_BYTES },
+			(error, stdout) => resolve(error ? undefined : stdout),
+		);
+	});
+}
+
+export async function fetchAntigravityUsage(deps: Pick<ShellDeps, "execFile" | "homedir">, env: NodeJS.ProcessEnv, now: number): Promise<ProviderUsage | undefined> {
+	const binary = resolveAgyBinary(env, deps.homedir());
+	const raw = await spawnAntigravityUsage(binary, deps.execFile);
+	if (raw === undefined) return undefined;
+	return parseAntigravityQuota(raw, now);
+}
+
 export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = process.env, overrides: Partial<ShellDeps> = {}): void {
 	installSessionChangeCapture(pi, env, overrides.resolveWorktree ?? resolveSessionWorktree);
 	if (!shellEnabled(env)) return;
@@ -1096,21 +1132,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		if (!source && provider !== CODEX_PROVIDER && provider !== NAN_PROVIDER && provider !== CLAUDE_BRIDGE_PROVIDER && provider !== ANTIGRAVITY_PROVIDER && provider !== KIMI_PROVIDER && provider !== MINIMAX_PROVIDER) return;
 		const now = deps.now();
 
-		if (provider === ANTIGRAVITY_PROVIDER) {
-			// Antigravity is derived from session telemetry, not fetched.
-			const modelId = ctx.model?.id ?? "gemini-3.8-flash";
-			const tokens = antigravityTierTokens(ctx, modelId);
-			const usageModel = calculateAntigravityUsage({
-				modelId,
-				sessionTokens: tokens,
-				contextWindow: ctx.model?.contextWindow,
-				now,
-			});
-			usage.record(usageModel);
-			renderHost?.invalidateSidebar?.();
-			renderHost?.requestRender();
-			return;
-		}
+		// Antigravity's quota is a real spawn of the agy CLI, not a push value or
+		// a free local estimate, so it obeys the same 5-minute throttle as every
+		// other pull-based provider below instead of the bypass the old
+		// session-telemetry estimate used.
 		if (!force && now - (usageFetchedAt.get(provider) ?? 0) < USAGE_REFRESH_MS) return;
 		usageFetchedAt.set(provider, now);
 		const apiKey = await ctx.modelRegistry.getApiKeyForProvider(provider).catch(() => undefined);
@@ -1126,6 +1151,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			fetched = await fetchKimiUsage(token, deps.fetch, deps.now());
 		} else if (provider === MINIMAX_PROVIDER) {
 			fetched = await fetchMinimaxUsage(apiKey, deps.fetch, deps.now());
+		} else if (provider === ANTIGRAVITY_PROVIDER) {
+			fetched = await fetchAntigravityUsage(deps, env, deps.now());
 		} else {
 			fetched = await fetchCodexUsage(apiKey, deps.fetch, deps.now());
 		}
@@ -1154,8 +1181,13 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	/** Fetch usage for ALL supported providers at startup (one shot, throttled per provider). */
 	const refreshAllUsage = async (ctx: ExtensionContext, force: boolean) => {
 		const providers = new Set<string>([...PULL_USAGE_PROVIDERS]);
-		// Include antigravity if it is among the known providers.
-		providers.add(ANTIGRAVITY_PROVIDER);
+		// Antigravity's quota now costs a real agy spawn, unlike the free local
+		// estimate it replaced, so it only joins the startup sweep when the
+		// session could actually use it: the active model already routes there,
+		// or the active profile pins an antigravity model for some role. A
+		// profile that never touches antigravity should never pay to probe it.
+		const usesAntigravity = ctx.model?.provider === ANTIGRAVITY_PROVIDER || deps.activeProfileModels().some((model) => model.startsWith(`${ANTIGRAVITY_PROVIDER}/`));
+		if (usesAntigravity) providers.add(ANTIGRAVITY_PROVIDER);
 		// The active provider is always covered, even when it is a source an
 		// extension registered on pi.events rather than one of the built-ins above.
 		if (ctx.model?.provider) providers.add(ctx.model.provider);
@@ -1173,7 +1205,11 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	});
 	pi.on("after_provider_response", (event, ctx) => {
 		if (ctx && ctx.model?.provider === ANTIGRAVITY_PROVIDER) {
-			void refreshUsage(ctx, true).catch(() => undefined);
+			// A real agy spawn must not run on every response the way the old free
+			// local estimate did; this still refreshes in the background, but the
+			// same 5-minute throttle fetchUsageForProvider applies to every other
+			// pull-based provider governs how often it actually fires.
+			void refreshUsage(ctx, false).catch(() => undefined);
 			return;
 		}
 		const parsed = parseUsageHeaders(event.headers, deps.now());

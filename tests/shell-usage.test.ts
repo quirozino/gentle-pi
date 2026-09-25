@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import {
 	accountIdFromToken,
-	calculateAntigravityUsage,
 	formatReset,
-	getAntigravityModelTier,
+	modelUsageRows,
 	parseAnthropicHeaders,
 	parseAnthropicOauthUsage,
+	parseAntigravityQuota,
 	parseCodexHeaders,
 	parseMinimaxUsage,
 	parseNanQuota,
@@ -600,38 +601,121 @@ test("parseAnthropicOauthUsage marks the limit reached once a window is exhauste
 	assert.equal(usage?.limits[0].limitReached, true);
 });
 
-test("getAntigravityModelTier identifies flash, pro, claude, and gpt tiers", () => {
-	assert.equal(getAntigravityModelTier("gemini-3.8-flash").plan, "flash");
-	assert.equal(getAntigravityModelTier("gemini-3-8-flash").maxTokens, 10_000_000);
-	assert.equal(getAntigravityModelTier("gemini-3-8-flash").limitName, "gemini");
-	assert.equal(getAntigravityModelTier("gemini-3.1-pro").plan, "pro");
-	assert.equal(getAntigravityModelTier("gemini-3-1-pro").maxTokens, 2_000_000);
-	assert.equal(getAntigravityModelTier("claude-sonnet-4-6").plan, "claude");
-	assert.equal(getAntigravityModelTier("claude-sonnet-4-6").limitName, "claude");
-	assert.equal(getAntigravityModelTier("gpt-oss-120b-medium").plan, "gpt-oss");
-	assert.equal(getAntigravityModelTier("gpt-oss-120b-medium").limitName, "gpt-oss");
+// The exact payload verified live against `agy --print /usage --output-format
+// json --print-timeout 30s` (status SUCCESS, usage.total_tokens: 0).
+const ANTIGRAVITY_QUOTA_PAYLOAD = {
+	status: "SUCCESS",
+	usage: { total_tokens: 0 },
+	command: {
+		name: "usage",
+		data: {
+			description: "...",
+			groups: [
+				{
+					name: "Gemini Models",
+					description: "Models within this group: Gemini Flash, Gemini Pro",
+					buckets: [
+						{ id: "gemini-weekly", name: "Weekly Limit Remaining", description: "...", window: "weekly", remaining_fraction: 0.998, reset_time: "2026-10-01T00:54:00Z" },
+						{ id: "gemini-5h", name: "Five Hour Limit Remaining", window: "5h", remaining_fraction: 1, reset_time: "2026-09-25T17:22:18Z" },
+					],
+				},
+				{
+					name: "Claude and GPT models",
+					description: "Models within this group: Claude Opus, Claude Sonnet, GPT-OSS",
+					buckets: [
+						{ id: "3p-weekly", name: "Weekly Limit Remaining", window: "weekly", remaining_fraction: 1, reset_time: "2026-10-02T12:22:18Z" },
+						{ id: "3p-5h", name: "Five Hour Limit Remaining", window: "5h", remaining_fraction: 1, reset_time: "2026-09-25T17:22:18Z" },
+					],
+				},
+			],
+		},
+	},
+};
+
+test("parseAntigravityQuota reads the verified agy /usage payload into two grouped limits", () => {
+	const usage = parseAntigravityQuota(JSON.stringify(ANTIGRAVITY_QUOTA_PAYLOAD), NOW);
+	assert.ok(usage);
+	assert.equal(usage.provider, "antigravity");
+	assert.deepEqual(usage.limits.map((limit) => limit.name), ["gemini", "claude-gpt"]);
+
+	const [gemini, claudeGpt] = usage.limits;
+	// 5h before week within each limit — the window a person hits first.
+	assert.deepEqual(gemini.windows.map((window) => window.label), ["5h", "week"]);
+	assert.deepEqual(claudeGpt.windows.map((window) => window.label), ["5h", "week"]);
+
+	const geminiWeek = gemini.windows.find((window) => window.label === "week");
+	assert.ok(geminiWeek);
+	// remaining_fraction 0.998 -> usedPercent (1 - 0.998) * 100 = 0.2
+	assert.ok(Math.abs(geminiWeek.usedPercent - 0.2) < 0.01);
+	assert.equal(geminiWeek.windowSeconds, 604_800);
+	assert.equal(geminiWeek.resetAt, Date.parse("2026-10-01T00:54:00Z"));
+
+	const gemini5h = gemini.windows.find((window) => window.label === "5h");
+	assert.ok(gemini5h);
+	assert.equal(gemini5h.usedPercent, 0);
+	assert.equal(gemini5h.windowSeconds, 18_000);
+
+	assert.equal(gemini.limitReached, false);
+	assert.equal(claudeGpt.limitReached, false);
+	assert.deepEqual([...(gemini.models ?? [])].sort(), ["flash", "gemini", "pro"]);
+	assert.ok(claudeGpt.models?.includes("claude"));
+	assert.ok(claudeGpt.models?.includes("gpt"));
 });
 
-test("calculateAntigravityUsage generates ProviderUsage and renders in gauge", () => {
-	const usage = calculateAntigravityUsage({
-		modelId: "gemini-3.8-flash",
-		sessionTokens: 2_500_000,
-		now: NOW,
-	});
-	assert.equal(usage.provider, "antigravity");
-	assert.equal(usage.plan, "flash");
-	assert.equal(usage.limits[0].windows[0].usedPercent, 25);
-	assert.equal(usage.limits[0].windows[0].label, "1d");
-	assert.equal(renderUsageBar(usage, plainTheme), "gemini 1d ▰▰▱▱▱▱▱▱ 25%");
+test("parseAntigravityQuota degrades to undefined on malformed, non-usage, or groupless payloads, never throwing", () => {
+	assert.equal(parseAntigravityQuota("not json", NOW), undefined);
+	assert.equal(parseAntigravityQuota("null", NOW), undefined);
+	assert.equal(parseAntigravityQuota(JSON.stringify({ status: "FAILURE", command: { name: "usage", data: { groups: [] } } }), NOW), undefined);
+	assert.equal(parseAntigravityQuota(JSON.stringify({ status: "SUCCESS", command: { name: "models" } }), NOW), undefined);
+	assert.equal(parseAntigravityQuota(JSON.stringify({ status: "SUCCESS", command: { name: "usage", data: {} } }), NOW), undefined);
+	assert.equal(parseAntigravityQuota(JSON.stringify({ status: "SUCCESS", command: { name: "usage", data: { groups: [] } } }), NOW), undefined);
+	// A group with no recognisable buckets carries no limit worth keeping.
+	assert.equal(parseAntigravityQuota(JSON.stringify({ status: "SUCCESS", command: { name: "usage", data: { groups: [{ name: "Empty", buckets: [] }] } } }), NOW), undefined);
+});
 
-	const claudeUsage = calculateAntigravityUsage({
-		modelId: "claude-sonnet-4-6",
-		sessionTokens: 150_000,
-		now: NOW,
-	});
-	assert.equal(claudeUsage.limits[0].name, "claude");
-	assert.equal(claudeUsage.limits[0].windows[0].label, "5h");
-	assert.equal(renderUsageBar(claudeUsage, plainTheme), "claude 5h ▰▰▰▰▱▱▱▱ 50%");
+test("parseAntigravityQuota slugs an unrecognised future group instead of dropping it", () => {
+	const payload = {
+		status: "SUCCESS",
+		command: {
+			name: "usage",
+			data: {
+				groups: [{ name: "Some New Group", buckets: [{ window: "5h", remaining_fraction: 0.5 }] }],
+			},
+		},
+	};
+	const usage = parseAntigravityQuota(JSON.stringify(payload), NOW);
+	assert.ok(usage);
+	assert.equal(usage.limits[0].name, "some-new-group");
+});
+
+test("modelUsageRows resolves every antigravity model in a mixed profile to its own group's percent, never Unknown", () => {
+	const usage = parseAntigravityQuota(JSON.stringify(ANTIGRAVITY_QUOTA_PAYLOAD), NOW);
+	assert.ok(usage);
+	const byProvider = new Map<string, ProviderUsage>([["antigravity", usage]]);
+	const models = ["antigravity/gemini-3.8-flash", "antigravity/gpt-oss-120b-medium", "antigravity/claude-sonnet-4-6"];
+	const rows = modelUsageRows(models, byProvider, undefined, undefined);
+	assert.equal(rows.length, 3);
+	for (const row of rows) assert.notEqual(row.percent, undefined, `${row.name} should resolve a percent, not Unknown`);
+
+	const [flash, gptOss, claudeSonnet] = rows;
+	const geminiPercent = usage.limits.find((limit) => limit.name === "gemini")?.windows[0]?.usedPercent;
+	const claudeGptPercent = usage.limits.find((limit) => limit.name === "claude-gpt")?.windows[0]?.usedPercent;
+	assert.equal(flash.percent, geminiPercent);
+	// gpt and claude models both land on the claude-gpt group's number, not gemini's.
+	assert.equal(gptOss.percent, claudeGptPercent);
+	assert.equal(claudeSonnet.percent, claudeGptPercent);
+});
+
+test("renderUsagePanel shows all four real antigravity rows with their labels", () => {
+	const usage = parseAntigravityQuota(JSON.stringify(ANTIGRAVITY_QUOTA_PAYLOAD), NOW);
+	assert.ok(usage);
+	const lines = renderUsagePanel([usage], plainTheme, 80, NOW, { provider: "antigravity" });
+	const rowLines = lines.filter((line) => line.startsWith("  "));
+	assert.equal(rowLines.length, 4);
+	assert.ok(rowLines.some((line) => line.includes("gemini 5h")));
+	assert.ok(rowLines.some((line) => line.includes("gemini week")));
+	assert.ok(rowLines.some((line) => line.includes("claude-gpt 5h")));
+	assert.ok(rowLines.some((line) => line.includes("claude-gpt week")));
 });
 
 test("parseKimiUsage reads the weekly quota plus every rate-limit window", () => {
@@ -769,4 +853,117 @@ test("renderUsageBar shows minimax with 5h and week windows", () => {
 
 test("SUPPORTED_USAGE_PROVIDERS includes minimax", () => {
 	assert.ok(SUPPORTED_USAGE_PROVIDERS.includes("minimax"), "minimax should be in SUPPORTED_USAGE_PROVIDERS");
+});
+
+// --- Antigravity contract pin -------------------------------------------------
+//
+// tests/fixtures/antigravity-usage.json is a verbatim capture of a real
+// `agy --print /usage --output-format json` response. /usage is an
+// undocumented slash command inside a Google binary that updates itself, so
+// this fixture is the contract we actually shipped against: if a future agy
+// reshapes the payload, `scripts/check-antigravity-usage-contract.mjs` is
+// what notices, and these tests are what stop a refactor from quietly
+// changing how the shipped shape is read.
+
+const ANTIGRAVITY_FIXTURE = readFileSync(new URL("./fixtures/antigravity-usage.json", import.meta.url), "utf8");
+
+test("parseAntigravityQuota maps the captured agy payload onto both shared group limits", () => {
+	const now = Date.UTC(2026, 8, 25, 12, 0, 0);
+	const usage = parseAntigravityQuota(ANTIGRAVITY_FIXTURE, now);
+	assert.ok(usage, "the captured payload must parse");
+	assert.equal(usage.provider, "antigravity");
+	assert.equal(usage.fetchedAt, now);
+	// No plan label: the old per-tier plan strings were estimate artifacts, and
+	// agy reports no plan of its own.
+	assert.equal(usage.plan, undefined);
+	assert.deepEqual(usage.limits.map((limit) => limit.name), ["gemini", "claude-gpt"]);
+	for (const limit of usage.limits) {
+		// 5h is the window a person hits first, so it leads every group.
+		assert.deepEqual(limit.windows.map((window) => window.label), ["5h", "week"]);
+		assert.deepEqual(limit.windows.map((window) => window.windowSeconds), [18_000, 604_800]);
+		for (const window of limit.windows) {
+			assert.ok(window.usedPercent >= 0 && window.usedPercent <= 100, `${limit.name} ${window.label} percent in range`);
+			assert.ok(window.resetAt !== null && Number.isFinite(window.resetAt), `${limit.name} ${window.label} carries a reset`);
+		}
+		assert.equal(limit.limitReached, false);
+	}
+});
+
+test("parseAntigravityQuota reports remaining_fraction as a USED percentage", () => {
+	const payload = JSON.stringify({
+		status: "SUCCESS",
+		command: { name: "usage", data: { groups: [{ name: "Gemini Models", buckets: [{ window: "5h", remaining_fraction: 0.25 }] }] } },
+	});
+	const usage = parseAntigravityQuota(payload, 0);
+	assert.equal(usage?.limits[0]?.windows[0]?.usedPercent, 75);
+});
+
+test("every antigravity model in a profile resolves a percentage, so none renders as Unknown", () => {
+	const usage = parseAntigravityQuota(ANTIGRAVITY_FIXTURE, 0);
+	assert.ok(usage);
+	const byProvider = new Map([["antigravity", usage]]);
+	const models = [
+		"antigravity/gemini-3.8-flash",
+		"antigravity/gemini-3.8-pro",
+		"antigravity/gpt-oss-120b-medium",
+		"antigravity/claude-sonnet-4-6",
+		"antigravity/claude-opus-4-1",
+	];
+	const rows = modelUsageRows(models, byProvider, models[0], "antigravity");
+	for (const row of rows) {
+		assert.notEqual(row.percent, undefined, `${row.name} must resolve a percentage`);
+	}
+	// A shared group limit serves several models: the gemini pair must not
+	// exhaust the limit and push the third model onto the wrong group.
+	const gemini = usage.limits.find((limit) => limit.name === "gemini");
+	const thirdParty = usage.limits.find((limit) => limit.name === "claude-gpt");
+	assert.ok(gemini && thirdParty);
+	assert.equal(rows[2]?.percent, thirdParty.windows[0]?.usedPercent);
+	assert.equal(rows[3]?.percent, thirdParty.windows[0]?.usedPercent);
+});
+
+test("a group that stops describing its members still matches through its slug", () => {
+	// Guards the fallback: an agy that reworded or dropped the description must
+	// not collapse every model onto the first group's number.
+	const payload = JSON.stringify({
+		status: "SUCCESS",
+		command: {
+			name: "usage",
+			data: {
+				groups: [
+					{ name: "Gemini Models", buckets: [{ window: "5h", remaining_fraction: 1 }, { window: "weekly", remaining_fraction: 1 }] },
+					{ name: "Claude and GPT models", buckets: [{ window: "5h", remaining_fraction: 0.5 }, { window: "weekly", remaining_fraction: 1 }] },
+				],
+			},
+		},
+	});
+	const usage = parseAntigravityQuota(payload, 0);
+	assert.ok(usage);
+	const rows = modelUsageRows(["antigravity/gemini-3.8-flash", "antigravity/gpt-oss-120b-medium"], new Map([["antigravity", usage]]), undefined, "antigravity");
+	assert.equal(rows[0]?.percent, 0);
+	assert.equal(rows[1]?.percent, 50);
+});
+
+test("parseAntigravityQuota degrades to undefined instead of fabricating a reading", () => {
+	assert.equal(parseAntigravityQuota("not json", 0), undefined);
+	assert.equal(parseAntigravityQuota("[]", 0), undefined);
+	assert.equal(parseAntigravityQuota(JSON.stringify({ status: "ERROR", command: { name: "usage", data: { groups: [] } } }), 0), undefined);
+	assert.equal(parseAntigravityQuota(JSON.stringify({ status: "SUCCESS", command: { name: "models", data: { groups: [] } } }), 0), undefined);
+	assert.equal(parseAntigravityQuota(JSON.stringify({ status: "SUCCESS", command: { name: "usage", data: {} } }), 0), undefined);
+	// An unrecognised window tag carries no known duration, so the group is
+	// dropped rather than guessed at -- and a payload of only such groups
+	// degrades whole, leaving the provider's pending note in place.
+	assert.equal(parseAntigravityQuota(JSON.stringify({ status: "SUCCESS", command: { name: "usage", data: { groups: [{ name: "Gemini Models", buckets: [{ window: "fortnightly", remaining_fraction: 1 }] }] } } }), 0), undefined);
+});
+
+test("a provider without `models` on its limits keeps the aggregate fallback", () => {
+	// codex/kimi/claude-bridge style: one fixed limit name for every model.
+	const usage: ProviderUsage = {
+		provider: "openai-codex",
+		plan: "prolite",
+		limits: [{ name: "codex", windows: [{ label: "week", usedPercent: 42, windowSeconds: 604_800, resetAt: null }], limitReached: false }],
+		fetchedAt: 0,
+	};
+	const rows = modelUsageRows(["openai-codex/gpt-6-sol"], new Map([["openai-codex", usage]]), undefined, "openai-codex");
+	assert.equal(rows[0]?.percent, 42);
 });

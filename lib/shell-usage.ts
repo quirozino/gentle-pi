@@ -22,6 +22,16 @@ export interface UsageLimit {
 	name: string;
 	windows: UsageWindow[];
 	limitReached: boolean;
+	// The model ids this limit covers, for a provider whose limit is shared by
+	// a named group of models rather than owned by one (antigravity's Gemini
+	// bucket meters both Gemini Flash and Gemini Pro under one limit). Stored
+	// as normalised lowercase keyword tokens — matched by substring against a
+	// bare model id in modelUsageRows — so a real catalog id the group's own
+	// description never spells out verbatim, like "gemini-3.8-flash", still
+	// resolves against the family word "gemini" it does spell out. Providers
+	// that name each model's own limit (nan) or use one fixed limit for every
+	// model (codex, kimi) leave this unset.
+	models?: readonly string[];
 }
 
 export interface ProviderUsage {
@@ -93,7 +103,6 @@ const ANTHROPIC_WINDOWS: ReadonlyArray<[key: string, seconds: number]> = [
 	["7d", 604_800],
 ];
 export const ANTIGRAVITY_PROVIDER = "antigravity";
-const ANTIGRAVITY_MAIN_LIMIT = "gemini";
 // kimi-coding is the Kimi Code subscription OAuth provider; the matching usage
 // endpoint lives at api.kimi.com and answers the weekly quota plus every
 // rate-limit window the plan exposes.
@@ -696,76 +705,165 @@ export function parseKimiUsage(payload: unknown, now: number): ProviderUsage | u
 	};
 }
 
-// --- Antigravity (Gemini) usage ---
+// --- Antigravity (agy CLI) usage ---
+//
+// agy has no usage subcommand; its /usage slash command in print mode
+// (`agy --print /usage --output-format json --print-timeout 30s`) answers
+// the same structured payload its own TUI panel reads, live-verified free
+// (usage.total_tokens: 0). It reports command.data.groups[], one group per
+// named set of models sharing a quota (Gemini Flash + Gemini Pro; Claude
+// Opus + Claude Sonnet + GPT-OSS), each carrying 5h and weekly buckets with
+// a remaining_fraction (0-1) and an ISO reset_time. Account-level: the same
+// answer regardless of which antigravity model is active.
 
-export interface AntigravityUsageParams {
-	modelId: string;
-	sessionTokens: number;
-	contextWindow?: number;
-	now: number;
+interface RawAntigravityBucket {
+	window?: unknown;
+	remaining_fraction?: unknown;
+	remainingFraction?: unknown;
+	reset_time?: unknown;
+	resetTime?: unknown;
 }
 
-export interface AntigravityModelTier {
-	tierKey: string;
-	label: string;
-	maxTokens: number;
-	plan: string;
-	limitName: string;
+interface RawAntigravityGroup {
+	name?: unknown;
+	description?: unknown;
+	buckets?: unknown;
 }
 
-/**
- * Antigravity model limit specs.
- * Default token limits per model tier based on Google Antigravity subscription quotas.
- */
-const ANTIGRAVITY_TIER_LIMITS: Record<string, AntigravityModelTier> = {
-	flash: { tierKey: "flash", label: "1d", maxTokens: 10_000_000, plan: "flash", limitName: "gemini" },
-	pro: { tierKey: "pro", label: "1d", maxTokens: 2_000_000, plan: "pro", limitName: "gemini" },
-	claude: { tierKey: "claude", label: "5h", maxTokens: 300_000, plan: "claude", limitName: "claude" },
-	gpt: { tierKey: "gpt", label: "5h", maxTokens: 500_000, plan: "gpt-oss", limitName: "gpt-oss" },
-	default: { tierKey: "default", label: "1d", maxTokens: 4_000_000, plan: "subscription", limitName: "gemini" },
-};
-
-export function getAntigravityModelTier(modelId: string): AntigravityModelTier {
-	const id = modelId.toLowerCase();
-	if (id.includes("pro")) return ANTIGRAVITY_TIER_LIMITS.pro;
-	if (id.includes("flash")) return ANTIGRAVITY_TIER_LIMITS.flash;
-	if (id.includes("claude") || id.includes("opus") || id.includes("sonnet")) return ANTIGRAVITY_TIER_LIMITS.claude;
-	if (id.includes("gpt")) return ANTIGRAVITY_TIER_LIMITS.gpt;
-	return ANTIGRAVITY_TIER_LIMITS.default;
+interface RawAntigravityCommand {
+	name?: unknown;
+	data?: unknown;
 }
 
-/**
- * Derives a ProviderUsage model for Antigravity based on current model and session tokens.
- * Zero token cost overhead: computed purely from local session telemetry.
- */
-export function calculateAntigravityUsage(params: AntigravityUsageParams): ProviderUsage {
-	const tier = getAntigravityModelTier(params.modelId);
-	const windowSeconds = tier.label === "5h" ? 18_000 : DAY;
-	const capacity = tier.maxTokens;
-	const usedPercent = Math.min(100, Math.max(0, (params.sessionTokens / capacity) * 100));
+interface RawAntigravityUsage {
+	status?: unknown;
+	command?: unknown;
+}
 
-	const windows: UsageWindow[] = [
-		{
-			label: tier.label,
-			usedPercent,
-			windowSeconds,
-			resetAt: null,
-		},
-	];
+const ANTIGRAVITY_WINDOW_SECONDS: Readonly<Record<string, number>> = { "5h": 18_000, weekly: WEEK };
+const ANTIGRAVITY_WINDOW_LABEL: Readonly<Record<string, string>> = { "5h": "5h", weekly: "week" };
+// 5h is the window a person runs into first; weekly resets far less often.
+// Same ordering idea as the bridge's own report (WINDOW_RANK), just applied
+// to our own UsageWindow shape instead of its AgyQuotaBucket.
+const ANTIGRAVITY_WINDOW_RANK: Readonly<Record<string, number>> = { "5h": 0, week: 1 };
+// Connective words that carry no identity of their own, stripped before a
+// group name becomes a slug: "Gemini Models" -> "gemini", "Claude and GPT
+// models" -> "claude-gpt". A group with nothing left after stripping (or an
+// unrecognised future name) falls back to slugging the name as given, so a
+// slug is never dropped, only ever less trimmed than the two verified ones.
+const ANTIGRAVITY_SLUG_STOPWORDS = new Set(["models", "model", "and"]);
+const ANTIGRAVITY_GROUP_MODELS_PREFIX = /^models within this group:\s*/i;
 
+function antigravityGroupSlug(name: string): string {
+	const words = name.split(/\s+/).filter((word) => word.length > 0 && !ANTIGRAVITY_SLUG_STOPWORDS.has(word.toLowerCase()));
+	const source = words.length > 0 ? words.join(" ") : name;
+	const slug = source.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+	return slug.length > 0 ? slug : "group";
+}
+
+// The group's own description names its models in prose ("Models within
+// this group: Gemini Flash, Gemini Pro"); this reduces that prose to the
+// lowercase word tokens a real catalog id can be matched against by
+// substring. Splitting on every non-alphanumeric run already yields both
+// the model words ("gemini", "flash", "pro") and, incidentally, the family
+// words the id itself uses ("claude", "opus", "sonnet", "gpt" out of
+// "GPT-OSS"), so no separate family list is needed to keep ids like
+// "gemini-3.8-flash" or "gpt-oss-120b-medium" resolvable.
+function antigravityGroupModels(description: string | undefined, slug: string): readonly string[] | undefined {
+	const tokens = new Set<string>();
+	if (description) {
+		const list = description.replace(ANTIGRAVITY_GROUP_MODELS_PREFIX, "");
+		for (const token of list.toLowerCase().split(/[^a-z0-9]+/)) {
+			if (token.length > 0) tokens.add(token);
+		}
+	}
+	// The description is prose from an undocumented command: a future agy may
+	// reword it, drop it, or stop listing members at all. Falling back to the
+	// slug's own words keeps a grouped limit matchable ("gemini" still reaches
+	// gemini-3.8-flash, "claude-gpt" still reaches claude-sonnet-4-6 and
+	// gpt-oss-120b-medium) instead of leaving `models` empty -- which would
+	// silently hand every model the FIRST group's number through the aggregate
+	// fallback in modelUsageRows. A coarser match is recoverable; a confident
+	// wrong reading is not.
+	if (tokens.size === 0) {
+		for (const word of slug.split("-")) {
+			if (word.length > 0) tokens.add(word);
+		}
+	}
+	return tokens.size > 0 ? [...tokens] : undefined;
+}
+
+function parseAntigravityWindow(raw: unknown): UsageWindow | undefined {
+	if (!raw || typeof raw !== "object") return undefined;
+	const bucket = raw as RawAntigravityBucket;
+	const window = typeof bucket.window === "string" ? bucket.window : undefined;
+	const seconds = window === undefined ? undefined : ANTIGRAVITY_WINDOW_SECONDS[window];
+	// A window tag this build does not recognise carries no known seconds to
+	// report, so it is skipped rather than guessed at.
+	if (seconds === undefined) return undefined;
+	const fractionRaw = toFiniteNumber(bucket.remaining_fraction) ?? toFiniteNumber(bucket.remainingFraction);
+	if (fractionRaw === undefined) return undefined;
+	const remainingFraction = Math.max(0, Math.min(1, fractionRaw));
+	const resetSource = typeof bucket.reset_time === "string" ? bucket.reset_time : typeof bucket.resetTime === "string" ? bucket.resetTime : undefined;
+	const resetAt = resetSource === undefined ? null : Date.parse(resetSource);
 	return {
-		provider: ANTIGRAVITY_PROVIDER,
-		plan: tier.plan,
-		limits: [
-			{
-				name: tier.limitName,
-				windows,
-				limitReached: usedPercent >= 100,
-			},
-		],
-		fetchedAt: params.now,
+		label: ANTIGRAVITY_WINDOW_LABEL[window as string],
+		usedPercent: (1 - remainingFraction) * 100,
+		windowSeconds: seconds,
+		resetAt: Number.isFinite(resetAt) ? (resetAt as number) : null,
 	};
 }
+
+function parseAntigravityGroup(raw: unknown): UsageLimit | undefined {
+	if (!raw || typeof raw !== "object") return undefined;
+	const group = raw as RawAntigravityGroup;
+	if (typeof group.name !== "string" || group.name.length === 0) return undefined;
+	const buckets = Array.isArray(group.buckets) ? group.buckets : [];
+	const windows = buckets
+		.map((bucket) => parseAntigravityWindow(bucket))
+		.filter((window): window is UsageWindow => window !== undefined)
+		.sort((a, b) => (ANTIGRAVITY_WINDOW_RANK[a.label] ?? 9) - (ANTIGRAVITY_WINDOW_RANK[b.label] ?? 9));
+	if (windows.length === 0) return undefined;
+	const slug = antigravityGroupSlug(group.name);
+	const models = antigravityGroupModels(typeof group.description === "string" ? group.description : undefined, slug);
+	return {
+		name: slug,
+		windows,
+		limitReached: windows.every((window) => window.usedPercent >= 100),
+		...(models ? { models } : {}),
+	};
+}
+
+/**
+ * Parse `agy --print /usage --output-format json`'s stdout into a
+ * ProviderUsage: one UsageLimit per group, in whatever order agy reports
+ * them. Tolerant of the same status/command envelope the bridge's own
+ * reference parser checks (pi-antigravity-bridge/src/usage.ts) without
+ * importing it, and — like every other parse* function in this file —
+ * never throws: a malformed payload, a non-/usage command, or a report with
+ * no usable groups degrades to undefined rather than a fabricated reading.
+ */
+export function parseAntigravityQuota(text: string, now: number): ProviderUsage | undefined {
+	let payload: unknown;
+	try {
+		payload = JSON.parse(text);
+	} catch {
+		return undefined;
+	}
+	if (!payload || typeof payload !== "object") return undefined;
+	const raw = payload as RawAntigravityUsage;
+	const status = typeof raw.status === "string" ? raw.status.toUpperCase() : "";
+	if (status !== "" && status !== "SUCCESS" && status !== "OK") return undefined;
+	if (!raw.command || typeof raw.command !== "object") return undefined;
+	const command = raw.command as RawAntigravityCommand;
+	if (command.name !== "usage" || !command.data || typeof command.data !== "object") return undefined;
+	const groups = (command.data as { groups?: unknown }).groups;
+	if (!Array.isArray(groups)) return undefined;
+	const limits = groups.map((group) => parseAntigravityGroup(group)).filter((limit): limit is UsageLimit => limit !== undefined);
+	if (limits.length === 0) return undefined;
+	return { provider: ANTIGRAVITY_PROVIDER, plan: undefined, limits, fetchedAt: now };
+}
+
 export function accountIdFromToken(token: string): string | undefined {
 	const parts = token.split(".");
 	if (parts.length !== 3) return undefined;
@@ -838,7 +936,13 @@ export function modelUsageRows(
 
 		// 1) the provider names this model's own allowance (nan).
 		let index = limits.findIndex((limit, position) => !taken.has(position) && bareModelId(limit.name).toLowerCase() === key);
-		// 2) an aggregate provider holds every model under one fixed limit name, so the
+		// 2) a limit whose own `models` list covers this model (antigravity's
+		//    shared Gemini or Claude+GPT group). Unlike step 1's per-model
+		//    allowance, a group limit legitimately serves more than one model at
+		//    once, so this match consults neither side of `taken`: it is never
+		//    exclusive, and a second model of the same group must still find it.
+		if (index < 0) index = limits.findIndex((limit) => limit.models?.some((token) => key.includes(token)));
+		// 3) an aggregate provider holds every model under one fixed limit name, so the
 		//    model is reached through its provider rather than its own name.
 		if (index < 0 && limits.length > 0 && !allowanceGroupsSupported(limits)) index = 0;
 
