@@ -668,8 +668,6 @@ export default function (pi: ExtensionAPI) {
       !process.argv.every((arg) => arg.startsWith("-") || arg.endsWith(".ts"));
     if (isCLICommand) return;
 
-    if (currentIntroMode() === "skip") return;
-
     // Pi has already started its renderer. Let setHeader schedule the paint;
     // clearing stdout here would leave its previous-frame cache out of sync.
     const bannerConfig = await readBannerConfig();
@@ -683,6 +681,19 @@ export default function (pi: ExtensionAPI) {
     const wordmark = resolveWordmark(bannerConfig, activeThemeName());
     const wordmarkWide = wordmark ? padLines(normalizeAscii(wordmark.art)) : undefined;
     const wordmarkCompact = wordmark?.compact ? padLines(normalizeAscii(wordmark.compact)) : undefined;
+
+    // The intro-size gate asks whether the ANIMATED INTRO is worth playing
+    // here, and `skip` is any terminal under 20 rows or 40 columns. A theme
+    // wordmark is not an intro: it is the header's identity, and the
+    // workstation extension it replaced carried no size gate at all. Gating
+    // it here is what made a small -- or not-yet-sized, which a pane inside a
+    // multiplexer often is at session_start -- terminal silently fall back to
+    // Pi's own default header and lose the wordmark for the whole session,
+    // since this return is permanent and the resize handler below never gets
+    // installed. So `skip` still suppresses the rose and the text logo, and
+    // never a resolved wordmark, which is seven rows and needs no animation
+    // to be worth drawing.
+    if (wordmark === undefined && currentIntroMode() === "skip") return;
     void warmupLetterStrokes();
 
     let gitBranch = "Not a git repo";
@@ -816,7 +827,12 @@ export default function (pi: ExtensionAPI) {
         return {
           /** Renders the persistent header grid; memoized per width, tick, mode and stats so static passes reuse the built lines. */
           render(width: number): string[] {
-            if (state.mode === "skip") return [];
+            // Same reasoning as the session_start gate above: `skip` drops the
+            // intro, not the identity. A resolved wordmark keeps painting at
+            // any size -- the render below already falls back to the compact
+            // form and lets truncateToWidth clip what still does not fit --
+            // so a narrow pane shows a smaller wordmark rather than none.
+            if (state.mode === "skip" && wordmark === undefined) return [];
             const headerKey = `${width}|${tick}|${state.mode}|${gitBranch}|${mcpServersCount}|${extensionsCount}|${packagesCount}|${sddAgentsCount}|${ctx.cwd}|${skills.length}|${customTools.length}`;
             if (headerCache?.key === headerKey) return headerCache.out;
 
