@@ -526,6 +526,11 @@ const RESIZE_GRACE_PERIOD_MS = 300;
 // first render() has already landed, short enough that "taken" is reported
 // well before the session is doing real work.
 const HEADER_OWNERSHIP_GRACE_MS = 5000;
+// Ambient cadence for a looping wordmark sweep, once the intro window has
+// passed. Deliberately far slower than the intro's 25ms: the band still
+// reads as moving, at a fraction of the redraw traffic.
+const WORDMARK_SWEEP_MS = 120;
+const WORDMARK_SWEEP_SLOW_MS = 500;
 
 function currentIntroMode(): IntroMode {
   // process.stdout.rows/columns reflejan el tamaño real del TTY del proceso;
@@ -818,12 +823,28 @@ export default function (pi: ExtensionAPI) {
           state.timer = null;
         } else {
           const performance = animationPolicy === "performance";
+          // The rose/text-logo intro is a one-shot: it writes itself and
+          // stops. A wordmark sweep is ambient -- it is the header's
+          // identity, so it keeps moving -- but it must not keep the intro's
+          // 25ms writing cadence forever: that is ~40 repaints a second for
+          // the life of the session, which is real traffic over SSH. So the
+          // intro plays at its own cadence, and a sweeping wordmark then
+          // re-arms at a calmer ambient one. `potato` never reaches here and
+          // stays frozen.
+          const sweeps = wordmark !== undefined && wordmark.effect !== "none";
+          const advance = () => {
+            tick += performance ? 10 : 1;
+            try { tui.requestRender(); } catch { cleanup(); }
+          };
           state.timer = setInterval(() => {
             tick += performance ? 10 : 1;
             const finished = allStrokesReady() && tick > WRITING_END_TICK + 22;
             if (finished || Date.now() - animStart > 5000) {
               clearInterval(state.timer!);
-              state.timer = null;
+              state.timer = sweeps
+                ? setInterval(advance, performance ? WORDMARK_SWEEP_SLOW_MS : WORDMARK_SWEEP_MS)
+                : null;
+              state.timer?.unref?.();
             }
             try { tui.requestRender(); } catch { cleanup(); }
           }, performance ? 250 : 25);
@@ -959,7 +980,11 @@ export default function (pi: ExtensionAPI) {
               }
             }
 
-            if (state.mode === "full" || (!bannerConfig.showRose && !bannerConfig.showTextLogo)) {
+            // A theme wordmark is an identity, not a dashboard: it owns the
+            // header alone. The stats block belongs to the rose/text-logo
+            // intro, which the wordmark replaced, so it is suppressed here
+            // rather than stacked underneath.
+            if (wordmark === undefined && (state.mode === "full" || (!bannerConfig.showRose && !bannerConfig.showTextLogo))) {
               b.addRow();
               b.center(width);
 
