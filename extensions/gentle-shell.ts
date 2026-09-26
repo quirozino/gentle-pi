@@ -1344,7 +1344,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			// The header row carries everything that ticks every frame (model,
 			// effort, context, cost, usage) plus session identity; it never sees
 			// extension statuses or the working/thinking state.
-			const headerBar = (width: number) => renderShellHeaderBar(buildShellHeaderModel(footerModel()), theme, width, usageShortcutKey);
+			const headerBar = (width: number) => renderShellHeaderBar(buildShellHeaderModel(footerModel()), theme, width, usageShortcutKey, gaugeAnimationEnabled() ? gaugeTick.value : undefined);
 			const disposeHeader = sidebarHeader(tui, {
 				digest: () => JSON.stringify(buildShellHeaderModel(footerModel())),
 				render: (width) => [headerBar(width).text, renderShellHeaderRule(theme, width)],

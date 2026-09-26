@@ -4,6 +4,7 @@ import { allowanceGroupsSupported, groupUsageLimits, modelUsageRows, renderUsage
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 import { CARD_TONE, cardInnerWidth, renderCard } from "./shell-card.ts";
 import { SHELL_GLYPHS } from "./shell-glyphs.ts";
+import { bannerFrame } from "./shell-sidebar-banner.ts";
 
 export { gaugeTone, renderGauge, type GaugeTone };
 
@@ -168,9 +169,9 @@ function executionSegment(modelId: string, effort: string | undefined, theme: Sh
 		: theme.fg(ROLE.MODEL, modelId);
 }
 
-function contextSegment(contextPercent: number | null, theme: ShellBarTheme): string {
+function contextSegment(contextPercent: number | null, theme: ShellBarTheme, tick?: number): string {
 	const percentText = contextPercent === null ? "?%" : `${Math.round(contextPercent)}%`;
-	return `${theme.fg(ROLE.LABEL, "ctx")} ${paintGauge(contextPercent, theme)} ${theme.fg(ROLE.VALUE, percentText)}`;
+	return `${theme.fg(ROLE.LABEL, "ctx")} ${paintGauge(contextPercent, theme, undefined, tick)} ${theme.fg(ROLE.VALUE, percentText)}`;
 }
 
 function costSegment(costTotal: number, subscription: boolean, theme: ShellBarTheme): string {
@@ -334,14 +335,21 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 	return renderCard({ title: "Status", body, tone: CARD_TONE.INFO, glyph: SHELL_GLYPHS.status }, theme, width, { expanded: true });
 }
 
-const HEADER_BRAND = "✿ Gentle Shell";
+const HEADER_BRAND_TEXT = "DDATA";
+const HEADER_BRAND_STRIDE = 2;
 
 // Narrower than the width, widest first: dropping the profile, then the
 // effort, then the whole location keeps the brand and the bare model id
 // alive as long as anything can still share the row with the right-aligned
 // counters.
-function headerLeftStages(model: ShellHeaderModel, theme: ShellBarTheme): string[][] {
-	const brand = theme.fg(ROLE.BRAND, theme.bold(HEADER_BRAND));
+function fixedWidthBrand(text: string, theme: ShellBarTheme): string {
+	const padded = text + " ".repeat(Math.max(0, HEADER_BRAND_TEXT.length - visibleWidth(text)));
+	return theme.fg(ROLE.BRAND, theme.bold(padded));
+}
+
+function headerLeftStages(model: ShellHeaderModel, theme: ShellBarTheme, tick?: number): string[][] {
+	const animatedText = bannerFrame(HEADER_BRAND_TEXT, tick, { stride: HEADER_BRAND_STRIDE });
+	const brand = fixedWidthBrand(animatedText, theme);
 	const location = locationSegment(model, theme);
 	const withEffort = executionSegment(model.modelId, model.effort, theme);
 	const modelOnly = executionSegment(model.modelId, undefined, theme);
@@ -358,11 +366,11 @@ function headerLeftStages(model: ShellHeaderModel, theme: ShellBarTheme): string
 const USAGE_LABEL_ROLE = ROLE.LABEL;
 const USAGE_HINT_ROLE = "dim";
 
-function usageWindowText(window: UsageWindow, theme: ShellBarTheme, withGauge: boolean): string {
+function usageWindowText(window: UsageWindow, theme: ShellBarTheme, withGauge: boolean, tick?: number): string {
 	const percent = `${Math.round(window.usedPercent)}%`;
 	const parts = [
 		...(window.label.length > 0 ? [theme.fg(ROLE.LABEL, window.label)] : []),
-		...(withGauge ? [paintGauge(window.usedPercent, theme)] : []),
+		...(withGauge ? [paintGauge(window.usedPercent, theme, undefined, tick)] : []),
 		theme.fg(ROLE.VALUE, percent),
 	];
 	return parts.join(" ");
@@ -373,19 +381,19 @@ function usageWindowText(window: UsageWindow, theme: ShellBarTheme, withGauge: b
 // text only. A provider with no usage data at all has no windows to shape,
 // so all three collapse to the bare "usage" label plus the shortcut hint.
 type UsageStage = "full" | "text" | "primary";
-function usageSegmentText(windows: UsageWindow[], theme: ShellBarTheme, stage: UsageStage, hint: string | undefined): string {
+function usageSegmentText(windows: UsageWindow[], theme: ShellBarTheme, stage: UsageStage, hint: string | undefined, tick?: number): string {
 	const label = theme.fg(USAGE_LABEL_ROLE, "usage");
 	const shown = stage === "primary" ? windows.slice(0, 1) : windows;
-	const body = shown.map((window) => usageWindowText(window, theme, stage === "full")).join(` ${theme.fg(ROLE.LABEL, "·")} `);
+	const body = shown.map((window) => usageWindowText(window, theme, stage === "full", tick)).join(` ${theme.fg(ROLE.LABEL, "·")} `);
 	const head = body.length > 0 ? `${label} ${body}` : label;
 	return hint ? `${head} ${theme.fg(ROLE.LABEL, "·")} ${theme.fg(USAGE_HINT_ROLE, hint)}` : head;
 }
 
-export function renderShellHeaderBar(model: ShellHeaderModel, theme: ShellBarTheme, width: number, usageHint?: string): ShellHeaderResult {
+export function renderShellHeaderBar(model: ShellHeaderModel, theme: ShellBarTheme, width: number, usageHint?: string, tick?: number): ShellHeaderResult {
 	const targetWidth = Math.max(0, Math.floor(width));
-	const ctxCost = joinSegments([contextSegment(model.contextPercent, theme), costSegment(model.costTotal, model.subscription, theme)], theme);
+	const ctxCost = joinSegments([contextSegment(model.contextPercent, theme, tick), costSegment(model.costTotal, model.subscription, theme)], theme);
 	const windows = model.usage ? (selectUsageLimit(model.usage, model.modelId)?.windows ?? []) : [];
-	const leftStages = headerLeftStages(model, theme);
+	const leftStages = headerLeftStages(model, theme, tick);
 	const minimalLeft = leftStages.length - 2; // brand + bare model id, before dropping the model too
 	// One flat, ordered cascade — never a per-stage nested search — so the
 	// left group fully degrades (profile → effort → location) before usage
@@ -402,7 +410,7 @@ export function renderShellHeaderBar(model: ShellHeaderModel, theme: ShellBarThe
 		{ leftIndex: leftStages.length - 1, usageStage: undefined },
 	];
 	for (const { leftIndex, usageStage } of attempts) {
-		const usageText = usageStage ? usageSegmentText(windows, theme, usageStage, usageHint) : undefined;
+		const usageText = usageStage ? usageSegmentText(windows, theme, usageStage, usageHint, tick) : undefined;
 		const right = usageText ? joinSegments([ctxCost, usageText], theme) : ctxCost;
 		const left = joinSegments(leftStages[leftIndex]!, theme);
 		if (visibleWidth(left) + RIGHT_PADDING + visibleWidth(right) > targetWidth) continue;
@@ -411,7 +419,8 @@ export function renderShellHeaderBar(model: ShellHeaderModel, theme: ShellBarThe
 		const usageStart = visibleWidth(left) + (targetWidth - visibleWidth(left) - visibleWidth(right)) + visibleWidth(ctxCost) + visibleWidth(` ${SHELL_BAR_SEPARATOR} `);
 		return { text, usageSpan: { start: usageStart, end: usageStart + visibleWidth(usageText) } };
 	}
-	const brand = theme.fg(ROLE.BRAND, theme.bold(HEADER_BRAND));
+	const animatedText = bannerFrame(HEADER_BRAND_TEXT, tick, { stride: HEADER_BRAND_STRIDE });
+	const brand = fixedWidthBrand(animatedText, theme);
 	return { text: visibleWidth(brand) <= targetWidth ? brand : "" };
 }
 
