@@ -8,6 +8,7 @@ import { getAgentDir, SessionManager } from "@earendil-works/pi-coding-agent";
 import {
 	RESUME_HANDOFF_ENV,
 	gentleShellResumeCommand,
+	hintLabelStyleFromTheme,
 	isResumeHandoffPath,
 	parseResumeHandoff,
 	piDefaultSessionDir,
@@ -252,9 +253,50 @@ test("a cross-project session file reopens the original session in pi", () => {
 	}
 });
 
-test("planResumeHint prints the gentle-shell line with pi's dim label style", () => {
-	const hint = planResumeHint({ handoff: { sessionId: ID }, homeFlags: ["--link"], stdoutIsTTY: true, terminalHungUp: false, platform: "linux", color: true });
-	assert.equal(hint, `\u001b[2mTo resume in gentle-shell:\u001b[22m gentle-shell --link --session ${ID}\n`);
+// A theme that records which roles were asked for and paints with a themed SGR
+// pair, standing in for pi's Theme (its dim role is whatever the theme says).
+function recordingTheme() {
+	const roles: string[] = [];
+	return { roles, fg: (role: string, text: string) => { roles.push(role); return `\u001b[38;5;240m${text}\u001b[39m`; } };
+}
+
+test("planResumeHint paints the label with the style captured from the theme's dim role", () => {
+	const theme = recordingTheme();
+	const labelStyle = hintLabelStyleFromTheme(theme);
+	assert.deepEqual(theme.roles, ["dim"], "only the dim role is asked for");
+	assert.deepEqual(labelStyle, { open: "\u001b[38;5;240m", close: "\u001b[39m" });
+	const hint = planResumeHint({ handoff: { sessionId: ID, labelStyle }, homeFlags: ["--link"], stdoutIsTTY: true, terminalHungUp: false, platform: "linux", color: true });
+	assert.equal(hint, `\u001b[38;5;240mTo resume in gentle-shell:\u001b[39m gentle-shell --link --session ${ID}\n`);
+});
+
+test("planResumeHint prints a plain label when the handoff carries no theme style", () => {
+	const hint = planResumeHint({ handoff: { sessionId: ID }, homeFlags: [], stdoutIsTTY: true, terminalHungUp: false, platform: "linux", color: true });
+	assert.equal(hint, `To resume in gentle-shell: gentle-shell --session ${ID}\n`);
+});
+
+test("hintLabelStyleFromTheme refuses anything but SGR escapes and survives a broken theme", () => {
+	const tagged = { fg: (role: string, text: string) => `<${role}>${text}</${role}>` };
+	assert.equal(hintLabelStyleFromTheme(tagged), undefined, "non-SGR output is never forwarded to the terminal");
+	assert.equal(hintLabelStyleFromTheme({ fg: (_role: string, text: string) => text }), undefined, "an unstyled theme yields no style");
+	assert.equal(hintLabelStyleFromTheme({ fg: () => { throw new Error("no theme"); } }), undefined);
+	assert.equal(hintLabelStyleFromTheme(undefined), undefined);
+	const hostile = { fg: (_role: string, text: string) => `\u001b]0;pwned\u0007${text}` };
+	assert.equal(hintLabelStyleFromTheme(hostile), undefined, "OSC sequences are refused");
+});
+
+test("parseResumeHandoff keeps a valid label style and drops a hostile one without losing the hint", () => {
+	const good = parseResumeHandoff(JSON.stringify({ sessionId: ID, labelStyle: { open: "\u001b[2m", close: "\u001b[22m" } }));
+	assert.deepEqual(good?.labelStyle, { open: "\u001b[2m", close: "\u001b[22m" });
+	const bad = parseResumeHandoff(JSON.stringify({ sessionId: ID, labelStyle: { open: "\u001b]52;c;x\u0007", close: "" } }));
+	assert.equal(bad?.sessionId, ID);
+	assert.equal(bad?.labelStyle, undefined);
+});
+
+test("the resume hint sources paint through the theme and hardcode no colour escape", () => {
+	for (const path of ["../lib/gentle-shell-resume-hint.ts", "../extensions/resume-hint.ts"]) {
+		const source = readFileSync(new URL(path, import.meta.url), "utf8");
+		assert.doesNotMatch(source, /\\u001b\[\d|\\x1b\[\d/i, `${path} must not embed a raw SGR escape`);
+	}
 });
 
 test("planResumeHint drops the ANSI style when stdout has no colors", () => {

@@ -1,6 +1,7 @@
 import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { existsSync, writeFileSync } from "node:fs";
 import {
+	hintLabelStyleFromTheme,
 	isResumeHandoffPath,
 	RESUME_HANDOFF_ENV,
 	resumeHandoffFromSession,
@@ -49,6 +50,9 @@ export default function resumeHint(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 			fileExists: existsSync,
 		});
 		if (!handoff) return;
+		// The launcher prints after pi exits, so the theme's dim role is captured now.
+		const labelStyle = hintLabelStyleFromTheme(ctx.ui?.theme);
+		if (labelStyle) handoff.labelStyle = labelStyle;
 		try {
 			// "wx": create only. The launcher's private dir starts empty, so an
 			// existing file (or a planted symlink) means it is not ours to write.

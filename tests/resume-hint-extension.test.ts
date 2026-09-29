@@ -120,3 +120,19 @@ test("extension hands off the session file for a session from another project", 
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
+
+test("extension hands the theme's dim role to the launcher instead of a hardcoded escape", () => {
+	const dir = handoffDir();
+	try {
+		const handoffPath = join(dir, "handoff.json");
+		const [onShutdown] = loadExtension({ [RESUME_HANDOFF_ENV]: handoffPath });
+		const roles: string[] = [];
+		const theme = { fg: (role: string, text: string) => { roles.push(role); return `\u001b[38;5;240m${text}\u001b[39m`; } };
+		onShutdown({ reason: "quit" }, { ...fakeContext(dir), ui: { theme } });
+		assert.deepEqual(roles, ["dim"]);
+		assert.deepEqual(parseResumeHandoff(readFileSync(handoffPath, "utf8"))?.labelStyle, { open: "\u001b[38;5;240m", close: "\u001b[39m" });
+	} finally {
+		resetResumeHintState();
+		rmSync(dir, { recursive: true, force: true });
+	}
+});

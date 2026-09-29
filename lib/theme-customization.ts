@@ -42,3 +42,41 @@ export function sourcePalettePreview(name: string, sourcePath: string | undefine
 	};
 	return { title: `${name} · source palette`, sample: `${escape("accent", true)}  \x1b[0m ${escape("text", false)}Aa  sample text\x1b[0m` };
 }
+
+// Theme roles that stand in for each banner colour option in the Customize
+// preview. The preview is painted through the active theme, so every option
+// reads as that theme's accent, success, warning or border family instead of a
+// fixed RGB value that ignores the theme.
+export const BANNER_PREVIEW_ROLE = {
+	pink: "accent",
+	cyan: "borderAccent",
+	yellow: "warning",
+	green: "success",
+} as const;
+
+export interface BannerPreviewTheme {
+	fg(role: string, text: string): string;
+}
+
+export interface BannerPreviewInput {
+	color: string;
+	showRose: boolean;
+	showTextLogo: boolean;
+}
+
+const PREVIEW_ROSE = "✿";
+const PREVIEW_LADDER: ReadonlyArray<readonly [role: string | undefined, glyph: string]> = [
+	["dim", "░"],
+	["muted", "▒"],
+	[undefined, "█"],
+];
+
+/** Static Customize preview for a banner option, painted only through theme roles. */
+export function bannerPreviewSample(input: BannerPreviewInput, theme: BannerPreviewTheme): { title: string; sample: string } {
+	const role = BANNER_PREVIEW_ROLE[input.color as keyof typeof BANNER_PREVIEW_ROLE] ?? "accent";
+	const rose = input.showRose ? theme.fg(role, PREVIEW_ROSE) : theme.fg("dim", "·");
+	const logo = input.showTextLogo ? theme.fg(role, "GENTLE SHELL") : theme.fg("muted", "(logo hidden)");
+	// A short dim -> muted -> colour ladder shows how the option fades in.
+	const ladder = PREVIEW_LADDER.map(([ladderRole, glyph]) => theme.fg(ladderRole ?? role, glyph)).join("");
+	return { title: `Banner · ${input.color} (static)`, sample: `${rose}  ${logo}  ${ladder}` };
+}

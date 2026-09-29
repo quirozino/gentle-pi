@@ -37,8 +37,50 @@ export function isResumeHandoffPath(path: string): boolean {
 	);
 }
 
+// The hint is printed by the launcher after pi (and its theme) is gone, so the
+// extension captures how the active theme paints the "dim" role and hands the
+// escape pair over. The launcher never chooses a colour of its own.
+export const HINT_LABEL_ROLE = "dim";
+
+export interface HintLabelStyle {
+	open: string;
+	close: string;
+}
+
+// SGR sequences only, and short: the pair is written to the terminal verbatim.
+const SGR_SEQUENCES = /^(?:\u001b\[[0-9;:]*m){0,8}$/;
+const LABEL_STYLE_MAX_CHARS = 128;
+const LABEL_STYLE_MARK = "\u0000";
+
+function validLabelStyle(style: unknown): style is HintLabelStyle {
+	if (typeof style !== "object" || style === null || Array.isArray(style)) return false;
+	const { open, close } = style as Record<string, unknown>;
+	return (
+		typeof open === "string" && typeof close === "string" &&
+		open.length <= LABEL_STYLE_MAX_CHARS && close.length <= LABEL_STYLE_MAX_CHARS &&
+		SGR_SEQUENCES.test(open) && SGR_SEQUENCES.test(close)
+	);
+}
+
+/** Derive the label style from a theme by painting a marker through the dim role. */
+export function hintLabelStyleFromTheme(theme: { fg(role: string, text: string): string } | undefined): HintLabelStyle | undefined {
+	if (!theme) return undefined;
+	try {
+		const painted = theme.fg(HINT_LABEL_ROLE, LABEL_STYLE_MARK);
+		const at = painted.indexOf(LABEL_STYLE_MARK);
+		if (at < 0) return undefined;
+		const style = { open: painted.slice(0, at), close: painted.slice(at + LABEL_STYLE_MARK.length) };
+		return validLabelStyle(style) && (style.open.length > 0 || style.close.length > 0) ? style : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 export interface ResumeHandoff {
 	sessionId: string;
+	// How the active theme paints the hint label (see hintLabelStyleFromTheme).
+	// Absent when no theme was reachable at shutdown: the label prints plain.
+	labelStyle?: HintLabelStyle;
 	// Present only when pi would add --session-dir, i.e. the session does not
 	// live in pi's default per-cwd directory under the agent dir.
 	sessionDir?: string;
@@ -92,16 +134,18 @@ export function parseResumeHandoff(text: string): ResumeHandoff | undefined {
 		return undefined;
 	}
 	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
-	const { sessionId, sessionDir, sessionFile } = parsed as Record<string, unknown>;
+	const { sessionId, sessionDir, sessionFile, labelStyle } = parsed as Record<string, unknown>;
 	if (typeof sessionId !== "string" || !SESSION_ID_PATTERN.test(sessionId)) return undefined;
+	// A malformed style is dropped (plain label), not a reason to lose the hint.
+	const style = validLabelStyle(labelStyle) ? { labelStyle: { open: labelStyle.open, close: labelStyle.close } } : {};
 	if (sessionFile !== undefined) {
 		if (sessionDir !== undefined || typeof sessionFile !== "string") return undefined;
 		if (!isAbsolute(sessionFile) || !sessionFile.endsWith(".jsonl") || CONTROL_CHARS.test(sessionFile)) return undefined;
-		return { sessionId, sessionFile };
+		return { sessionId, sessionFile, ...style };
 	}
-	if (sessionDir === undefined) return { sessionId };
+	if (sessionDir === undefined) return { sessionId, ...style };
 	if (typeof sessionDir !== "string" || sessionDir.length === 0 || CONTROL_CHARS.test(sessionDir)) return undefined;
-	return { sessionId, sessionDir };
+	return { sessionId, sessionDir, ...style };
 }
 
 // Values that need no quoting in any shell a user might paste the hint into.
@@ -171,6 +215,7 @@ export function planResumeHint(input: ResumeHintInput): string | undefined {
 	if (!handoff || !stdoutIsTTY || terminalHungUp) return undefined;
 	const command = gentleShellResumeCommand(handoff, homeFlags, platform);
 	if (command === undefined) return undefined;
-	const label = color ? `\u001b[2m${HINT_LABEL}\u001b[22m` : HINT_LABEL;
+	const style = color ? handoff.labelStyle : undefined;
+	const label = style ? `${style.open}${HINT_LABEL}${style.close}` : HINT_LABEL;
 	return `${label} ${command}\n`;
 }
