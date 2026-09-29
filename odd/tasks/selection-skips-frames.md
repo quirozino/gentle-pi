@@ -44,5 +44,7 @@ Mode: unknown (no project/session config); ordinary functional checks.
 - Configured single-style frame glyphs (`│ ╭ ─`) count as frame while configured, so a `│` at a line edge is trimmed then.
 - Trim runs per line range; on a screen line spanning rail + transcript only the outer edges trim.
 
+- Review (RDD) of 3109b8710: high risk, granted, approved and acknowledged (lineage from worktree at 3109b8710). Warning R3-leading-indent-dropped fixed in 307c61c87 (leading trim takes one padding space per frame glyph; indentation test added). Assess of 307c61c87: medium, under_budget, pending in slice.
+
 ## Next step
 Done; push/PR are the user's call.
