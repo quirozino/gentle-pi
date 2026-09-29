@@ -57,6 +57,7 @@ import {
 } from "../lib/shell-usage.ts";
 import { UsageView } from "../lib/shell-usage-view.ts";
 import { sidebarHeader, sidebarPart } from "../lib/shell-sidebar.ts";
+import { installSelectionFrameTrim } from "../lib/selection-frame-trim.ts";
 import { installSidebar, invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
 import { SessionChanges, SESSION_CHANGE_EVENT } from "../lib/session-changes.ts";
 import { installSessionChangeCapture } from "../lib/session-change-capture.ts";
@@ -1359,8 +1360,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				},
 			});
 			const uninstall = installSidebar(tui, theme, { bannerTick: () => (gaugeAnimationEnabled() ? gaugeTick.value : undefined) });
+			// Independent of the rail: chat selections in a narrow terminal (no sidebar) also skip card frames.
+			const untrim = installSelectionFrameTrim(tui);
 			startIdleGaugeAnimation();
-			return { ...part, dispose() { disposeHeader(); uninstall(); part.dispose(); } };
+			return { ...part, dispose() { untrim(); disposeHeader(); uninstall(); part.dispose(); } };
 		});
 		void refreshAllUsage(ctx, true).catch(() => undefined);
 		const ownsPrompt = installPrompt(
