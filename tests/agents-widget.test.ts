@@ -326,3 +326,60 @@ test("the idle column degrades like the others as the card narrows, and elapsed 
 	assert.doesNotMatch(dropped[1], /idle/, "idle is the first of the two to go");
 	assert.match(dropped[1], /3m04s │$/, "elapsed alone still fits and remains the last column standing");
 });
+
+// The frame sweep: accent while a task is actively working, warning while the
+// unfinished tasks only wait or sit idle, off unless the caller opts in.
+
+const roleTheme = { fg: (role: string, text: string) => `<${role}>${text}</${role}>` };
+const SWEEP_ROLES = ["accent", "warning"];
+
+
+// Sweep roles found on frame glyphs across one lap of ticks, so the result
+// does not depend on where the head happens to sit.
+function frameSweepRoles(render: (tick: number) => string[]): Set<string> {
+	const roles = new Set<string>();
+	for (let tick = 0; tick < 40; tick++) {
+		for (const line of render(tick)) for (const match of line.matchAll(/<(\w+)>([^<]*)<\/\1>/g)) {
+			if (SWEEP_ROLES.includes(match[1] as string) && /^[│─╭╮╰╯ ]+$/.test(match[2] as string) && /[│─╭╮╰╯]/.test(match[2] as string)) roles.add(match[1] as string);
+		}
+	}
+	return roles;
+}
+
+test("sweep paints the frame accent while a running task is actively working", () => {
+	const roles = frameSweepRoles((tick) => renderAgentsCard([task({ lastActivityAt: 99_000 })], roleTheme, 60, 100_000, { collapsed: false, tick, idleAfterMs: 120_000, sweep: true }));
+	assert.deepEqual([...roles], ["accent"]);
+});
+
+test("sweep paints the frame warning when the running task is idle", () => {
+	const roles = frameSweepRoles((tick) => renderAgentsCard([task({ lastActivityAt: 1000 })], roleTheme, 60, 400_000, { collapsed: false, tick, idleAfterMs: 120_000, sweep: true }));
+	assert.deepEqual([...roles], ["warning"]);
+});
+
+test("sweep paints warning for queued or waiting-only tasks and accent once one works", () => {
+	const queued = task({ id: "q", status: TASK_STATUS.QUEUED, startedAt: null });
+	const waiting = task({ id: "w", status: TASK_STATUS.WAITING });
+	const opts = { collapsed: false, sweep: true };
+	assert.deepEqual([...frameSweepRoles((tick) => renderAgentsCard([queued, waiting], roleTheme, 60, 2000, { ...opts, tick }))], ["warning"]);
+	assert.deepEqual([...frameSweepRoles((tick) => renderAgentsCard([queued, task({ id: "r" })], roleTheme, 60, 2000, { ...opts, tick }))], ["accent"]);
+});
+
+test("sweep never colours the frame when off, untick'd or nothing is unfinished", () => {
+	const running = [task({})];
+	assert.equal(frameSweepRoles((tick) => renderAgentsCard(running, roleTheme, 60, 2000, { collapsed: false, tick })).size, 0);
+	assert.equal(frameSweepRoles((tick) => renderAgentsCard(running, roleTheme, 60, 2000, { collapsed: false, tick, sweep: false })).size, 0);
+	assert.equal(frameSweepRoles(() => renderAgentsCard(running, roleTheme, 60, 2000, { collapsed: false, sweep: true })).size, 0);
+	const done = [task({ status: TASK_STATUS.COMPLETED, endedAt: 1500 })];
+	assert.equal(frameSweepRoles((tick) => renderAgentsCard(done, roleTheme, 60, 2000, { collapsed: false, tick, sweep: true, keepFinished: true })).size, 0);
+});
+
+test("sweep is opt-in: absent option renders identically to sweep false", () => {
+	const running = [task({})];
+	const base = renderAgentsCard(running, roleTheme, 60, 2000, { collapsed: false, tick: 3 });
+	assert.deepEqual(renderAgentsCard(running, roleTheme, 60, 2000, { collapsed: false, tick: 3, sweep: false }), base);
+});
+
+test("sweep advances with the tick", () => {
+	const at = (tick: number) => renderAgentsCard([task({})], roleTheme, 60, 2000, { collapsed: false, tick, sweep: true });
+	assert.notDeepEqual(at(5), at(6));
+});

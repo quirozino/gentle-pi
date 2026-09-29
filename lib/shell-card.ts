@@ -30,7 +30,19 @@ export interface CardRenderOptions {
 	expanded: boolean;
 	/** Right-aligned hint in the top rule, e.g. the expand key. May carry ANSI. */
 	hint?: string;
+	/**
+	 * A pulse travelling clockwise around the frame perimeter (top left to right,
+	 * right side down, bottom right to left, left side up). `position` is the
+	 * head cell, wrapped to the perimeter; the head and a short trail behind it
+	 * take `role`. Only frame glyphs are recoloured: title, subtitle and hint
+	 * cells still count toward the perimeter but keep their own roles. Absent
+	 * renders exactly the plain frame.
+	 */
+	sweep?: { position: number; role: string };
 }
+
+/** Recolours one frame cell by absolute column; undefined keeps the tone's frame role. */
+type CellRole = (column: number) => string | undefined;
 
 export const CARD_GLYPH = SHELL_GLYPHS.card;
 // Frame and title paint with the same role for every tone except INFO, whose
@@ -54,6 +66,8 @@ const SUBTITLE_ROLE = "muted";
 const BODY_ROLE = "text";
 const SEPARATOR = "·";
 const FRAME_COLUMNS = 4;
+// Head plus two cells behind it.
+const SWEEP_LENGTH = 3;
 
 function rule(length: number): string {
 	return SHELL_GLYPHS.frame.horizontal.repeat(Math.max(0, length));
@@ -75,7 +89,39 @@ function frame(theme: CardTheme, tone: CardTone, text: string): string {
 	return theme.fg(FRAME_ROLE[tone], text);
 }
 
-export function cardTop(card: Card, theme: CardTheme, width: number, hint?: string): string {
+// Frame glyphs are single-width, so a column is one character. Runs that share
+// a role stay one theme.fg call, which keeps the plain frame byte-identical.
+function frameRun(theme: CardTheme, tone: CardTone, text: string, startColumn: number, cellRole?: CellRole): string {
+	if (!cellRole) return frame(theme, tone, text);
+	const runs: { role: string; text: string }[] = [];
+	Array.from(text).forEach((glyph, offset) => {
+		const role = cellRole(startColumn + offset) ?? FRAME_ROLE[tone];
+		const last = runs[runs.length - 1];
+		if (last && last.role === role) last.text += glyph;
+		else runs.push({ role, text: glyph });
+	});
+	return runs.map((run) => theme.fg(run.role, run.text)).join("");
+}
+
+// Clockwise perimeter index of a frame cell in a width x height card.
+function perimeterIndex(row: number, column: number, width: number, height: number): number {
+	if (row === 0) return column;
+	if (row === height - 1) return width + height - 2 + (width - 1 - column);
+	if (column === width - 1) return width + row - 1;
+	return 2 * width + height - 2 + (height - 2 - row);
+}
+
+function sweepRoles(sweep: NonNullable<CardRenderOptions["sweep"]>, width: number, height: number): ((row: number) => CellRole) | undefined {
+	if (width < FRAME_COLUMNS || height < 2 || !Number.isFinite(sweep.position)) return undefined;
+	const perimeter = 2 * width + 2 * height - 4;
+	const head = ((Math.trunc(sweep.position) % perimeter) + perimeter) % perimeter;
+	return (row) => (column) => {
+		const behind = (((head - perimeterIndex(row, column, width, height)) % perimeter) + perimeter) % perimeter;
+		return behind < SWEEP_LENGTH ? sweep.role : undefined;
+	};
+}
+
+export function cardTop(card: Card, theme: CardTheme, width: number, hint?: string, cellRole?: CellRole): string {
 	const targetWidth = Math.max(0, Math.floor(width));
 	if (targetWidth === 0) return "";
 	if (targetWidth < 5) {
@@ -94,16 +140,16 @@ export function cardTop(card: Card, theme: CardTheme, width: number, hint?: stri
 	const fill = rule(targetWidth - styledTitleWidth - 5 - hintWidth);
 	const tail = shownHint ? ` ${theme.fg(HINT_ROLE, shownHint)} ` : "";
 	return (
-		theme.fg(FRAME_ROLE[card.tone], SHELL_GLYPHS.frame.topLeft) +
-		frame(theme, card.tone, `${SHELL_GLYPHS.frame.horizontal} `) +
+		frameRun(theme, card.tone, SHELL_GLYPHS.frame.topLeft, 0, cellRole) +
+		frameRun(theme, card.tone, `${SHELL_GLYPHS.frame.horizontal} `, 1, cellRole) +
 		styledTitle +
-		frame(theme, card.tone, ` ${fill}`) +
+		frameRun(theme, card.tone, ` ${fill}`, 3 + styledTitleWidth, cellRole) +
 		tail +
-		frame(theme, card.tone, SHELL_GLYPHS.frame.topRight)
+		frameRun(theme, card.tone, SHELL_GLYPHS.frame.topRight, targetWidth - 1, cellRole)
 	);
 }
 
-export function cardLine(text: string, tone: CardTone, theme: CardTheme, width: number): string {
+export function cardLine(text: string, tone: CardTone, theme: CardTheme, width: number, cellRole?: CellRole): string {
 	const targetWidth = Math.max(0, Math.floor(width));
 	if (targetWidth === 0) return "";
 	const vertical = SHELL_GLYPHS.frame.vertical;
@@ -115,14 +161,16 @@ export function cardLine(text: string, tone: CardTone, theme: CardTheme, width: 
 	const innerWidth = targetWidth - FRAME_COLUMNS;
 	const clipped = innerWidth === 0 ? "" : truncateToWidth(text, innerWidth, "…");
 	const padding = " ".repeat(Math.max(0, innerWidth - visibleWidth(clipped)));
-	return `${left} ${clipped}${padding} ${frame(theme, tone, vertical)}`;
+	const right = frameRun(theme, tone, vertical, targetWidth - 1, cellRole);
+	return `${frameRun(theme, tone, vertical, 0, cellRole)} ${clipped}${padding} ${right}`;
 }
 
-export function cardBottom(tone: CardTone, theme: CardTheme, width: number): string {
+export function cardBottom(tone: CardTone, theme: CardTheme, width: number, cellRole?: CellRole): string {
 	const targetWidth = Math.max(0, Math.floor(width));
 	if (targetWidth === 0) return "";
 	const left = theme.fg(FRAME_ROLE[tone], SHELL_GLYPHS.frame.bottomLeft);
 	if (targetWidth === 1) return left;
+	if (cellRole) return frameRun(theme, tone, SHELL_GLYPHS.frame.bottomLeft, 0, cellRole) + frameRun(theme, tone, `${rule(targetWidth - 2)}${SHELL_GLYPHS.frame.bottomRight}`, 1, cellRole);
 	return left + frame(theme, tone, `${rule(targetWidth - 2)}${SHELL_GLYPHS.frame.bottomRight}`);
 }
 
@@ -132,17 +180,19 @@ export function cardInnerWidth(width: number): number {
 
 export function renderCard(card: Card, theme: CardTheme, width: number, options: CardRenderOptions): string[] {
 	const innerWidth = Math.max(1, width - FRAME_COLUMNS);
-	const top = cardTop(card, theme, width, options.hint);
-	const bottom = cardBottom(card.tone, theme, width);
 	const lines = bodyLines(card, innerWidth);
+	const bodyRows = lines.length === 0 ? 0 : options.expanded ? lines.length : 1;
+	const roleFor = options.sweep ? sweepRoles(options.sweep, Math.floor(width), bodyRows + 2) : undefined;
+	const top = cardTop(card, theme, width, options.hint, roleFor?.(0));
+	const bottom = cardBottom(card.tone, theme, width, roleFor?.(bodyRows + 1));
 	const body = (() => {
 		if (lines.length === 0) return [];
 		if (!options.expanded) {
 			const first = lines.find((line) => line !== "") ?? "";
 			const clipped = lines.length > 1 ? truncateToWidth(first, Math.max(1, innerWidth - 1), "") + "…" : first;
-			return [cardLine(theme.fg(BODY_ROLE, clipped), card.tone, theme, width)];
+			return [cardLine(theme.fg(BODY_ROLE, clipped), card.tone, theme, width, roleFor?.(1))];
 		}
-		return lines.map((line) => cardLine(line === "" ? "" : theme.fg(BODY_ROLE, line), card.tone, theme, width));
+		return lines.map((line, index) => cardLine(line === "" ? "" : theme.fg(BODY_ROLE, line), card.tone, theme, width, roleFor?.(index + 1)));
 	})();
 	return [top, ...body, bottom];
 }

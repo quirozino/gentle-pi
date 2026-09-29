@@ -11,6 +11,11 @@ import { SHELL_GLYPHS } from "./shell-glyphs.ts";
 
 export const AGENTS_GLYPH = SHELL_GLYPHS.agents;
 
+// Perimeter cells the pulse advances per tick; at the 160 ms wink rate a
+// typical card (about 200 perimeter cells) laps in roughly 3 s.
+export const SWEEP_CELLS_PER_TICK = 10;
+export const SWEEP_ROLE = { WORKING: "accent", WAITING: "warning" } as const;
+
 /**
  * The card glyph for a tick: the configured wink cycle when there is one, the
  * static glyph otherwise. Pure, so the caller owns the frame rate.
@@ -49,6 +54,12 @@ export interface AgentsWidgetOptions {
 	 * Absent (the default) renders exactly as before: no idle marker on any row.
 	 */
 	idleAfterMs?: number;
+	/**
+	 * Sweep a pulse around the card frame while a task is unfinished, positioned
+	 * from `tick`. The caller owns the animation-policy gate; absent or false
+	 * (or no tick) leaves the frame static.
+	 */
+	sweep?: boolean;
 }
 
 interface StatusLook {
@@ -359,6 +370,16 @@ function batchElapsed(tasks: readonly TaskRecord[], now: number): string | undef
 	return formatElapsed(end - Math.min(...starts));
 }
 
+// accent while an unfinished RUNNING task is actively working (not idle per
+// idleField), warning while unfinished tasks only wait, idle or queue.
+function sweepFor(shown: readonly TaskRecord[], now: number, options: AgentsWidgetOptions): { position: number; role: string } | undefined {
+	if (!options.sweep || options.tick === undefined || !Number.isFinite(options.tick)) return undefined;
+	const unfinished = shown.filter((task) => !isFinished(task.status));
+	if (unfinished.length === 0) return undefined;
+	const working = unfinished.some((task) => task.status === TASK_STATUS.RUNNING && idleField(task, now, options.idleAfterMs) === "");
+	return { position: Math.trunc(options.tick) * SWEEP_CELLS_PER_TICK, role: working ? SWEEP_ROLE.WORKING : SWEEP_ROLE.WAITING };
+}
+
 export function renderAgentsCard(tasks: readonly TaskRecord[], theme: CardTheme, width: number, now: number, options: AgentsWidgetOptions): string[] {
 	const shown = options.keepFinished
 		? [...tasks].sort(startOrder)
@@ -384,6 +405,6 @@ export function renderAgentsCard(tasks: readonly TaskRecord[], theme: CardTheme,
 		{ title: "Agents", subtitle: counts(shown), body, tone: tone(shown), glyph: agentsGlyph(options.tick) },
 		theme,
 		width,
-		{ expanded: true, hint },
+		{ expanded: true, hint, sweep: sweepFor(shown, now, options) },
 	);
 }

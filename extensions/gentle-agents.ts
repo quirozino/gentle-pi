@@ -13,6 +13,7 @@ import os from "node:os";
 import { join, resolve, isAbsolute, sep } from "node:path";
 import { createBashToolDefinition, createLocalBashOperations, type BashOperations, keyHint, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text, type TUI } from "@earendil-works/pi-tui";
+import { ANIMATION_POLICY, resolveAnimationPolicy } from "../lib/animation-policy.ts";
 import { invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
 import { createCompletionQueue } from "../lib/agents-completion-delivery.ts";
 import { AGENT_MODE, discoverAgents, parseAgentDefinition, loadAgentsConfig, resolveAgentProfile, withPinnedModelProfiles, type AgentDefinition, type AgentMode } from "../lib/agents-config.ts";
@@ -660,6 +661,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// The elapsed column ticks once a second while something runs. Once every
 	// task is done, one frame is due when the next finished row leaves the
 	// card, so an idle terminal still sees it clear.
+	// The frame sweep only runs under the quality animation policy.
+	const sweepEnabled = () => resolveAnimationPolicy().policy === ANIMATION_POLICY.QUALITY;
+
 	const tickClock = () => {
 		cancelClock?.();
 		cancelClock = undefined;
@@ -669,7 +673,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			// The clock also carries the card glyph animation; when a wink cycle is
 			// configured it has to tick at the wink rate, not once a second. The
 			// elapsed label is derived from the clock, so it stays correct either way.
-			const interval = SHELL_GLYPHS.agentsFrames.length > 1 ? AGENTS_WINK_MS : CLOCK_TICK_MS;
+			// The frame sweep needs the same rate.
+			const interval = SHELL_GLYPHS.agentsFrames.length > 1 || sweepEnabled() ? AGENTS_WINK_MS : CLOCK_TICK_MS;
 			cancelClock = deps.schedule(() => {
 				requestRender();
 				tickClock();
@@ -1085,6 +1090,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 						activeOnly: true,
 						tick: Math.floor(deps.now() / AGENTS_WINK_MS),
 						idleAfterMs: AGENTS_IDLE_AFTER_MS,
+						sweep: sweepEnabled(),
 					});
 					return lines.length === 0 ? [] : [...lines, ""];
 				},
