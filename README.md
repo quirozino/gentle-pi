@@ -12,8 +12,8 @@
   <a href="https://www.npmjs.com/package/gentle-pi"><img src="https://img.shields.io/npm/v/gentle-pi?style=for-the-badge&labelColor=1A1218&color=F095C8" alt="npm"></a>
   <a href="https://pi.dev/packages/gentle-pi"><img src="https://img.shields.io/badge/Pi-native-F095C8?style=for-the-badge&labelColor=1A1218" alt="Pi-native package"></a>
   <a href="LICENSE"><img src="https://img.shields.io/npm/l/gentle-pi?style=for-the-badge&labelColor=1A1218&color=F095C8" alt="MIT license"></a>
-  <a href="https://github.com/Gentleman-Programming/gentle-pi/stargazers"><img src="https://img.shields.io/github/stars/Gentleman-Programming/gentle-pi?style=for-the-badge&labelColor=1A1218&color=F095C8" alt="GitHub stars"></a>
-  <a href="https://github.com/Gentleman-Programming/gentle-pi"><img src="https://img.shields.io/github/last-commit/Gentleman-Programming/gentle-pi?style=for-the-badge&labelColor=1A1218&color=D7A0B8" alt="Last commit"></a>
+  <a href="https://github.com/Gentleman-Programming/gentle-shell/stargazers"><img src="https://img.shields.io/github/stars/Gentleman-Programming/gentle-shell?style=for-the-badge&labelColor=1A1218&color=F095C8" alt="GitHub stars"></a>
+  <a href="https://github.com/Gentleman-Programming/gentle-shell"><img src="https://img.shields.io/github/last-commit/Gentleman-Programming/gentle-shell?style=for-the-badge&labelColor=1A1218&color=D7A0B8" alt="Last commit"></a>
 </p>
 
 <p align="center">
@@ -34,10 +34,28 @@
 
 <p align="center"><sub>One workspace. A coding agent you direct. A workflow you can inspect.</sub></p>
 
+<div align="center">
+ <h3>🎬 See it in action</h3>
+
+   <p>
+   One prompt, from idea to reviewed commit: memory, workflow, and evidence in a real session.
+   </p>
+
+https://github.com/user-attachments/assets/fa5c0cfe-06e7-4c0d-bd6e-8ac7cb934339
+
+
+   <p>Prefer Spanish subtitles?</p>
+   
+
+https://github.com/user-attachments/assets/6d2bc422-a4dd-4ecf-a04b-fcd3bea7fea9
+
+
+</div>
+
 <p align="center"><strong>BUILT FOR PI</strong> &nbsp;·&nbsp; Coding-agent workspace &nbsp;·&nbsp; Focused agents &nbsp;·&nbsp; ODD</p>
 
 <p align="center">
-  <a href="https://github.com/Gentleman-Programming/gentle-pi/stargazers"><strong>★ Star gentle-shell on GitHub</strong></a>
+  <a href="https://github.com/Gentleman-Programming/gentle-shell/stargazers"><strong>★ Star gentle-shell on GitHub</strong></a>
 </p>
 
 <div align="center">
@@ -85,8 +103,6 @@ A bare terminal answers "what is the agent doing?" only with scrollback. gentle-
 ---
 
 ### el Gentleman — Think before you build
-
-<img width="100%" src="docs/assets/diagrams/gentleman-workflow.svg" alt="Diagram of el Gentleman turning human intent into clarified scope, a smallest workflow choice, evidence, and a human delivery decision">
 
 Say what you need once, then keep moving. el Gentleman helps turn intent into clear scope, a sensible next step, and evidence people can review — without making every task feel like a process meeting.
 
@@ -156,9 +172,9 @@ Model, effort, and who does what should be choices, not accidents. Named profile
 
 ### Command palette — Every command, one keystroke away
 
-<img width="100%" src="docs/assets/features/command-palette.png" alt="Command palette with a search field and grouped entries: Configuration, Session, Diagnostics, SDD, and Skills">
+Extension commands are only useful if you can find them. `alt+k` opens a curated, grouped palette — Configuration, Session, Diagnostics, and Skills — searchable by label, command name, or description, showing entries only when they are actually registered.
 
-Extension commands are only useful if you can find them. `alt+k` opens a curated, grouped palette — Configuration, Session, Diagnostics, SDD, and Skills — searchable by label, command name, or description, showing entries only when they are actually registered.
+`/gentle:customize` opens an interactive panel to set animation quality, startup banner rose, text logo and color, or choose an installed Pi theme. Highlighting a theme previews its source palette without changing the active theme; press Enter or Space to apply it through Pi. If its source is unreadable, the preview is unavailable. Status defaults to a right rail in fullscreen terminals at least 140 columns wide, and to a bottom bar otherwise. Choose right, bottom, or hidden (which removes both the rail and the bottom status bar at every width), move the fullscreen header below the input (below the 140-column breakpoint only one status row paints: a top header replaces the bottom bar, while with the header below the input the bottom bar alone carries the header's context, cost, and usage plus extension statuses), select comfortable/compact/minimal density, and toggle Changes, Agents, TODO, usage/cost, and model details independently. Layout changes and reset take effect immediately; banner changes appear on the next startup. The Editor category offers explicit Vim enable/disable controls for the global prompt preference; highlighting shows the persisted preference and effective prompt state without changing either. Enter or Space saves it and updates the live prompt; unsupported editors keep ordinary editing even when the saved preference is on. Vim is not included in visual profiles or visual reset. The History category turns prompt-history capture on or off; it is off by default, applies to the next prompt without a restart, and never deletes stored history. An explicit `GENTLE_PI_HISTORY_CAPTURE` value overrides the saved choice, and the panel marks that override (see [Prompt history](docs/prompt-history.md)). The panel can reset visual, banner, and animation settings to defaults. Press `p` for named visual profiles: `s` saves the current installed theme, banner, animation and layout; select a profile with ↑/↓, then use `r` to replace, `a` to apply, or `d` to delete. `z` clears only the profile catalog. Confirm destructive/apply actions with `y`, or cancel with any other key; Esc returns without applying a preview. Applying independent stores is not atomic: partial failures identify what changed.
 
 **[Docs →](docs/gentle-shell.md#command-palette)**
 
@@ -185,13 +201,13 @@ Extension commands are only useful if you can find them. `alt+k` opens a curated
 
 ---
 
-### What's new in v2.6.0
+### What's new in v3.5
 
-The [v2.6.0 release](https://github.com/Gentleman-Programming/gentle-pi/releases/tag/v2.6.0) brings a more persistent, inspectable Pi workspace:
+The [v3.5.1 release](https://github.com/Gentleman-Programming/gentle-shell/releases/tag/v3.5.1) makes Gentle Shell runnable on its own:
 
-- **Shell:** `/gentle:changes` groups captured write/edit changes from the current agent session and its subagents, without startup repository scans; fullscreen navigation, sidebars, and mouse support stay available. See the [capture limits and shell-command coverage](docs/gentle-shell.md#what-appears-in-changes).
-- **Agents and profiles:** the Agents view shows orchestrator/session hierarchy, retained completion, abort, and lost-exit history, parent-child handoff, and model, effort, and usage observability. Named `/gentle:profiles` atomically route the orchestrator independently from packaged and review roles; applying one replaces the routing of every agent, a repository can be pinned to a profile with `p` so its subagent launches stop following the globally active profile, and the panel shows the routing the runtime actually uses even when `models.json` is sparse.
-- **Control and recovery:** native SDD requires parent-confirmed preflight; native review supports intended-untracked selection, consent, and provider continuations. Subsystems install with explicit recovery guidance when npm lifecycle scripts were skipped; Pi Git installs are recognized globally; custom ask responses are opt-in. Windows keeps child consoles hidden and fixes ownership mode; Gentle Todo keeps the next pending task visible when collapsed.
+- **Standalone launcher:** `npm i -g gentle-pi` installs `gentle-shell`, which opens Pi with the Gentle Shell package loaded from its own home (`~/.gentle-shell/agent`) or, with `--link`, from your existing `~/.pi/agent`; `gentle-shell install npm:<pkg>` and the other pi subcommands run against the selected home. A bundled or `PATH` pi is used, never a modified one.
+- **Link mode take-over:** when `~/.pi/agent` already declares gentle-pi as a path package, the launcher takes over extension loading (`--no-extensions` plus explicit `-e` for every other declared package and loose extension) so tools never register twice.
+- **Interactive RPC hosts:** with `GENTLE_SHELL_INTERACTIVE_HOST=1` and `--mode rpc`, ask-user tools use pi's RPC dialogs and gentle-agents publishes live subagent activity for the desktop app. See the [reference](docs/readme-reference.md#interactive-rpc-hosts).
 
 ---
 
@@ -203,13 +219,45 @@ The [v2.6.0 release](https://github.com/Gentleman-Programming/gentle-pi/releases
 
 ## Get started
 
-Install the stable release, restart Pi, then synchronize the installed assets.
-
 > **Naming transition:** The product is called `gentle-shell`; the current npm package and repository remain `gentle-pi` until migration.
 
+### Path A: standalone `gentle-shell` (recommended, no pi changes)
+
+`gentle-shell` opens Pi with the Gentle Shell package loaded, without installing it into your pi agent or editing its `settings.json`.
+
 ```bash
-# Published stable release: v2.6.0
-pi install npm:gentle-pi@2.6.0
+npm i -g gentle-pi
+
+# Own home, never touches your pi install
+gentle-shell
+
+# Reuse your pi sign-ins, models and chats instead
+gentle-shell --link
+```
+
+`gentle-shell` alone starts in its own home, `~/.gentle-shell/agent`, and sets that home up on first run — no separate step. Gentle Shell keeps its own home with the Gentle AI companion packages and no conflicting plugins; gentle-pi itself always stays this launcher's own copy, never one installed into the home; your pi install is untouched. That home also defaults to the Gentleman-Cute theme unless you set your own. `gentle-shell --link` reuses `~/.pi/agent` as-is, is never auto-provisioned, and never has its theme touched.
+
+```bash
+# Re-run provisioning by hand, e.g. to see the full install output
+gentle-shell setup
+```
+
+`gentle-shell setup` installs the same companion packages gentle-ai provisions into a regular Pi, into this home only, then removes the one package that conflicts with gentle-pi's own `ask_user_question` tool (gentle-ai #4820). The first `gentle-shell` launch in a home already runs this automatically; `setup` is for re-running it by hand. See **[First run](docs/readme-reference.md#first-run-in-an-isolated-or-custom-home)** for the opt-out (`GENTLE_SHELL_NO_AUTO_SETUP=1`) and failure behavior.
+
+```bash
+# Make --link the default
+gentle-shell home link
+```
+
+Every other argument is forwarded to pi unchanged, for example `gentle-shell --mode rpc` or `gentle-shell -p "..."`. Full flags, env vars, and modes: **[launcher reference](docs/readme-reference.md#gentle-shell-launcher)**.
+
+### Path B: inside an existing pi
+
+Install the stable release into an existing pi agent, restart Pi, then synchronize the installed assets.
+
+```bash
+# Published stable release: v3.5.1
+pi install npm:gentle-pi@3.5.1
 
 # Restart Pi, then run:
 gentle-ai sync
@@ -218,7 +266,7 @@ gentle-ai sync
 pi
 ```
 
-See the [v2.6.0 release notes](https://github.com/Gentleman-Programming/gentle-pi/releases/tag/v2.6.0) for version-specific changes.
+See the [v3.5.1 release notes](https://github.com/Gentleman-Programming/gentle-shell/releases/tag/v3.5.1) for version-specific changes.
 
 ```text
 /gentle:status
@@ -228,6 +276,8 @@ See the [v2.6.0 release notes](https://github.com/Gentleman-Programming/gentle-p
 > **RDD is opt-in:** enable native receipt-driven development only through an explicit `/gentle:review-mode enable` decision.
 
 > **Fullscreen installation note:** a recognized global installation persists Pi’s `"tuiMode": "fullscreen"` setting. Project-local and other install paths do not receive that change.
+
+> **Interactive RPC hosts:** the desktop app sets `GENTLE_SHELL_INTERACTIVE_HOST=1` automatically, without touching your Pi config — see the [installation reference](docs/readme-reference.md#interactive-rpc-hosts).
 
 For prerequisites, source-checkout instructions, full install behavior, and release policy, use the **[installation reference](docs/readme-reference.md#install)**. For everyday work, describe the outcome and follow [ODD](#odd--the-everyday-workflow).
 
@@ -244,7 +294,7 @@ Start with the product-facing destination, then move into the operational refere
 | Destination | Purpose |
 | --- | --- |
 | [gentle-shell reference](docs/gentle-shell.md) | Workspace layout, changes, usage, agents, and todo interactions. |
-| [ODD workflow](docs/readme-reference.md#organic-driven-development) · [Technical reference](docs/readme-reference.md) | Everyday work and recovery, optional SDD/OpenSpec, installation, configuration, commands, and contributor detail. |
+| [ODD workflow](docs/readme-reference.md#organic-driven-development) · [Technical reference](docs/readme-reference.md) | Everyday work and recovery, installation, configuration, commands, and contributor detail. |
 | [Review integration](docs/review-integration.md) | The provider/consumer boundary for native review. |
 | [Native authority architecture](docs/native-authority-architecture.md) | Ownership boundaries and review architecture. |
 | [Telemetry](docs/telemetry.md) | Approved fields and source limitations. |
@@ -262,17 +312,17 @@ Start with the product-facing destination, then move into the operational refere
 This project is built in public. Bring a real workflow, a sharp question, a bug report, or a small improvement that makes the next person’s work clearer.
 
 <p align="center">
-  <a href="https://github.com/Gentleman-Programming/gentle-pi/issues"><img src="https://img.shields.io/badge/Issues-join%20the%20conversation-F095C8?style=for-the-badge&labelColor=1A1218" alt="GitHub issues"></a>
-  <a href="https://github.com/Gentleman-Programming/gentle-pi/graphs/contributors"><img src="https://img.shields.io/badge/Contributors-thank%20you-D7A0B8?style=for-the-badge&labelColor=1A1218" alt="Contributors"></a>
+  <a href="https://github.com/Gentleman-Programming/gentle-shell/issues"><img src="https://img.shields.io/badge/Issues-join%20the%20conversation-F095C8?style=for-the-badge&labelColor=1A1218" alt="GitHub issues"></a>
+  <a href="https://github.com/Gentleman-Programming/gentle-shell/graphs/contributors"><img src="https://img.shields.io/badge/Contributors-thank%20you-D7A0B8?style=for-the-badge&labelColor=1A1218" alt="Contributors"></a>
   <a href="https://discord.com/invite/gentleman-programming-769863833996754944"><img src="https://img.shields.io/badge/Discord-Gentleman%20Programming-F095C8?style=for-the-badge&labelColor=1A1218" alt="Gentleman Programming Discord"></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/Gentleman-Programming/gentle-pi/graphs/contributors"><img src="https://contrib.rocks/image?repo=Gentleman-Programming/gentle-pi" alt="gentle-shell contributors"></a>
+  <a href="https://github.com/Gentleman-Programming/gentle-shell/graphs/contributors"><img src="https://contrib.rocks/image?repo=Gentleman-Programming/gentle-shell" alt="gentle-shell contributors"></a>
 </p>
 
-- Open an [issue](https://github.com/Gentleman-Programming/gentle-pi/issues) with the context needed to reproduce or understand the idea.
-- See the people shaping the project in the [contributors graph](https://github.com/Gentleman-Programming/gentle-pi/graphs/contributors).
+- Open an [issue](https://github.com/Gentleman-Programming/gentle-shell/issues) with the context needed to reproduce or understand the idea.
+- See the people shaping the project in the [contributors graph](https://github.com/Gentleman-Programming/gentle-shell/graphs/contributors).
 - Follow [Gentleman Programming](https://github.com/Gentleman-Programming) for the wider ecosystem.
 
 <p align="right"><a href="#top">Back to top ↑</a></p>

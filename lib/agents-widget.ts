@@ -1,6 +1,6 @@
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { isFinished, TASK_STATUS, type TaskRecord, type TaskStatus } from "./agents-protocol.ts";
-import { formatTokens } from "./shell-bar.ts";
+import { formatCost, formatTokens } from "./shell-bar.ts";
 import { CARD_TONE, cardInnerWidth, renderCard, type CardTheme, type CardTone } from "./shell-card.ts";
 import { SHELL_GLYPHS } from "./shell-glyphs.ts";
 
@@ -250,7 +250,7 @@ function metaFields(task: TaskRecord, now: number, idleAfterMs: number | undefin
 	return {
 		exec: executionLabel(task),
 		tokens: task.tokens > 0 ? formatTokens(task.tokens) : "",
-		cost: task.cost > 0 ? `$${task.cost.toFixed(2)}` : "",
+		cost: task.cost > 0 ? formatCost(task.cost) : "",
 		idle: idleField(task, now, idleAfterMs),
 		elapsed: elapsed(task, now),
 	};

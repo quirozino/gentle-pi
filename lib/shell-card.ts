@@ -165,13 +165,26 @@ export function cardLine(text: string, tone: CardTone, theme: CardTheme, width: 
 	return `${frameRun(theme, tone, vertical, 0, cellRole)} ${clipped}${padding} ${right}`;
 }
 
-export function cardBottom(tone: CardTone, theme: CardTheme, width: number, cellRole?: CellRole): string {
+export function cardBottom(tone: CardTone, theme: CardTheme, width: number, content?: string, cellRole?: CellRole): string {
 	const targetWidth = Math.max(0, Math.floor(width));
 	if (targetWidth === 0) return "";
 	const left = theme.fg(FRAME_ROLE[tone], SHELL_GLYPHS.frame.bottomLeft);
 	if (targetWidth === 1) return left;
-	if (cellRole) return frameRun(theme, tone, SHELL_GLYPHS.frame.bottomLeft, 0, cellRole) + frameRun(theme, tone, `${rule(targetWidth - 2)}${SHELL_GLYPHS.frame.bottomRight}`, 1, cellRole);
-	return left + frame(theme, tone, `${rule(targetWidth - 2)}${SHELL_GLYPHS.frame.bottomRight}`);
+	const bottomRight = SHELL_GLYPHS.frame.bottomRight;
+	if (content === undefined || visibleWidth(content) === 0) {
+		if (cellRole) return frameRun(theme, tone, SHELL_GLYPHS.frame.bottomLeft, 0, cellRole) + frameRun(theme, tone, `${rule(targetWidth - 2)}${bottomRight}`, 1, cellRole);
+		return left + frame(theme, tone, `${rule(targetWidth - 2)}${bottomRight}`);
+	}
+	const contentWidth = visibleWidth(content) + 2;
+	// Responsive: the duration rides the closing rule only when it fits with a minimum fill.
+	if (targetWidth - 2 - contentWidth < 3) {
+		if (cellRole) return frameRun(theme, tone, SHELL_GLYPHS.frame.bottomLeft, 0, cellRole) + frameRun(theme, tone, `${rule(targetWidth - 2)}${bottomRight}`, 1, cellRole);
+		return left + frame(theme, tone, `${rule(targetWidth - 2)}${bottomRight}`);
+	}
+	if (cellRole) {
+		return frameRun(theme, tone, SHELL_GLYPHS.frame.bottomLeft, 0, cellRole) + frameRun(theme, tone, `${rule(targetWidth - 2 - contentWidth)} `, 1, cellRole) + theme.fg(HINT_ROLE, content) + frameRun(theme, tone, ` ${bottomRight}`, targetWidth - 2, cellRole);
+	}
+	return left + frame(theme, tone, `${rule(targetWidth - 2 - contentWidth)} `) + theme.fg(HINT_ROLE, content) + frame(theme, tone, ` ${bottomRight}`);
 }
 
 export function cardInnerWidth(width: number): number {
@@ -184,7 +197,7 @@ export function renderCard(card: Card, theme: CardTheme, width: number, options:
 	const bodyRows = lines.length === 0 ? 0 : options.expanded ? lines.length : 1;
 	const roleFor = options.sweep ? sweepRoles(options.sweep, Math.floor(width), bodyRows + 2) : undefined;
 	const top = cardTop(card, theme, width, options.hint, roleFor?.(0));
-	const bottom = cardBottom(card.tone, theme, width, roleFor?.(bodyRows + 1));
+	const bottom = cardBottom(card.tone, theme, width, undefined, roleFor?.(bodyRows + 1));
 	const body = (() => {
 		if (lines.length === 0) return [];
 		if (!options.expanded) {
