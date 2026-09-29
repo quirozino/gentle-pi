@@ -2475,6 +2475,10 @@ test("--link take-over treats a file named `extensions` as not a loose extension
 
 // A stand-in pi that writes a resume handoff like extensions/resume-hint.ts
 // does, prints pi's own exit hint, and exits with the given code.
+// What the resume-hint extension hands over when the active theme paints its dim
+// role with SGR 2: the launcher only forwards the pair, it never picks a colour.
+const DIM_LABEL_STYLE = { open: '\u001b[2m', close: '\u001b[22m' };
+
 function writeHandoffPiScript(path: string, exitCode = 0) {
 	writeFileSync(
 		path,
@@ -2484,7 +2488,7 @@ function writeHandoffPiScript(path: string, exitCode = 0) {
 			"const args = process.argv.slice(2);",
 			"if (args.includes('--version')) { console.log('0.85.1'); process.exit(0); }",
 			"const handoff = process.env.GENTLE_SHELL_RESUME_HANDOFF;",
-			"if (handoff) writeFileSync(handoff, JSON.stringify({ sessionId: 'abc' }));",
+			`if (handoff) writeFileSync(handoff, JSON.stringify({ sessionId: 'abc', labelStyle: ${JSON.stringify(DIM_LABEL_STYLE)} }));`,
 			"if (process.env.PI_STUB_PRINT_ENV) console.log(JSON.stringify({ args, handoff }));",
 			"process.stdout.write('To resume this session: pi --session abc\\n');",
 			`process.exit(${exitCode});`,
@@ -2584,7 +2588,7 @@ function writeWaitingPiScript(path: string) {
 			"#!/usr/bin/env node",
 			"const { writeFileSync } = require('node:fs');",
 			"if (process.argv.includes('--version')) { console.log('0.85.1'); process.exit(0); }",
-			"writeFileSync(process.env.GENTLE_SHELL_RESUME_HANDOFF, JSON.stringify({ sessionId: 'abc' }));",
+			`writeFileSync(process.env.GENTLE_SHELL_RESUME_HANDOFF, JSON.stringify({ sessionId: 'abc', labelStyle: ${JSON.stringify(DIM_LABEL_STYLE)} }));`,
 			"const quit = () => { process.stdout.write('To resume this session: pi --session abc\\n'); process.exit(0); };",
 			"process.on('SIGHUP', quit);",
 			"process.on('SIGTERM', quit);",
@@ -2626,7 +2630,7 @@ test("on a TTY a cross-project session resumes by its session file", { skip: !ha
 			"#!/usr/bin/env node",
 			"const { writeFileSync } = require('node:fs');",
 			"if (process.argv.includes('--version')) { console.log('0.85.1'); process.exit(0); }",
-			`writeFileSync(process.env.GENTLE_SHELL_RESUME_HANDOFF, JSON.stringify({ sessionId: 'abc', sessionFile: ${JSON.stringify(sessionFile)} }));`,
+			`writeFileSync(process.env.GENTLE_SHELL_RESUME_HANDOFF, JSON.stringify({ sessionId: 'abc', sessionFile: ${JSON.stringify(sessionFile)}, labelStyle: ${JSON.stringify(DIM_LABEL_STYLE)} }));`,
 			"process.stdout.write('To resume this session: pi --session abc\\n');",
 			"",
 		].join("\n"),
