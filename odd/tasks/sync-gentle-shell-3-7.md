@@ -39,7 +39,11 @@ falling behind. New surfaces must follow the theme, not hardcoded colours.
   defines every key upstream themes define; run the full checks and compare
   failures against both baselines (fork HEAD 3109b8710, upstream/main
   08de420ca). Route: same writer.
-- [ ] T4 User approves; switch the live install to the synced branch; restart pi.
+- [x] T4 User approves; switch the live install to the synced branch; restart pi.
+  Approved 2026-09-29; live repo checked out `feat/sync-gentle-shell-3-7`,
+  `pnpm install --frozen-lockfile` ok (Gentle AI v3.7.0 installed), survival
+  tests pass in the live tree. Pi restart + visual check pending by the user.
+  Rollback: `git checkout feat/selection-skips-frames && pnpm install`.
 
 ## Acceptance criteria
 - Merge commit on the branch, no conflict markers, typecheck no worse than
