@@ -30,7 +30,7 @@ import { sessionToMarkdown } from "../lib/agents-transcript.ts";
 import { AgentsView } from "../lib/agents-view.ts";
 import { PresencePublisher } from "../lib/orchestrator-presence.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
-import { AGENTS_GLYPH, renderAgentsCard, widgetExpiryMs, widgetRows } from "../lib/agents-widget.ts";
+import { AGENTS_GLYPH, hasWorkingTask, renderAgentsCard, widgetExpiryMs, widgetRows } from "../lib/agents-widget.ts";
 import { SHELL_GLYPHS } from "../lib/shell-glyphs.ts";
 import { CARD_TONE, renderCard } from "../lib/shell-card.ts";
 import { openInExternalEditor } from "./gentle-shell.ts";
@@ -662,7 +662,18 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// task is done, one frame is due when the next finished row leaves the
 	// card, so an idle terminal still sees it clear.
 	// The frame sweep only runs under the quality animation policy.
-	const sweepEnabled = () => resolveAnimationPolicy().policy === ANIMATION_POLICY.QUALITY;
+	// The policy is a sync file read, so it is re-resolved at most once per
+	// clock tick; a policy change still lands within about a second.
+	let sweepPolicyAt = Number.NEGATIVE_INFINITY;
+	let sweepPolicyOn = false;
+	const sweepEnabled = () => {
+		const at = deps.now();
+		if (at - sweepPolicyAt >= CLOCK_TICK_MS || at < sweepPolicyAt) {
+			sweepPolicyAt = at;
+			sweepPolicyOn = resolveAnimationPolicy().policy === ANIMATION_POLICY.QUALITY;
+		}
+		return sweepPolicyOn;
+	};
 
 	const tickClock = () => {
 		cancelClock?.();
@@ -673,8 +684,11 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			// The clock also carries the card glyph animation; when a wink cycle is
 			// configured it has to tick at the wink rate, not once a second. The
 			// elapsed label is derived from the clock, so it stays correct either way.
-			// The frame sweep needs the same rate.
-			const interval = SHELL_GLYPHS.agentsFrames.length > 1 || sweepEnabled() ? AGENTS_WINK_MS : CLOCK_TICK_MS;
+			// The frame sweep needs the same rate, but only while a task actively
+			// works; a card that only waits, idles or queues crawls at the clock
+			// tick (CLOCK_TICK_MS matches the sweep's SWEEP_WAITING_STEP_MS).
+			const fast = SHELL_GLYPHS.agentsFrames.length > 1 || (sweepEnabled() && hasWorkingTask(tasks, deps.now(), AGENTS_IDLE_AFTER_MS));
+			const interval = fast ? AGENTS_WINK_MS : CLOCK_TICK_MS;
 			cancelClock = deps.schedule(() => {
 				requestRender();
 				tickClock();

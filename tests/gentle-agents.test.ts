@@ -3449,3 +3449,32 @@ test("registered task actor receives ordinary checkbox and configured TDD guidan
  assert.doesNotMatch(instructions, /<!-- sdd-owner:/);
  await h.fire("session_shutdown", ctx);
 });
+
+test("the clock ticks fast only while an agent actively works and slow while it only idles", async () => {
+	const { pi, tools, fire } = fakePi();
+	const harness = deps();
+	let clock = 1000;
+	const timers: Array<{ ms: number; cancelled: boolean }> = [];
+	harness.deps.now = () => clock;
+	harness.deps.schedule = (_fn, ms) => {
+		const timer = { ms, cancelled: false };
+		timers.push(timer);
+		return () => {
+			timer.cancelled = true;
+		};
+	};
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Long job", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	const live = () => timers.filter((timer) => !timer.cancelled).map((timer) => timer.ms);
+	assert.ok(live().includes(160), "an actively working agent ticks at the wink rate");
+
+	// Silence past the idle window: the next tick decision falls back to 1 s.
+	clock += 10 * 60_000;
+	timers.length = 0;
+	await fire("session_start", ctx);
+	await tick();
+	assert.ok(live().includes(1000) && !live().includes(160), "an idle-only card ticks once a second");
+});

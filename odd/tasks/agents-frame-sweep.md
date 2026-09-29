@@ -38,6 +38,7 @@ Mode: unknown (no project/session config found); ordinary functional checks.
 - T1+T2 committed in d035ad0db.
 
 - Review (RDD): high risk (process_boundary), consent granted, 4 lenses, approved and acknowledged (lineage review-9a83d650fb9efd6f). Advisory warnings for later: 160 ms re-render cadence also while only idle tasks remain; policy file read per render; bodyRows duplicates body row rule; top-rule padding spaces get the pulse role; no test for the extension policy gate.
+- Review follow-up fixed: 160 ms tick only while a task actively works (shared `hasWorkingTask`), otherwise 1 s with the waiting sweep stepping from `now` (`SWEEP_WAITING_STEP_MS`); animation policy memoized per CLOCK_TICK_MS. Tests added in agents-widget and gentle-agents.
 
 ## Next step
 Review and push under user's decision.

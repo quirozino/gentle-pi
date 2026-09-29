@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { TASK_STATUS, type TaskRecord, type TaskStatus } from "../lib/agents-protocol.ts";
-import { AGENTS_GLYPH, agentsGlyph, formatElapsed, renderAgentsCard, widgetExpiryMs, widgetRows, widgetTasks } from "../lib/agents-widget.ts";
+import { AGENTS_GLYPH, agentsGlyph, formatElapsed, renderAgentsCard, hasWorkingTask, SWEEP_WAITING_STEP_MS, widgetExpiryMs, widgetRows, widgetTasks } from "../lib/agents-widget.ts";
 import { SHELL_GLYPHS } from "../lib/shell-glyphs.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 
@@ -382,4 +382,28 @@ test("sweep is opt-in: absent option renders identically to sweep false", () => 
 test("sweep advances with the tick", () => {
 	const at = (tick: number) => renderAgentsCard([task({})], roleTheme, 60, 2000, { collapsed: false, tick, sweep: true });
 	assert.notDeepEqual(at(5), at(6));
+});
+
+test("hasWorkingTask is true only for a running task that is not idle", () => {
+	const idleAfterMs = 120_000;
+	const now = 400_000;
+	assert.equal(hasWorkingTask([task({ lastActivityAt: now - 1000 })], now, idleAfterMs), true, "running and fresh");
+	assert.equal(hasWorkingTask([task({ lastActivityAt: 1000 })], now, idleAfterMs), false, "running but idle");
+	assert.equal(hasWorkingTask([task({ status: TASK_STATUS.QUEUED, startedAt: null })], now, idleAfterMs), false, "queued");
+	assert.equal(hasWorkingTask([task({ status: TASK_STATUS.WAITING })], now, idleAfterMs), false, "waiting on the user");
+	assert.equal(hasWorkingTask([task({ status: TASK_STATUS.COMPLETED, endedAt: now })], now, idleAfterMs), false, "finished");
+	assert.equal(hasWorkingTask([task({ lastActivityAt: 1000 }), task({ id: "b", lastActivityAt: now })], now, idleAfterMs), true, "one working task is enough");
+});
+
+test("the waiting sweep steps with the clock, not the tick; the working sweep follows the tick", () => {
+	const idle = [task({ lastActivityAt: 1000 })];
+	const working = [task({ lastActivityAt: 400_000 })];
+	const opts = { collapsed: false, sweep: true, idleAfterMs: 120_000 };
+	const waitingAt = (now: number, tick: number) => renderAgentsCard(idle, roleTheme, 60, now, { ...opts, tick });
+	const workingAt = (now: number, tick: number) => renderAgentsCard(working, roleTheme, 60, now, { ...opts, tick });
+	const base = 400_000;
+	assert.deepEqual(waitingAt(base, 1), waitingAt(base, 7), "tick alone never moves the waiting pulse");
+	assert.deepEqual(waitingAt(base, 1), waitingAt(base + SWEEP_WAITING_STEP_MS - 1, 1), "same second, same position");
+	assert.notDeepEqual(waitingAt(base, 1), waitingAt(base + SWEEP_WAITING_STEP_MS, 1), "crossing a 1 s boundary advances it");
+	assert.notDeepEqual(workingAt(base, 5), workingAt(base, 6), "the working pulse follows the tick");
 });

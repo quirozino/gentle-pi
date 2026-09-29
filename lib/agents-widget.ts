@@ -14,6 +14,9 @@ export const AGENTS_GLYPH = SHELL_GLYPHS.agents;
 // Perimeter cells the pulse advances per tick; at the 160 ms wink rate a
 // typical card (about 200 perimeter cells) laps in roughly 3 s.
 export const SWEEP_CELLS_PER_TICK = 10;
+// While agents only wait, idle or queue the pulse crawls: one step per second
+// derived from the clock, so the slow re-render cadence never makes it jump.
+export const SWEEP_WAITING_STEP_MS = 1000;
 export const SWEEP_ROLE = { WORKING: "accent", WAITING: "warning" } as const;
 
 /**
@@ -370,14 +373,21 @@ function batchElapsed(tasks: readonly TaskRecord[], now: number): string | undef
 	return formatElapsed(end - Math.min(...starts));
 }
 
+// True when a RUNNING task is actively working (not idle per idleField). The
+// one rule shared by the sweep role/pace and the extension's tick interval.
+export function hasWorkingTask(tasks: readonly TaskRecord[], now: number, idleAfterMs: number | undefined): boolean {
+	return tasks.some((task) => task.status === TASK_STATUS.RUNNING && idleField(task, now, idleAfterMs) === "");
+}
+
 // accent while an unfinished RUNNING task is actively working (not idle per
 // idleField), warning while unfinished tasks only wait, idle or queue.
 function sweepFor(shown: readonly TaskRecord[], now: number, options: AgentsWidgetOptions): { position: number; role: string } | undefined {
 	if (!options.sweep || options.tick === undefined || !Number.isFinite(options.tick)) return undefined;
 	const unfinished = shown.filter((task) => !isFinished(task.status));
 	if (unfinished.length === 0) return undefined;
-	const working = unfinished.some((task) => task.status === TASK_STATUS.RUNNING && idleField(task, now, options.idleAfterMs) === "");
-	return { position: Math.trunc(options.tick) * SWEEP_CELLS_PER_TICK, role: working ? SWEEP_ROLE.WORKING : SWEEP_ROLE.WAITING };
+	const working = hasWorkingTask(unfinished, now, options.idleAfterMs);
+	const position = working ? Math.trunc(options.tick) * SWEEP_CELLS_PER_TICK : Math.trunc(now / SWEEP_WAITING_STEP_MS) * SWEEP_CELLS_PER_TICK;
+	return { position, role: working ? SWEEP_ROLE.WORKING : SWEEP_ROLE.WAITING };
 }
 
 export function renderAgentsCard(tasks: readonly TaskRecord[], theme: CardTheme, width: number, now: number, options: AgentsWidgetOptions): string[] {
