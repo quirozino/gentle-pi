@@ -390,12 +390,18 @@ function sweepFor(shown: readonly TaskRecord[], now: number, options: AgentsWidg
 	return { position, role: working ? SWEEP_ROLE.WORKING : SWEEP_ROLE.WAITING };
 }
 
-export function renderAgentsCard(tasks: readonly TaskRecord[], theme: CardTheme, width: number, now: number, options: AgentsWidgetOptions): string[] {
-	const shown = options.keepFinished
+// The tasks the card shows for these options. The one selection rule shared by
+// the render and the extension's tick-interval decision.
+export function shownTasks(tasks: readonly TaskRecord[], now: number, options: Pick<AgentsWidgetOptions, "keepFinished" | "activeOnly">): TaskRecord[] {
+	return options.keepFinished
 		? [...tasks].sort(startOrder)
 		: options.activeOnly
 			? tasks.filter((task) => !isFinished(task.status)).sort(startOrder)
 			: widgetTasks(tasks, now);
+}
+
+export function renderAgentsCard(tasks: readonly TaskRecord[], theme: CardTheme, width: number, now: number, options: AgentsWidgetOptions): string[] {
+	const shown = shownTasks(tasks, now, options);
 	if (shown.length === 0) return [];
 	const cols = columns(shown, cardInnerWidth(width), now, options.idleAfterMs);
 	const { listed, hidden } = options.collapsed ? { listed: [shown[0]], hidden: 0 } : visibleRows(shown, options.maxRows);

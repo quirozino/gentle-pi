@@ -14,6 +14,8 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { sidebarState } from "../lib/shell-sidebar.ts";
 import gentleAgents, { agentRuntimePaths, agentsCollapseKey, agentsEnabled, agentsStopKey, agentsViewKey, answerThroughUi, completionText, createDefaultSessionTransport, legacySubagentsInstalled, type AgentsDeps, type SessionTransportFactory } from "../extensions/gentle-agents.ts";
+import { SWEEP_WAITING_STEP_MS } from "../lib/agents-widget.ts";
+import { shellGlyphs } from "../lib/shell-glyphs.ts";
 import { ActiveSessionClient, ActiveSessionListener, SessionPresenceRegistry } from "../lib/agents-session-transport.ts";
 import { WindowsActiveSessionClient, WindowsActiveSessionListener } from "../lib/windows-session-transport.ts";
 import { historyDir, loadHistory, saveTask } from "../lib/agents-history.ts";
@@ -3450,12 +3452,13 @@ test("registered task actor receives ordinary checkbox and configured TDD guidan
  await h.fire("session_shutdown", ctx);
 });
 
-test("the clock ticks fast only while an agent actively works and slow while it only idles", async () => {
+async function clockIntervals(policy: "quality" | "performance", idle: boolean): Promise<number[]> {
 	const { pi, tools, fire } = fakePi();
 	const harness = deps();
 	let clock = 1000;
 	const timers: Array<{ ms: number; cancelled: boolean }> = [];
 	harness.deps.now = () => clock;
+	harness.deps.resolveAnimationPolicy = () => ({ policy, source: "default", malformed: false, globalFile: "/fixture/animations.json" });
 	harness.deps.schedule = (_fn, ms) => {
 		const timer = { ms, cancelled: false };
 		timers.push(timer);
@@ -3468,13 +3471,41 @@ test("the clock ticks fast only while an agent actively works and slow while it 
 	await fire("session_start", ctx);
 	await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Long job", mode: "background" }, undefined, undefined, ctx);
 	await tick();
-	const live = () => timers.filter((timer) => !timer.cancelled).map((timer) => timer.ms);
-	assert.ok(live().includes(160), "an actively working agent ticks at the wink rate");
+	if (idle) {
+		// Silence past the idle window: the next tick decision re-evaluates.
+		clock += 10 * 60_000;
+		timers.length = 0;
+		await fire("session_start", ctx);
+		await tick();
+	}
+	return timers.filter((timer) => !timer.cancelled).map((timer) => timer.ms);
+}
 
-	// Silence past the idle window: the next tick decision falls back to 1 s.
-	clock += 10 * 60_000;
-	timers.length = 0;
-	await fire("session_start", ctx);
-	await tick();
-	assert.ok(live().includes(1000) && !live().includes(160), "an idle-only card ticks once a second");
+// The frame wink cycle would force 160 ms regardless of the sweep, so the
+// sweep cases run against a pinned single-frame glyph set.
+async function withSingleFrameGlyphs<T>(run: () => Promise<T>): Promise<T> {
+	const glyphs = shellGlyphs();
+	const original = glyphs.agentsFrames;
+	glyphs.agentsFrames = [];
+	try {
+		return await run();
+	} finally {
+		glyphs.agentsFrames = original;
+	}
+}
+
+test("the quality sweep ticks at the wink rate only while an agent actively works and at the waiting step while it only idles", async () => {
+	await withSingleFrameGlyphs(async () => {
+		const working = await clockIntervals("quality", false);
+		assert.ok(working.includes(160), "an actively working agent ticks at the wink rate");
+		const idle = await clockIntervals("quality", true);
+		assert.ok(idle.includes(SWEEP_WAITING_STEP_MS) && !idle.includes(160), "an idle-only card steps at the waiting pace");
+	});
+});
+
+test("the performance policy never schedules the wink rate from the sweep", async () => {
+	await withSingleFrameGlyphs(async () => {
+		const working = await clockIntervals("performance", false);
+		assert.ok(working.includes(1000) && !working.includes(160), "a working agent still ticks once a second");
+	});
 });

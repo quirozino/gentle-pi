@@ -39,6 +39,7 @@ Mode: unknown (no project/session config found); ordinary functional checks.
 
 - Review (RDD): high risk (process_boundary), consent granted, 4 lenses, approved and acknowledged (lineage review-9a83d650fb9efd6f). Advisory warnings for later: 160 ms re-render cadence also while only idle tasks remain; policy file read per render; bodyRows duplicates body row rule; top-rule padding spaces get the pulse role; no test for the extension policy gate.
 - Review follow-up fixed: 160 ms tick only while a task actively works (shared `hasWorkingTask`), otherwise 1 s with the waiting sweep stepping from `now` (`SWEEP_WAITING_STEP_MS`); animation policy memoized per CLOCK_TICK_MS. Tests added in agents-widget and gentle-agents.
+- Review round 2 fixed: `shownTasks` helper shared by renderAgentsCard and the clock (same rows into `hasWorkingTask`), extension slow interval uses `SWEEP_WAITING_STEP_MS` when sweeping, animation policy injectable via `deps.resolveAnimationPolicy`, extension tests pin policy and single-frame glyphs and cover performance.
 
 ## Next step
 Review and push under user's decision.

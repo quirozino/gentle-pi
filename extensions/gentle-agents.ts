@@ -30,7 +30,7 @@ import { sessionToMarkdown } from "../lib/agents-transcript.ts";
 import { AgentsView } from "../lib/agents-view.ts";
 import { PresencePublisher } from "../lib/orchestrator-presence.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
-import { AGENTS_GLYPH, hasWorkingTask, renderAgentsCard, widgetExpiryMs, widgetRows } from "../lib/agents-widget.ts";
+import { AGENTS_GLYPH, hasWorkingTask, renderAgentsCard, shownTasks, SWEEP_WAITING_STEP_MS, widgetExpiryMs, widgetRows } from "../lib/agents-widget.ts";
 import { SHELL_GLYPHS } from "../lib/shell-glyphs.ts";
 import { CARD_TONE, renderCard } from "../lib/shell-card.ts";
 import { openInExternalEditor } from "./gentle-shell.ts";
@@ -217,6 +217,7 @@ export interface AgentsDeps extends RunnerDeps {
 	runtimeMetricsPolicy?: RuntimeMetricsPolicyDeps;
 	metricsNow?: () => number;
 	metricsSchedule?: RunnerDeps["schedule"];
+	resolveAnimationPolicy?: typeof resolveAnimationPolicy;
 }
 
 export function agentRuntimePaths(home: string, agentHome = join(home, ".pi", "agent")): { sessions: string; transcripts: string } {
@@ -670,7 +671,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		const at = deps.now();
 		if (at - sweepPolicyAt >= CLOCK_TICK_MS || at < sweepPolicyAt) {
 			sweepPolicyAt = at;
-			sweepPolicyOn = resolveAnimationPolicy().policy === ANIMATION_POLICY.QUALITY;
+			sweepPolicyOn = (deps.resolveAnimationPolicy ?? resolveAnimationPolicy)().policy === ANIMATION_POLICY.QUALITY;
 		}
 		return sweepPolicyOn;
 	};
@@ -685,10 +686,12 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			// configured it has to tick at the wink rate, not once a second. The
 			// elapsed label is derived from the clock, so it stays correct either way.
 			// The frame sweep needs the same rate, but only while a task actively
-			// works; a card that only waits, idles or queues crawls at the clock
-			// tick (CLOCK_TICK_MS matches the sweep's SWEEP_WAITING_STEP_MS).
-			const fast = SHELL_GLYPHS.agentsFrames.length > 1 || (sweepEnabled() && hasWorkingTask(tasks, deps.now(), AGENTS_IDLE_AFTER_MS));
-			const interval = fast ? AGENTS_WINK_MS : CLOCK_TICK_MS;
+			// works; a card that only waits, idles or queues steps at the sweep's
+			// own waiting pace. Both decisions read the rows the card shows.
+			const sweeping = sweepEnabled();
+			const working = sweeping && hasWorkingTask(shownTasks(tasks, deps.now(), { activeOnly: true }), deps.now(), AGENTS_IDLE_AFTER_MS);
+			const fast = SHELL_GLYPHS.agentsFrames.length > 1 || working;
+			const interval = fast ? AGENTS_WINK_MS : sweeping ? SWEEP_WAITING_STEP_MS : CLOCK_TICK_MS;
 			cancelClock = deps.schedule(() => {
 				requestRender();
 				tickClock();
