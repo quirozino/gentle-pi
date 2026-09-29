@@ -43,9 +43,9 @@ interface Cell {
 
 /**
  * Narrows `range` on `line` (an ANSI-styled string, columns are terminal cells) past
- * a leading and a trailing run of frame glyphs and spaces. A run is only trimmed
- * when it holds at least one frame glyph, so plain indentation and trailing
- * spaces keep pi-tui's range. A range made only of frame and spaces collapses to
+ * leading frame glyphs (with the spaces before each and one padding space after
+ * it) and a trailing run of frame glyphs and spaces. Only frame glyphs trigger a
+ * trim, so content indentation inside a card and plain lines keep pi-tui's range. A range made only of frame and spaces collapses to
  * an empty one (`end <= start`).
  */
 export function trimFrameRange(line: string, range: ColumnRange): ColumnRange {
@@ -60,13 +60,23 @@ export function trimFrameRange(line: string, range: ColumnRange): ColumnRange {
 		offset += width;
 	}
 	const isRun = (cell: Cell) => cell.frame || cell.space;
+	// Leading side: a frame glyph takes the spaces before it and exactly one
+	// padding space after it (`║ text`, nested `║ ║ text`). Any further spaces
+	// are the content's own indentation and stay selected.
 	let first = 0;
 	let leadFrame = false;
-	while (first < cells.length && isRun(cells[first]!)) {
-		if (cells[first]!.frame) leadFrame = true;
-		first++;
+	for (;;) {
+		let next = first;
+		while (next < cells.length && cells[next]!.space) next++;
+		if (next === cells.length || !cells[next]!.frame) break;
+		next++;
+		if (next < cells.length && cells[next]!.space) next++;
+		first = next;
+		leadFrame = true;
 	}
-	if (first === cells.length) return leadFrame ? { start: range.start, end: range.start } : range;
+	if (first === cells.length || cells.slice(first).every(isRun)) {
+		return leadFrame || cells.slice(first).some((cell) => cell.frame) ? { start: range.start, end: range.start } : range;
+	}
 	let last = cells.length;
 	let trailFrame = false;
 	while (last > first && isRun(cells[last - 1]!)) {

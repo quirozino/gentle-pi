@@ -51,6 +51,15 @@ test("wide graphemes keep the cell math correct", () => {
 	assert.equal(range.end, visibleWidth(line) - 2);
 });
 
+test("content indentation inside a card survives the trim", () => {
+	const line = "║     indented code ║";
+	assert.equal(cells(line, trimFrameRange(line, full(line))), "    indented code");
+	const nested = "║ ║   item ║ ║";
+	assert.equal(cells(nested, trimFrameRange(nested, full(nested))), "  item");
+	const margin = "   ║   code ║";
+	assert.equal(cells(margin, trimFrameRange(margin, full(margin))), "  code");
+});
+
 test("a line without a frame keeps the range", () => {
 	const line = "  plain text  ";
 	assert.deepEqual(trimFrameRange(line, full(line)), full(line));
