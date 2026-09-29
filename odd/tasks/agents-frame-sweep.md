@@ -37,5 +37,7 @@ Mode: unknown (no project/session config found); ordinary functional checks.
 - Design: title/subtitle/hint cells count toward the perimeter but are never recoloured. Trail is 3 cells (head + 2). Speed 10 perimeter cells per 160 ms tick (~3 s lap at ~200 cells). Gate: `sweep: resolveAnimationPolicy().policy === quality` in the extension; tick interval drops to 160 ms when the sweep is enabled.
 - T1+T2 committed in d035ad0db.
 
+- Review (RDD): high risk (process_boundary), consent granted, 4 lenses, approved and acknowledged (lineage review-9a83d650fb9efd6f). Advisory warnings for later: 160 ms re-render cadence also while only idle tasks remain; policy file read per render; bodyRows duplicates body row rule; top-rule padding spaces get the pulse role; no test for the extension policy gate.
+
 ## Next step
 Review and push under user's decision.
