@@ -29,6 +29,12 @@ export interface GentleAiRenderState {
 	/** The row's single pending live-duration wake-up. Every render used to stack
 	 * another untracked timer; a terminal render must leave none behind. */
 	pendingTimer?: ReturnType<typeof setTimeout>;
+	/** The args object seen on the previous preparing render, and whether it was
+	 * ever replaced. pi hands a fresh args object on every streamed delta of a
+	 * live call, while a history row keeps one object forever — so a replacement
+	 * is live evidence that the model is still writing this call. */
+	preparingArgs?: { value: unknown };
+	argsStreaming?: boolean;
 }
 
 export interface GentleAiRenderContext {
@@ -40,6 +46,8 @@ export interface GentleAiRenderContext {
 	lastComponent?: unknown;
 	state?: unknown;
 	invalidate?: () => void;
+	/** pi's current tool arguments; replaced on every streamed delta. */
+	args?: unknown;
 	/** pi's stable id for this tool execution; keys the durable timing lookup. */
 	toolCallId?: string;
 	/** Durable timing source (session entries). pi's row `state` is render-local,
@@ -243,6 +251,10 @@ export function renderGentleAiLifecycleCall(
 			: context?.argsComplete === false
 				? LIFECYCLE_STATUS.PREPARING
 				: LIFECYCLE_STATUS.RUNNING;
+	if (state && status === LIFECYCLE_STATUS.PREPARING && context?.executionStarted !== true) {
+		if (state.preparingArgs !== undefined && state.preparingArgs.value !== context?.args) state.argsStreaming = true;
+		state.preparingArgs = { value: context?.args };
+	}
 	if (state) {
 		if (status === LIFECYCLE_STATUS.COMPLETED || status === LIFECYCLE_STATUS.FAILED) {
 			// Only a live terminal observation may freeze the end (pi never raises
@@ -267,9 +279,12 @@ export function renderGentleAiLifecycleCall(
 		? context.lastComponent
 		: new GentleAiCallCard();
 	if (state) state.lifecycleComponent = true;
-	// Sweep only a live, open card: a replayed row never stamps a start.
+	// Sweep only a live, open card: a replayed row never stamps a start, and a
+	// preparing row counts as live only once its arguments were seen streaming.
+	const liveExecution = state?.startedAt !== undefined && state.endedAt === undefined;
+	const liveStreaming = status === LIFECYCLE_STATUS.PREPARING && state?.argsStreaming === true;
 	const sweeping = (status === LIFECYCLE_STATUS.RUNNING || status === LIFECYCLE_STATUS.PREPARING)
-		&& state?.startedAt !== undefined && state.endedAt === undefined
+		&& (liveExecution || liveStreaming)
 		&& (context?.sweep ?? qualityAnimations(now));
 	const sweep = sweeping ? { position: Math.floor(now / SWEEP_TICK_MS) * SWEEP_CELLS_PER_TICK, role: SWEEP_ROLE.WORKING } : undefined;
 	component.update(status, operationPath, theme, detail ? sanitizeTerminalText(detail) : undefined, hint, elapsed, rows.map(sanitizeTerminalText), sweep);
@@ -278,7 +293,7 @@ export function renderGentleAiLifecycleCall(
 	// independent invalidation chains, and none may outlive the terminal render.
 	if (state) {
 		if (state.pendingTimer !== undefined) clearTimeout(state.pendingTimer);
-		if ((status === LIFECYCLE_STATUS.RUNNING || status === LIFECYCLE_STATUS.PREPARING) && state.startedAt !== undefined && state.endedAt === undefined) {
+		if ((status === LIFECYCLE_STATUS.RUNNING || status === LIFECYCLE_STATUS.PREPARING) && (liveExecution || sweeping)) {
 			state.pendingTimer = setTimeout(() => {
 				state.pendingTimer = undefined;
 				context?.invalidate?.();

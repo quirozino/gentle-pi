@@ -421,3 +421,48 @@ test("the sweep paints only theme roles", (t) => {
 	assert.ok(seen.has("accent"));
 	for (const role of seen) assert.match(role, /^[a-z]+$/);
 });
+
+// Preparing: pi builds a live row while the model still streams the tool
+// arguments, handing a fresh args object on every streamed delta. A history
+// row without a result is also "preparing", but its args object never changes,
+// so only observed argument streaming may pulse a preparing frame.
+
+function preparingContext(state: Record<string, unknown>, args: unknown, sweep = true): Record<string, unknown> {
+	return { state, args, argsComplete: false, executionStarted: false, sweep };
+}
+
+test("a preparing card pulses once its arguments are seen streaming", (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const state: Record<string, unknown> = {};
+	renderLive(preparingContext(state, { lineageId: "l" }), 1_000);
+	const swept = renderLive(preparingContext(state, { lineageId: "l", collectBindings: ["b"] }), 1_000 + 160 * 10);
+	const plain = renderLive(preparingContext({}, { lineageId: "l" }, false), 1_000 + 160 * 10);
+	const pulsed = pulsedCells(swept, plain);
+	assert.ok(pulsed.length > 0 && pulsed.length <= 3, `pulse cells: ${pulsed.join(" ")}`);
+	for (const cell of pulsed) assert.match(cell, /:accent$/);
+	assert.equal(stateStartedAt(state), undefined, "streaming arguments is not execution: no duration is invented");
+	assert.notEqual(statePendingTimer(state), undefined, "a streaming preparing row wakes itself to move the pulse");
+});
+
+test("a history row stuck in preparing with unchanged arguments never pulses or ticks", (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const args = { lineageId: "l" };
+	const state: Record<string, unknown> = {};
+	renderLive(preparingContext(state, args), 1_000);
+	const a = renderLive(preparingContext(state, args), 1_000 + 160 * 10);
+	const b = renderLive(preparingContext({}, args, false), 1_000 + 160 * 10);
+	assert.deepEqual(a, b);
+	assert.equal(statePendingTimer(state), undefined);
+});
+
+test("a streaming preparing row stops pulsing when its call fails", (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const state: Record<string, unknown> = {};
+	renderLive(preparingContext(state, { a: 1 }), 1_000);
+	renderLive(preparingContext(state, { a: 2 }), 1_160);
+	const failed = { state, args: { a: 2 }, argsComplete: false, executionStarted: false, isError: true, sweep: true };
+	const a = renderGentleAiLifecycleCall("review capture", sweepTheme, failed as never, undefined, 1_320).render(80);
+	const b = renderGentleAiLifecycleCall("review capture", sweepTheme, { ...failed, state: {}, sweep: false } as never, undefined, 1_320).render(80);
+	assert.deepEqual(a, b);
+	assert.equal(statePendingTimer(state), undefined);
+});
