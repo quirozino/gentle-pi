@@ -111,7 +111,8 @@ function perimeterIndex(row: number, column: number, width: number, height: numb
 	return 2 * width + height - 2 + (height - 2 - row);
 }
 
-function sweepRoles(sweep: NonNullable<CardRenderOptions["sweep"]>, width: number, height: number): ((row: number) => CellRole) | undefined {
+/** Per-row frame-cell recolouring for a card of the given size, for callers that assemble cards from cardTop/cardLine/cardBottom. */
+export function sweepRoles(sweep: NonNullable<CardRenderOptions["sweep"]>, width: number, height: number): ((row: number) => CellRole) | undefined {
 	if (width < FRAME_COLUMNS || height < 2 || !Number.isFinite(sweep.position)) return undefined;
 	const perimeter = 2 * width + 2 * height - 4;
 	const head = ((Math.trunc(sweep.position) % perimeter) + perimeter) % perimeter;

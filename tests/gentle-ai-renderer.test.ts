@@ -299,3 +299,125 @@ test("a seeded replay with a frozen end arms no ticking timer", () => {
 	assert.equal(stateEndedAt(rowState), 31_000, "the durable end is seeded");
 	assert.equal(statePendingTimer(rowState), undefined, "a frozen duration needs no wake-up timer");
 });
+
+// Frame sweep: while a live call runs, a 3-cell pulse in the accent role
+// circles the whole card frame; terminal, replayed and non-quality rows stay
+// static, and the row's single timer ticks at the Agents wink rate.
+
+const sweepTheme = {
+	fg(color: string, text: string) {
+		return color === "border" || color === "accent" || color === "success" || color === "error" ? `<${color}>${text}</${color}>` : text;
+	},
+};
+
+function sweepRoleGrid(lines: string[]): (string | null)[][] {
+	return lines.map((line) => {
+		const cells: (string | null)[] = [];
+		for (const match of line.matchAll(/<(\w+)>(.*?)<\/\1>|([^<]+)/g)) {
+			for (const _glyph of Array.from(match[2] ?? match[3] ?? "")) cells.push(match[1] ?? null);
+		}
+		return cells;
+	});
+}
+
+// Cells the sweep recoloured: those whose role differs from the static card.
+function pulsedCells(swept: string[], plain: string[]): string[] {
+	const a = sweepRoleGrid(swept), b = sweepRoleGrid(plain), out: string[] = [];
+	a.forEach((row, y) => row.forEach((role, x) => { if (role !== b[y]?.[x]) out.push(`${y},${x}:${role}`); }));
+	return out;
+}
+
+function liveContext(extra: Record<string, unknown> = {}): Record<string, unknown> {
+	return { state: {}, argsComplete: true, executionStarted: false, sweep: true, ...extra };
+}
+
+function renderLive(context: Record<string, unknown>, now: number, detail = "$ gentle-ai review capture"): string[] {
+	return renderGentleAiLifecycleCall("review capture", sweepTheme, context as never, detail, now).render(80);
+}
+
+test("a running Gentle AI card sweeps a 3-cell accent pulse around its frame", (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const context = liveContext();
+	renderLive(context, 1_000); // stamps the live start
+	const swept = renderLive(context, 1_000 + 160 * 10);
+	const plain = renderLive(liveContext({ state: context.state, sweep: false }), 1_000 + 160 * 10);
+	const pulsed = pulsedCells(swept, plain);
+	assert.ok(pulsed.length > 0 && pulsed.length <= 3, `pulse cells: ${pulsed.join(" ")}`);
+	for (const cell of pulsed) assert.match(cell, /:accent$/);
+	assert.equal(swept.length, 3); // top + detail + bottom: the whole frame is swept
+});
+
+test("the pulse moves with the clock", (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const context = liveContext();
+	renderLive(context, 1_000);
+	const at = (now: number) => pulsedCells(renderLive(context, now), renderLive(liveContext({ state: context.state, sweep: false }), now)).join(" ");
+	const first = at(1_000 + 160 * 9), second = at(1_000 + 160 * 10);
+	assert.notEqual(first, second);
+	assert.equal(at(1_000 + 160 * 9 + 10), first, "same 160 ms tick, same pulse");
+});
+
+test("completed and failed Gentle AI cards render exactly as before", () => {
+	for (const failed of [false, true]) {
+		const state = { startedAt: 1_000 };
+		const context = { state, executionStarted: true, isPartial: false, isError: failed, sweep: true };
+		const off = { state: { startedAt: 1_000 }, executionStarted: true, isPartial: false, isError: failed, sweep: false };
+		const a = renderGentleAiLifecycleCall("review status", sweepTheme, context as never, undefined, 5_000).render(40);
+		const b = renderGentleAiLifecycleCall("review status", sweepTheme, off as never, undefined, 5_000).render(40);
+		assert.deepEqual(a, b);
+	}
+});
+
+test("a replayed running row without a live start never pulses", (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const replayed = { state: {}, executionStarted: false, sweep: true };
+	const plain = { state: {}, executionStarted: false, sweep: false };
+	const a = renderGentleAiLifecycleCall("review status", sweepTheme, replayed as never, undefined, 90_480).render(40);
+	const b = renderGentleAiLifecycleCall("review status", sweepTheme, plain as never, undefined, 90_480).render(40);
+	assert.deepEqual(a, b);
+});
+
+test("a non-quality animation policy keeps the card static", (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const context = liveContext({ sweep: false });
+	renderLive(context, 1_000);
+	const again = renderLive(context, 1_000 + 160 * 10);
+	const reference = renderLive(liveContext({ state: context.state, sweep: false }), 1_000 + 160 * 10);
+	assert.deepEqual(again, reference);
+	assert.deepEqual(pulsedCells(again, reference), []);
+});
+
+test("the row timer ticks at 160 ms while sweeping, 1000 ms otherwise, and is gone after the terminal render", (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	let invalidations = 0;
+	const state: Record<string, unknown> = {};
+	const context = { state, argsComplete: true, executionStarted: false, sweep: true, invalidate: () => { invalidations += 1; } };
+	renderGentleAiLifecycleCall("review capture", sweepTheme, context as never, undefined, 1_000);
+	t.mock.timers.tick(159);
+	assert.equal(invalidations, 0);
+	t.mock.timers.tick(1);
+	assert.equal(invalidations, 1);
+	// Not sweeping: the unchanged one-second tick.
+	renderGentleAiLifecycleCall("review capture", sweepTheme, { ...context, sweep: false } as never, undefined, 1_200);
+	t.mock.timers.tick(999);
+	assert.equal(invalidations, 1);
+	t.mock.timers.tick(1);
+	assert.equal(invalidations, 2);
+	// Sweeping again, then terminal: nothing stays pending.
+	renderGentleAiLifecycleCall("review capture", sweepTheme, context as never, undefined, 2_000);
+	renderGentleAiLifecycleCall("review capture", sweepTheme, { ...context, executionStarted: true, isPartial: false } as never, undefined, 3_000);
+	t.mock.timers.tick(10_000);
+	assert.equal(invalidations, 2);
+	assert.equal((state.gentleAiRender as { pendingTimer?: unknown }).pendingTimer, undefined);
+});
+
+test("the sweep paints only theme roles", (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const seen = new Set<string>();
+	const recording = { fg: (color: string, text: string) => { seen.add(color); return text; } };
+	const context = liveContext();
+	renderGentleAiLifecycleCall("review capture", recording, context as never, "detail", 1_000).render(40);
+	renderGentleAiLifecycleCall("review capture", recording, context as never, "detail", 1_480).render(40);
+	assert.ok(seen.has("accent"));
+	for (const role of seen) assert.match(role, /^[a-z]+$/);
+});

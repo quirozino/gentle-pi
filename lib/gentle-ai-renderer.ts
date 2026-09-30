@@ -1,8 +1,9 @@
 import { keyHint, type AgentToolResult } from "@earendil-works/pi-coding-agent";
 import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { type GentleAiTimingLookup } from "./gentle-ai-elapsed-store.ts";
-import { CARD_TONE, cardBottom, cardInnerWidth, cardLine, cardTop, type Card, type CardTheme, type CardTone } from "./shell-card.ts";
-import { formatElapsed } from "./agents-widget.ts";
+import { CARD_TONE, cardBottom, cardInnerWidth, cardLine, cardTop, sweepRoles, type Card, type CardTheme, type CardTone } from "./shell-card.ts";
+import { formatElapsed, SWEEP_CELLS_PER_TICK, SWEEP_ROLE } from "./agents-widget.ts";
+import { ANIMATION_POLICY, resolveAnimationPolicy } from "./animation-policy.ts";
 import { sanitizeTerminalText, stripAnsi } from "./terminal-theme.ts";
 
 // Gentle AI tool cards: every call into the gentle-ai binary and every
@@ -44,6 +45,22 @@ export interface GentleAiRenderContext {
 	/** Durable timing source (session entries). pi's row `state` is render-local,
 	 * so only this survives the fresh state a historical replay constructs. */
 	elapsedTiming?: GentleAiTimingLookup;
+	/** Whether a live running card may sweep its frame. Defaults to the animation
+	 * policy (`quality` only); tests inject it. */
+	sweep?: boolean;
+}
+
+// The Agents wink rate: the sweep advances one tick per interval.
+const SWEEP_TICK_MS = 160;
+const ELAPSED_TICK_MS = 1000;
+const POLICY_CACHE_MS = 1000;
+let policyCache: { at: number; quality: boolean } | undefined;
+
+function qualityAnimations(now: number): boolean {
+	if (policyCache === undefined || now - policyCache.at >= POLICY_CACHE_MS || now < policyCache.at) {
+		policyCache = { at: now, quality: resolveAnimationPolicy().policy === ANIMATION_POLICY.QUALITY };
+	}
+	return policyCache.quality;
 }
 
 const LIFECYCLE_STATUS = {
@@ -94,8 +111,9 @@ export class GentleAiCallCard {
 	private rows: string[] = [];
 	private elapsed = "";
 	private open = true;
+	private sweep: { position: number; role: string } | undefined;
 
-	update(status: LifecycleStatus, operationPath: string, theme: GentleAiRenderTheme, detail?: string, hint?: string, elapsed?: string, rows: readonly string[] = []): void {
+	update(status: LifecycleStatus, operationPath: string, theme: GentleAiRenderTheme, detail?: string, hint?: string, elapsed?: string, rows: readonly string[] = [], sweep?: { position: number; role: string }): void {
 		this.card = { title: CARD_TITLE, subtitle: `${status} · ${operationPath}`, body: [], tone: STATUS_TONE[status], glyph: CARD_GLYPH };
 		this.theme = theme;
 		this.detail = detail;
@@ -103,13 +121,16 @@ export class GentleAiCallCard {
 		this.hint = hint;
 		this.elapsed = elapsed ?? "";
 		this.open = status === LIFECYCLE_STATUS.RUNNING || status === LIFECYCLE_STATUS.PREPARING;
+		this.sweep = this.open ? sweep : undefined;
 	}
 
 	render(width: number): string[] {
-		const lines = [cardTop(this.card, this.theme, width, this.hint)];
-		if (this.detail) lines.push(cardLine(this.theme.fg(DETAIL_ROLE, this.detail), this.card.tone, this.theme, width));
-		for (const row of this.rows) lines.push(cardLine(this.theme.fg(DETAIL_ROLE, row), this.card.tone, this.theme, width));
-		if (this.open) lines.push(cardBottom(this.card.tone, this.theme, width, this.elapsed || undefined));
+		const detail = [...(this.detail ? [this.detail] : []), ...this.rows];
+		const height = detail.length + (this.open ? 2 : 1);
+		const roleFor = this.sweep ? sweepRoles(this.sweep, Math.floor(width), height) : undefined;
+		const lines = [cardTop(this.card, this.theme, width, this.hint, roleFor?.(0))];
+		detail.forEach((text, index) => lines.push(cardLine(this.theme.fg(DETAIL_ROLE, text), this.card.tone, this.theme, width, roleFor?.(index + 1))));
+		if (this.open) lines.push(cardBottom(this.card.tone, this.theme, width, this.elapsed || undefined, roleFor?.(height - 1)));
 		return lines;
 	}
 
@@ -246,7 +267,12 @@ export function renderGentleAiLifecycleCall(
 		? context.lastComponent
 		: new GentleAiCallCard();
 	if (state) state.lifecycleComponent = true;
-	component.update(status, operationPath, theme, detail ? sanitizeTerminalText(detail) : undefined, hint, elapsed, rows.map(sanitizeTerminalText));
+	// Sweep only a live, open card: a replayed row never stamps a start.
+	const sweeping = (status === LIFECYCLE_STATUS.RUNNING || status === LIFECYCLE_STATUS.PREPARING)
+		&& state?.startedAt !== undefined && state.endedAt === undefined
+		&& (context?.sweep ?? qualityAnimations(now));
+	const sweep = sweeping ? { position: Math.floor(now / SWEEP_TICK_MS) * SWEEP_CELLS_PER_TICK, role: SWEEP_ROLE.WORKING } : undefined;
+	component.update(status, operationPath, theme, detail ? sanitizeTerminalText(detail) : undefined, hint, elapsed, rows.map(sanitizeTerminalText), sweep);
 	// While the call runs, wake the row once a second so the live duration ticks.
 	// At most one pending timer per row: frequent renders must not stack
 	// independent invalidation chains, and none may outlive the terminal render.
@@ -256,7 +282,7 @@ export function renderGentleAiLifecycleCall(
 			state.pendingTimer = setTimeout(() => {
 				state.pendingTimer = undefined;
 				context?.invalidate?.();
-			}, 1000);
+			}, sweeping ? SWEEP_TICK_MS : ELAPSED_TICK_MS);
 			state.pendingTimer.unref?.();
 		} else {
 			state.pendingTimer = undefined;
