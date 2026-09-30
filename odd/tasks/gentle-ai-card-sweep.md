@@ -46,3 +46,4 @@ Strategy: ask-on-risk. Forecast: < 400 authored lines, single PR slice.
 ## Next step
 Restart pi to load the change (live install). Push/PR remain the user's decision.
 - RDD assess (base 554631910, committed-only): risk medium, review_due false (under_budget), 259 lines; pending in slice.
+- [x] T4 — Reopened after user report: the sweep never showed on `preparing · review capture group` (model still streaming long args; no execution start yet). Fix `db8fa4c7a`: a preparing row whose `context.args` object is replaced between renders (pi `updateArgs`, live only) pulses without inventing a duration; orphaned history rows (same args object forever) stay static with no timer. RED: "a preparing card pulses once its arguments are seen streaming"; GREEN 75/75 (renderer, shell-card, agents-widget, frame glyphs); typecheck no regressions; gentle-ai + quiet rendering: only the 3 pre-existing failures. Route: inline (one source file + its test).
