@@ -363,6 +363,7 @@ test("RDD labels say what is happening and who acts", () => {
 		declined: "Skipped for this change",
 		invalidated: "Outdated · code changed",
 		unavailable: "Review unavailable",
+		too_large: "Too large · split into smaller commits",
 		unknown: "Status unknown",
 	});
 });
@@ -389,4 +390,36 @@ test("RDD distinguishes approval still finalizing from confirmed closure and wra
 		const lines = renderShellSidebarBar(model({ state: "reviewing", scope: "長い候補ファイル-name-with-many-characters.ts +2 files" }), theme, width);
 		assert.ok(lines.every((line) => visibleWidth(line) <= width), `RDD must fit ${width} columns`);
 	}
+});
+
+// Captured verbatim (fields that matter) from a live answer-consent → START
+// preflight stop, 2026-09-30, gentle-ai 3.7.0.
+const lensBudgetStop = {
+	operation: "answer-consent",
+	status: "blocked",
+	mutation_outcome: "none",
+	next_action: "stop",
+	native_failure: {
+		schema: "gentle-ai.review-integration.failure/v2",
+		contract: "gentle-ai.review-integration/v2",
+		operation: "review.start",
+		phase: "preflight",
+		code: "lens_context_budget_exceeded",
+		mutation_outcome: "not_started",
+		retry_safe: true,
+		replayability: "not_replayable",
+		next_action: "stop",
+	},
+};
+
+test("a candidate too large for the reviewer context says so instead of 'unavailable'", () => {
+	const snapshot = reviewSidebarSnapshot("answer-consent", lensBudgetStop);
+	assert.equal(snapshot.state, "too_large");
+	assert.match(REVIEW_SIDEBAR_LABELS[snapshot.state], /split/i);
+	assert.notEqual(REVIEW_SIDEBAR_LABELS[snapshot.state], REVIEW_SIDEBAR_LABELS.unavailable);
+});
+
+test("any other native failure still reads as unavailable", () => {
+	const other = { ...lensBudgetStop, native_failure: { ...lensBudgetStop.native_failure, code: "native_stop_required" } };
+	assert.equal(reviewSidebarSnapshot("answer-consent", other).state, "unavailable");
 });

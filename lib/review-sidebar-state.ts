@@ -17,6 +17,7 @@ export const REVIEW_SIDEBAR_LABELS = {
 	declined: "Skipped for this change",
 	invalidated: "Outdated · code changed",
 	unavailable: "Review unavailable",
+	too_large: "Too large · split into smaller commits",
 	unknown: "Status unknown",
 	ready: "Not reviewed yet",
 	consent: "Needs your consent",
@@ -53,6 +54,10 @@ export function reviewSidebarSnapshot(operation: string, details: unknown): Revi
 		data.status === "closed" && data.authority === "burned") return snapshot("closed");
 	if (data.outcome === "consent-declined-this-candidate") return snapshot("declined");
 	if (data.outcome === "native-review-consent-required") return snapshot("consent");
+	// The candidate's full evidence cannot fit one reviewer's context: review
+	// worked and refused, and only a smaller candidate can pass. Say that
+	// instead of reporting the review itself as unavailable.
+	if (record(data.native_failure).code === "lens_context_budget_exceeded") return snapshot("too_large");
 	if (data.native_failure || data.failure || data.reconciliation_failure) return snapshot("unavailable");
 	if (data.outcome === "reviewer-model-run-forecast") return snapshot("forecast");
 	// A terminal capture reports status=closed even when acknowledgement is still
@@ -140,7 +145,7 @@ function resolveCompletion(operation: string, name: string, input: Record<string
 		snapshot.state = "in_review";
 		snapshot.scope = prior!.scope;
 	}
-	const healthy = !["unknown", "unavailable", "invalidated", "declined"].includes(snapshot.state);
+	const healthy = !["unknown", "unavailable", "too_large", "invalidated", "declined"].includes(snapshot.state);
 	const sameAcknowledgement = operation === "acknowledge-approved" && snapshot.state === "closed" &&
 		prior !== undefined && input.lineageId === prior.lineage && lineage === prior.lineage && target === prior.target;
 	let nextScope: ReviewScope | undefined;
