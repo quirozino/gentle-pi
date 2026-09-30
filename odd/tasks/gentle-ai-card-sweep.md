@@ -45,3 +45,4 @@ Strategy: ask-on-risk. Forecast: < 400 authored lines, single PR slice.
 
 ## Next step
 Restart pi to load the change (live install). Push/PR remain the user's decision.
+- RDD assess (base 554631910, committed-only): risk medium, review_due false (under_budget), 259 lines; pending in slice.
