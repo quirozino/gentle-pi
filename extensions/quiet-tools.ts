@@ -17,6 +17,7 @@ import { GentleAiElapsedTimingLedger } from "../lib/gentle-ai-elapsed-store.ts";
 import { quietToolsEnabled } from "../lib/quiet-tools-config.ts";
 import { getGentleAiRenderState, renderGentleAiLifecycleCall, renderGentleAiResult, type GentleAiRenderContext } from "../lib/gentle-ai-renderer.ts";
 import { CARD_GLYPH, CARD_TONE, cardBottom, cardInnerWidth, cardLine, type CardTheme } from "../lib/shell-card.ts";
+import { SHELL_GLYPHS } from "../lib/shell-glyphs.ts";
 import { sanitizeTerminalText, stripAnsi } from "../lib/terminal-theme.ts";
 
 type QuietToolName = "read" | "bash" | "grep" | "find" | "ls" | "edit" | "write";
@@ -566,12 +567,15 @@ class ToolCardTop implements Component {
 		this.hint = hint;
 	}
 
-	/** Renders `╭─ ✿ <call> ── <hint> ╮`, the hint only when it fits beside the call, like the Gentle AI card. A call that does not fit the rule (a long or multi-line command) continues on card rows below it, so every line of the command stays visible. */
+	/** Renders `╭─ ✿ <call> ── <hint> ╮` (in the configured frame glyphs), the hint only when it fits beside the call, like the Gentle AI card. A call that does not fit the rule (a long or multi-line command) continues on card rows below it, so every line of the command stays visible. */
 	render(width: number): string[] {
 		const target = Math.max(0, Math.floor(width));
 		if (target === 0) return [];
 		const frame = (text: string) => this.theme.fg(this.tone, text);
-		if (target < 8) return [frame(`╭${"─".repeat(Math.max(0, target - 2))}${target > 1 ? "╮" : ""}`)];
+		// The configured frame style (shell.json glyphs.frame) owns every edge, so
+		// the top rule matches the sides and bottom that cardLine/cardBottom draw.
+		const { topLeft, topRight, horizontal } = SHELL_GLYPHS.frame;
+		if (target < 8) return [frame(`${topLeft}${horizontal.repeat(Math.max(0, target - 2))}${target > 1 ? topRight : ""}`)];
 		// Frame columns: "╭─ " (3), glyph and space (2), a space before the fill, and at least "─╮" (2).
 		const fullHintWidth = this.hint ? visibleWidth(this.hint) + 2 : 0;
 		const hint = this.hint && target - 8 - fullHintWidth >= 12 ? this.hint : undefined;
@@ -579,9 +583,9 @@ class ToolCardTop implements Component {
 		const room = target - 8 - hintWidth;
 		const [first = "", ...rest] = this.header.split("\n");
 		const [call = "", ...overflow] = first === "" ? [""] : wrapTextWithAnsi(first, room);
-		const fill = "─".repeat(Math.max(1, target - 7 - hintWidth - visibleWidth(call)));
+		const fill = horizontal.repeat(Math.max(1, target - 7 - hintWidth - visibleWidth(call)));
 		const tail = hint ? ` ${this.theme.fg("dim", hint)} ` : "";
-		const top = `${frame("╭─ ")}${this.theme.fg("accent", CARD_GLYPH)} ${call} ${frame(fill)}${tail}${frame("╮")}`;
+		const top = `${frame(`${topLeft}${horizontal} `)}${this.theme.fg("accent", CARD_GLYPH)} ${call} ${frame(fill)}${tail}${frame(topRight)}`;
 		const innerWidth = cardInnerWidth(target);
 		const continuation = [...overflow, ...rest].flatMap((line) => (line === "" ? [""] : wrapTextWithAnsi(line, innerWidth)));
 		return [top, ...continuation.map((line) => cardLine(line, this.tone, this.theme, target))];
