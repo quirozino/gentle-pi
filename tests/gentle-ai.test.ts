@@ -1472,6 +1472,47 @@ test("guarded command confirmation emits a generic correlated permission lifecyc
 	}
 });
 
+test("herdr blocked signals stay balanced across label transitions", () => {
+	type Handler = (event: unknown) => void;
+	const listeners = new Map<string, Handler[]>();
+	const emitted: Array<{ active: boolean; label?: string }> = [];
+	const pi = {
+		on() {},
+		events: {
+			on(channel: string, handler: Handler) {
+				listeners.set(channel, [...(listeners.get(channel) ?? []), handler]);
+			},
+			emit(channel: string, data: unknown) {
+				if (channel === "herdr:blocked") emitted.push(data as { active: boolean; label?: string });
+				for (const handler of listeners.get(channel) ?? []) handler(data);
+			},
+		},
+		registerCommand() {},
+		registerTool() {},
+	} as unknown as ExtensionAPI;
+	createGentleAiExtension({ nativeReviewCli: null })(pi);
+	// Questionnaire -> Choice (higher priority) -> Questionnaire -> idle.
+	pi.events.emit("rpiv:ask-user:blocked", { active: true });
+	pi.events.emit("gentle-pi:ask-user-choice:blocked", { active: true });
+	pi.events.emit("gentle-pi:ask-user-choice:blocked", { active: false });
+	pi.events.emit("rpiv:ask-user:blocked", { active: false });
+	assert.deepEqual(emitted, [
+		{ active: true, label: "Questionnaire awaiting input" },
+		{ active: true, label: "Choice awaiting input" },
+		{ active: false },
+		{ active: true, label: "Questionnaire awaiting input" },
+		{ active: false },
+		{ active: false },
+	]);
+	// Mirror the herdr consumer: +1 per active:true, -1 per active:false.
+	let balance = 0;
+	for (const signal of emitted) {
+		balance += signal.active ? 1 : -1;
+		assert.ok(balance >= 1 || signal === emitted.at(-1), "never drops to idle mid-transition");
+	}
+	assert.equal(balance, 0);
+});
+
 test("concurrent guarded confirmations coalesce the Herdr lifecycle per extension instance", async () => {
 	type ToolCallHandler = (
 		event: { toolName: string; input: unknown },
@@ -1671,11 +1712,13 @@ test("Herdr coordinates guarded confirmations and RPIV labels without inactive r
 	assert.deepEqual(guardedFirst.herdrEvents, [
 		{ active: true, label: "Guarded command confirmation" },
 		{ active: true, label: "Questionnaire awaiting input" },
+		{ active: false },
 	]);
 	guardedFirst.pi.events.emit("rpiv:ask-user:blocked", { active: false });
 	assert.deepEqual(guardedFirst.herdrEvents, [
 		{ active: true, label: "Guarded command confirmation" },
 		{ active: true, label: "Questionnaire awaiting input" },
+		{ active: false },
 		{ active: false },
 	]);
 
@@ -1692,6 +1735,7 @@ test("Herdr coordinates guarded confirmations and RPIV labels without inactive r
 	assert.deepEqual(questionnaireFirst.herdrEvents, [
 		{ active: true, label: "Questionnaire awaiting input" },
 		{ active: true, label: "Guarded command confirmation" },
+		{ active: false },
 		{ active: false },
 	]);
 });
@@ -1751,14 +1795,15 @@ test("closed choice blockers retain the visible choice label through guarded-con
 	assert.deepEqual(herdrEvents, [
 		{ active: true, label: "Choice awaiting input" },
 		{ active: true, label: "Guarded command confirmation" },
+		{ active: false },
 	]);
-	assert.equal(herdrEvents.some((event) => event.active === false), false);
 
 	confirmations[0]!(true);
 	assert.equal(await guardedRequest, undefined);
 	assert.deepEqual(herdrEvents, [
 		{ active: true, label: "Choice awaiting input" },
 		{ active: true, label: "Guarded command confirmation" },
+		{ active: false },
 		{ active: false },
 	]);
 });

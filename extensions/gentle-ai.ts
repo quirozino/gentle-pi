@@ -1706,9 +1706,13 @@ function createHerdrConfirmationLifecycle(events: ExtensionAPI["events"]): Herdr
 					? HERDR_BLOCKER_LABEL.GUARDED_CONFIRMATION
 					: undefined;
 		if (nextLabel === emittedLabel) return;
+		// The herdr consumer counts every active:true as a new blocker, so a label
+		// change raises the next signal first and then releases the previous one:
+		// the count never drops to zero (no idle pulse) and stays balanced.
+		const previousLabel = emittedLabel;
 		emittedLabel = nextLabel;
-		if (nextLabel === undefined) events.emit("herdr:blocked", { active: false });
-		else events.emit("herdr:blocked", { active: true, label: nextLabel });
+		if (nextLabel !== undefined) events.emit("herdr:blocked", { active: true, label: nextLabel });
+		if (previousLabel !== undefined) events.emit("herdr:blocked", { active: false });
 	};
 
 	events?.on?.(ASK_USER_CHOICE_BLOCKED_EVENT, (event) => {
