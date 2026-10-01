@@ -43,11 +43,65 @@ Mode: off. Runner: `pnpm test` (scripts/run-test-suite.mjs), focused
 Baseline: 1 known failure ("grouped Status preserves structured fields").
 
 ## Tasks
-- [ ] T1 prompt double frame. Route: delegated (writer).
-- [ ] T2 centered boxed Status title. Route: delegated.
-- [ ] T3 RDD in Status. Route: delegated.
-- [ ] T4 MCP startup count line. Route: delegated.
-- [ ] T5 gentle-engram 0.2.0. Route: delegated.
+- [x] T1 prompt double frame. Route: delegated (writer). `e43016c30`.
+  Float prompt draws the configured frame (`╔═╗/║/╚═╝` with
+  glyphs.frame=double) inside the quiet card background: top rule carries
+  face, state label and scroll/Esc hints; closing rule carries the selection
+  label up to a border-painted corner (also fixes neon's hard-coded `╯`
+  corner under double glyphs). Geometry: margin + edge + 1 padding cell per
+  side (prefix 3, native width-6); right frame edge is mouse-inert.
+- [x] T2 centered boxed Status title. Route: delegated. `ec10f4ad4`.
+  Float Status reuses `statusBoxRows(..., withTitle=true)` inside the float
+  accent bar/padding rows; no left-aligned float panel header.
+- [x] T3 RDD in Status. Route: delegated. `e336fe11b`, `9e57a29b3`.
+  `lib/rdd-mode-chip.ts` publishes `🌹 RDD on (default)` /
+  `🌹 RDD off (global|clone)` / `🌹 RDD unknown` as extension status
+  `gentle-rdd` (Integrations, muted). Fire-and-forget on session_start
+  (async Git probe, then the existing bounded/memoized
+  `resolveRddModeStatus`), reused after the primary prompt's read (memo hit),
+  and refreshed from `/gentle:review-mode`'s own result (memo dropped).
+  Outside Git: no native read, no chip (keeps the passive-events contract).
+- [x] T4 MCP startup count line. Route: delegated. `a2330179a`.
+  Cause: the line was pi-mcp-adapter's `mcp` extension status; nothing sets
+  it since Pi 1.0's built-in MCP replaced the adapter. `lib/mcp-servers-status.ts`
+  counts enabled servers (agent dir `mcp.json` + trusted project
+  `.pi/mcp.json`, project wins by name, + `pi.getMcpServers()`), published as
+  `🔌 MCP: N servers enabled` from startup-banner's session_start (off the
+  startup path); the banner MCP row uses the same count.
+- [x] T5 gentle-engram 0.2.0. Route: inline (config + install, no repo code).
+  Settings backup: scratchpad `settings.json.bak-engram-0.1.15`. Pin changed
+  to `npm:gentle-engram@0.2.0`, installed with `pi install
+  npm:gentle-engram@0.2.0` (settings diff: only the pin; other npm packages
+  intact). `scripts/patch-engram-chrome.mjs` applies unchanged to 0.2.0 (same
+  pristine `renderCallText`/`renderResultText` and index render anchors):
+  V4 chrome + V2 index markers present; engram's own chrome tests 14/14.
 
 ## Progress / evidence
-(pending)
+- Commits: `e43016c30` (T1 + this document), `ec10f4ad4` (T2),
+  `e336fe11b` + `9e57a29b3` (T3), `a2330179a` (T4).
+- Focused: shell-prompt, prompt-frame-glyphs (new, double glyphs),
+  selection-engine, float-chrome-roles, shell-glyphs, selection-frame-trim,
+  gentle-shell: pass. shell-bar: pass except baseline "grouped Status".
+  rdd-mode-chip (new), native-review-parity, review-agent-end-preflight,
+  background-subagents, orchestrator-budget, dev-binary-surfacing: pass.
+  mcp-servers-status (new), startup-banner, banner-visibility: pass.
+- `CI=true pnpm run typecheck`: 188 recorded diagnostics, no regressions.
+- `pnpm test`: 4660 tests, 1 failure (baseline "grouped Status preserves
+  structured fields"); provider-contract PASS; runtime-harness PASS.
+  (A first full run caught the T3 chip reading native status outside Git;
+  fixed in `9e57a29b3`.)
+- Headless RPC smoke (`pi --offline --mode rpc --no-session`, /srv/workspaces):
+  86 commands, no extension warnings/errors (codemode and engram typebox
+  warnings gone); statuses `🌹 RDD on (default)`, `🔌 MCP: 15 servers
+  enabled`, `🧠 ddata · ready`. Only notices: winshot-live (own runtime
+  notice in RPC) and skill registry info.
+- Interactive tmux capture (200x60): double-framed float prompt, centred
+  boxed Status title, Integrations with RDD and MCP rows, no
+  `[Extension issues]` block.
+- Engram 0.2.0: SDK load registers 22 `mem_*` tools, 0 errors. Engram's own
+  suite: 257/260; the 3 failures need the engram monorepo (`.github`
+  workflow file, Go module) and are environmental.
+
+## Next step
+User restarts pi (or `/reload`) to load the new chrome; RDD review of the
+work-unit commits is the parent's call.
