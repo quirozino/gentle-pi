@@ -101,6 +101,16 @@ Baseline: 1 known failure ("grouped Status preserves structured fields").
 - Engram 0.2.0: SDK load registers 22 `mem_*` tools, 0 errors. Engram's own
   suite: 257/260; the 3 failures need the engram monorepo (`.github`
   workflow file, Go module) and are environmental.
+- RDD: assessed high (15 files, 740 lines; process spawn in
+  lib/rdd-mode-chip.ts), consent granted, 4-lens review approved with no
+  blocking findings; acknowledged (lineage review-820c70beff63c832, authority
+  burned). Advisory follow-ups (non-blocking): RDD chip async read may
+  overwrite a newer status after /gentle:review-mode (gentle-ai.ts:9373-9379);
+  misleading "no second spawn" comment and a git probe per prompt
+  (gentle-ai.ts:9501-9502); duplicated test home setup
+  (rdd-mode-chip.test.ts:79-84); unexplained room constant (shell-prompt.ts:231).
+- Parent spot check: 6 focused test files 71/71 pass; RPC startup has no
+  extension warnings (only winshot's headless notice).
 
 ## Next step
 User restarts pi (or `/reload`) to load the new chrome; RDD review of the
