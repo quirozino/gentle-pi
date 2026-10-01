@@ -79,6 +79,12 @@ per package scripts; typecheck `CI=true pnpm run typecheck`.
   `sourcePalettePreview` (previews another theme's own palette). No hex,
   no colour libraries, every literal fg/bg role is a theme key; pi-tui
   list themes are built from the active theme passed by `ui.custom`.
+- RDD: full branch (base feat/status-card-panels) assessed high, consent
+  granted, START stopped with `lens_context_budget_exceeded` (153 files,
+  17165 lines; no authority created). Reduced scope post-merge commits
+  (base 503f25884, 10 files +210/-12): assessed medium, `under_budget`,
+  not due. The merge commit itself (mostly upstream code) stays unreviewed.
+- Parent spot check: survival + float-chrome-roles tests 309/309 pass.
 
 ## Next step
 User switches the live tree to `feat/sync-gentle-shell-main` and checks the
