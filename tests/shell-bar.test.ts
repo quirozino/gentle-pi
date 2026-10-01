@@ -672,23 +672,42 @@ test("a model with no quota source shows what the session spent, or Unknown when
 	assert.match(text, /MiniMax-M2 Unknown/, "nothing spent and nothing reported stays unknown");
 });
 
-test("the sidebar Status card in the float style wraps the double-ruled group box in the float panel chrome", (t) => {
+test("the sidebar Status card in the float style wraps the boxed title and group box in the float panel chrome", (t) => {
 	const theme = withBackground(plainTheme);
 	const neon = renderShellSidebarBar(model({ review: { state: "reviewing", scope: "first.ts +2 files" } }), theme, 60);
 	useCardStyle(t, CARD_STYLE.FLOAT);
 	const float = renderShellSidebarBar(model({ review: { state: "reviewing", scope: "first.ts +2 files" } }), theme, 60);
-	// The float panel header carries the title, so the neon title box goes away:
-	// padding, header, separator, the group box, padding.
-	assert.equal(stripAnsi(float[1]!), ` ▎ ✿ Status${" ".repeat(49)}`);
-	assert.equal(stripAnsi(float[2]!), ` ▎${" ".repeat(57)} `, "a blank separator row follows the header");
+	// No float panel header: padding, the boxed centred title, the group box, padding.
 	assertFloatRows(float, 60);
-	const box = float.slice(3, -1).map((row) => stripAnsi(row).slice(3).trimEnd());
+	const inner = float.slice(1, -1).map((row) => stripAnsi(row).slice(3).trimEnd());
+	assert.match(inner[0]!, /^╔═{52}╗$/);
+	const title = inner[1]!;
+	assert.match(title, /^║ +✿ Status +║$/);
+	const lead = title.indexOf("✿") - 1;
+	const trail = title.length - title.indexOf("Status") - "Status".length - 1;
+	assert.ok(Math.abs(lead - trail) <= 1, `the title is centred: ${JSON.stringify(title)}`);
+	assert.match(inner[2]!, /^╚═+╝$/);
+	const box = inner.slice(3);
 	assert.match(box[0]!, /^╔═+╗$/);
 	assert.match(box.at(-1)!, /^╚═+╝$/);
 	assert.ok(box.some((row) => /^╟─+╢$/.test(row)), "single rules split the groups");
-	// Same group rows as neon's inner box, only two columns narrower.
-	const neonGroups = neon.slice(4, -1).map((row) => stripAnsi(row).slice(2, -2).replace(/ +║$/u, "").replace(/[═─]+/gu, "-").replace(/ +/gu, " "));
-	assert.deepEqual(box.map((row) => row.replace(/ +║$/u, "").replace(/[═─]+/gu, "-").replace(/ +/gu, " ")), neonGroups);
+	assert.ok(!float.some((row) => stripAnsi(row).startsWith(" ▎ ✿ Status")), "no left-aligned float header remains");
+	// Same title and group rows as neon's inner boxes, only two columns narrower.
+	const normalize = (row: string) => row.replace(/ +║$/u, "").replace(/[═─]+/gu, "-").replace(/ +/gu, " ");
+	const neonRows = neon.slice(1, -1).map((row) => normalize(stripAnsi(row).slice(2, -2)));
+	assert.deepEqual(inner.map(normalize), neonRows);
+});
+
+test("the float Status title box paints only through theme roles", (t) => {
+	useCardStyle(t, CARD_STYLE.FLOAT);
+	// Zero-width APC role tags keep the layout math identical to a real theme.
+	const fg = (role: string, text: string) => `\x1b_<${role}>\x07${text}\x1b_</${role}>\x07`;
+	const theme = withBackground({ ...plainTheme, fg });
+	const float = renderShellSidebarBar(model({}), theme, 80);
+	const titleRow = float.find((row) => row.includes("Status") && row.includes("║"))!;
+	const tags = (row: string) => row.replace(/\x1b_(<\/?[A-Za-z]+>)\x07/g, "$1");
+	assert.match(tags(titleRow), /<border>║<\/border> +<accent>✿ Status<\/accent> +<border>║<\/border>/);
+	assert.match(tags(float[1]!), /<border>╔═+╗<\/border>/, "the title box rule uses the border role");
 });
 
 // The float top bar has full-width painted padding above and below its

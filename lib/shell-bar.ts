@@ -2,7 +2,7 @@ import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works
 import { GAUGE_CELLS, gaugeTone, paintGauge, renderGauge, type GaugeTone } from "./shell-gauge.ts";
 import { allowanceGroupsSupported, groupUsageLimits, modelUsageRows, renderUsageBar, selectUsageLimit, type ProviderUsage, type UsageWindow } from "./shell-usage.ts";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
-import { CARD_TONE, floatRows, panelHeaderRow, panelInnerWidth, renderCard } from "./shell-card.ts";
+import { CARD_TONE, cardBottom, cardLine, floatRows, panelHeaderRow, panelInnerWidth, renderCard } from "./shell-card.ts";
 import { SHELL_GLYPHS } from "./shell-glyphs.ts";
 import { bannerFrame } from "./shell-sidebar-banner.ts";
 import { REVIEW_SCOPE_UNAVAILABLE, REVIEW_SIDEBAR_LABELS, type ReviewSidebarSnapshot } from "./review-sidebar-state.ts";
@@ -362,12 +362,15 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 		]);
 		return renderCard({ title: "Status", body, tone: CARD_TONE.INFO, glyph: SHELL_GLYPHS.status }, theme, width, { expanded: true, panel: true });
 	}
-	// The float style owns the outer chrome: its panel header carries the title
-	// and the double-ruled group box is the body. Neon keeps the fork's outer
-	// frame with the boxed, centred title.
+	// The float style owns the outer chrome: its accent bar and padding rows
+	// hold the same boxed, centred title and double-ruled group box neon draws
+	// inside its outer frame. No float panel header: the title box replaces it.
 	if (panelHeaderRow(theme, width) === 1) {
-		const box = statusBoxRows(groups, theme, innerWidth, presentation, false);
-		return renderCard({ title: "Status", body: box, tone: CARD_TONE.INFO, glyph: SHELL_GLYPHS.status }, theme, width, { expanded: true, panel: true });
+		const box = statusBoxRows(groups, theme, innerWidth, presentation, true);
+		return floatRows(CARD_TONE.INFO, theme, width, (inner) => ({
+			body: [cardBottom(CARD_TONE.INFO, theme, inner), ...box.map((row) => cardLine(row, CARD_TONE.INFO, theme, inner))],
+			bottom: cardBottom(CARD_TONE.INFO, theme, inner),
+		}));
 	}
 	return renderStatusPanel(groups, theme, width, presentation);
 }
