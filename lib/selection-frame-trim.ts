@@ -16,6 +16,8 @@ export interface ColumnRange {
 // frame glyphs are read lazily so a shell.json override is honoured too. Light
 // box glyphs are content (trees, tables) and only count when configured as the frame.
 const DOUBLE_FRAME = "║═╔╗╚╝";
+// The float card style draws its left edge as this accent bar; it is never content.
+const FLOAT_FRAME = "▎";
 
 const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
@@ -26,6 +28,7 @@ function frameGlyphs(): Set<string> {
 		for (const { segment } of segmenter.segment(text)) glyphs.add(segment);
 	};
 	add(DOUBLE_FRAME);
+	add(FLOAT_FRAME);
 	try {
 		for (const glyph of Object.values(SHELL_GLYPHS.frame)) add(glyph);
 	} catch {

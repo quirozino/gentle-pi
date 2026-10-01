@@ -21,6 +21,14 @@ test("a card body line keeps only its text", () => {
 	assert.equal(cells(line, trimFrameRange(line, full(line))), "hello world");
 });
 
+test("a float card row drops its margin and accent bar, and a padding row selects nothing", () => {
+	const row = " \x1b[48;5;22m\x1b[32m▎\x1b[39m float body text\x1b[49m ";
+	assert.equal(cells(row, trimFrameRange(row, full(row))).trimEnd(), "float body text");
+	const padding = " ▎          ";
+	const range = trimFrameRange(padding, full(padding));
+	assert.ok(range.end <= range.start, "padding row");
+});
+
 test("a pure rule line selects nothing", () => {
 	for (const line of ["╔══════╗", "╚══════╝", "║      ║"]) {
 		const range = trimFrameRange(line, full(line));
