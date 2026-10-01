@@ -54,15 +54,18 @@ test("T2 float prompt native cursor, selection, replacement and mouse share geom
 		editor.setText("abcd");
 		editor.handleInput("\x1b[D");
 		let rows = editor.render(80);
-		assert.match(rows[0], /\x1b\[35m▎\x1b\[39m/);
+		assert.match(rows[0], /^ \x1b\[44m\x1b\[35m╭─ \x1b\[39m/, "the float prompt top rule uses the frame glyphs in the live border colour");
+		assert.match(rows[1], /\x1b\[35m│\x1b\[39m/);
 		assert.equal(visibleWidth(rows[1].split(CURSOR_MARKER)[0]), 6);
 		assert.ok(rows[1].includes(`${CURSOR_MARKER}\x1b[7md\x1b[0m\x1b[44m`));
 		editor.handleInput("\x1b[1;2H");
 		rows = editor.render(80);
-		assert.equal(stripAnsi(rows[1].replaceAll(CURSOR_MARKER, "")).trim(), "▎ abcd");
+		assert.equal(stripAnsi(rows[1].replaceAll(CURSOR_MARKER, "")).trim().replace(/ +│$/, ""), "│ abcd");
 		assert.ok(rows[1].includes(`${CURSOR_MARKER}\x1b[7ma\x1b[0m\x1b[44m\x1b[7mbc\x1b[27md`), "native selection inversion survives the software cursor reset");
 		assert.match(rows[2], /3 chars selected/);
-		assert.doesNotMatch(rows[2], /╯/);
+		assert.match(stripAnsi(rows[2]), /^ ╰─+ 3 chars selected.*╯ $/, "the selection label rides the closing rule up to its corner");
+		assert.ok(rows[2].includes("\x1b[35m╯\x1b[39m"), "the corner keeps the border colour");
+		assert.equal(visibleWidth(rows[2]), 80);
 		assert.ok(rows[2].includes("\x1b[44m"));
 		editor.handleInput("X");
 		assert.equal(editor.getText(), "Xd");
@@ -71,16 +74,18 @@ test("T2 float prompt native cursor, selection, replacement and mouse share geom
 		editor.handleMouse(click(4, 1, 30));
 		assert.deepEqual(editor.getCursor(), { line: 0, col: 1 });
 		editor.handleMouse(click(10, 0, 30));
-		assert.deepEqual(editor.getCursor(), { line: 0, col: 1 }, "padding row is inert");
+		assert.deepEqual(editor.getCursor(), { line: 0, col: 1 }, "top rule is inert");
 		editor.handleMouse(click(10, 2, 30));
-		assert.deepEqual(editor.getCursor(), { line: 0, col: 1 }, "hint row is inert");
+		assert.deepEqual(editor.getCursor(), { line: 0, col: 1 }, "closing rule is inert");
+		editor.handleMouse(click(28, 1, 30));
+		assert.deepEqual(editor.getCursor(), { line: 0, col: 1 }, "the right frame edge is inert");
 		editor.borderColor = (text) => `\x1b[36m${text}\x1b[39m`;
-		assert.match(editor.render(30)[1], /\x1b\[36m▎\x1b\[39m/, "accent reads the current public mode callback");
+		assert.match(editor.render(30)[1], /\x1b\[36m│\x1b\[39m/, "frame reads the current public mode callback");
 		assert.equal(editor.handleMouse({ ...click(3, 1, 30), type: "press" }), undefined, "native drag selection remains unhandled");
 		editor.setText("abcdefghijklmnop");
-		const wrapped = editor.render(12);
+		const wrapped = editor.render(13);
 		assert.equal(wrapped.length, 5, "native layout width=6 wraps into three content rows");
-		editor.handleMouse(click(5, 2, 12));
+		editor.handleMouse(click(5, 2, 13));
 		assert.deepEqual(editor.getCursor(), { line: 0, col: 8 });
 		editor.handleInput("\x1ba");
 		assert.ok(editor.render(10).slice(1, -1).every((row) => row.includes("\x1b[7m")), "selection paints every wrapped content row");
@@ -101,8 +106,8 @@ test("T2 float prompt actual native completions retain start row, height and cli
 		assert.equal(editor.isShowingAutocomplete(), true);
 		const rows = editor.render(30);
 		assert.equal(rows.length, 5);
-		assert.match(stripAnsi(rows[3]), /^ ▎ → alpha/);
-		assert.match(stripAnsi(rows[4]), /^ ▎   beta/);
+		assert.match(stripAnsi(rows[3]), /^ │ → alpha +│ $/);
+		assert.match(stripAnsi(rows[4]), /^ │   beta +│ $/);
 		assert.ok(rows.every((row) => visibleWidth(row) === 30));
 		assert.equal(visibleWidth(rows[1].split(CURSOR_MARKER)[0]), 4);
 		assert.equal(editor.handleMouse(click(4, 4, 30))?.handled, true);
@@ -126,7 +131,7 @@ test("T2 float prompt actual editor fallback and neon bytes remain exact at all 
 			assert.deepEqual(fallback.render(width), neon);
 			const rows = editor.render(width);
 			if (width < 10) assert.deepEqual(rows, neon);
-			else assert.match(stripAnsi(rows[0]), /^ ▎ ✿/);
+			else assert.match(stripAnsi(rows[0]), /^ ╭─ ✿/);
 			assert.ok(rows.every((row) => visibleWidth(row) <= width));
 		}
 	} finally { editor.dispose(); fallback.dispose(); setCardStyle(previous); }

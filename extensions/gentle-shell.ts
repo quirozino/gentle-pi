@@ -1177,7 +1177,7 @@ export class GentlePromptEditor extends CustomEditor {
 		if (!layout) return super.handleMouse(event);
 		// Row coordinates stay native: padding=0, content=1…N, hint=N+1.
 		// Only float translates x; the existing neon/fallback path is unchanged.
-		if (event.x < layout.prefixWidth || event.x >= layout.width - 1) return undefined;
+		if (event.x < layout.prefixWidth || event.x > layout.prefixWidth + layout.nativeWidth) return undefined;
 		return super.handleMouse({ ...event, x: event.x - layout.prefixWidth, width: layout.nativeWidth });
 	}
 
@@ -1204,10 +1204,14 @@ export class GentlePromptEditor extends CustomEditor {
 		const visibleCount = (this as unknown as { renderedVisibleLineCount?: number }).renderedVisibleLineCount;
 		const borderEnd = Number.isInteger(visibleCount) && visibleCount! >= 1 && visibleCount! + 2 <= editorLines.length
 			? visibleCount! + 2 : editorLines.length;
+		const promptBorder = (text: string) => layout.background ? this.borderColor(text) : this.deps.fg(PROMPT_FRAME_ROLE, text);
 		const framed = framePromptLines(editorLines.slice(0, borderEnd), width, {
 			state,
 			tick: this.tick,
-			borderColor: (text) => layout.background ? this.borderColor(text) : this.deps.fg(PROMPT_FRAME_ROLE, text),
+			borderColor: promptBorder,
+			decorateBottomRule: this.vimPolicy === "on"
+				? undefined
+				: (row, ruleWidth) => this.selectionEngine.decorateBottomRule(row, ruleWidth, promptBorder(SHELL_GLYPHS.frame.bottomRight)),
 			fg: this.deps.fg,
 			bold: this.deps.bold,
 			workingLabel: this.promptState === PROMPT_STATE.WORKING ? this.deps.workingLabel?.() : undefined,
@@ -1220,11 +1224,6 @@ export class GentlePromptEditor extends CustomEditor {
 						: undefined,
 			].filter(Boolean).join(" · ") || undefined,
 		}, layout);
-		if (this.vimPolicy !== "on") {
-			framed[framed.length - 1] = layout.background
-				? floatPromptRow(this.selectionEngine.decorateBottomRule("", layout.nativeWidth, ""), layout, (text) => this.borderColor(text))
-				: this.selectionEngine.decorateBottomRule(framed[framed.length - 1] ?? "", width, "╯");
-		}
 		// Pi places autocomplete after its bottom border. Keep those rows below
 		// Gentle's frame and preserve their terminal width and row coordinates.
 		for (const line of editorLines.slice(borderEnd)) {

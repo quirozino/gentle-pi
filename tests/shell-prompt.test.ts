@@ -230,17 +230,43 @@ test("neon/fallback transparent prompt preserves pi's cursor reset", () => {
 
 const floatBg = (_role: string, text: string) => `\x1b[48;2;20;30;40m${text}\x1b[49m`;
 
-test("T2 float prompt keeps status and content inside the background with inset and bottom padding", () => {
+test("T1 float prompt frames status and content with the configured glyphs inside the background", () => {
 	const rows = framePromptLines(["── ↑ 2 more", `ab${CURSOR}cd`, "── ↓ 3 more"], 80, options({
 		style: "float", bg: floatBg, fg: (_c, t) => t, state: PROMPT_STATE.WORKING, workingLabel: "exploring…", escHint: "esc again to cancel",
 	}));
 	assert.equal(rows.length, 3);
-	assert.match(stripAnsi(rows[0]), /^ ▎ ✿ exploring… · ↑ 2 more · esc again to cancel/);
-	assert.match(stripAnsi(rows[1]), /^ ▎ ab cd + $/);
+	assert.match(stripAnsi(rows[0]), /^ ╭─ ✿ exploring… · ↑ 2 more · esc again to cancel ─+╮ $/);
+	assert.match(stripAnsi(rows[1]), /^ │ ab cd +│ $/);
 	assert.ok(rows[1].includes(`${CURSOR}\x1b[48;2;20;30;40m`));
-	assert.equal(stripAnsi(rows[2]), ` ▎${" ".repeat(77)} `);
+	assert.equal(stripAnsi(rows[2]), ` ╰${"─".repeat(76)}╯ `);
 	assert.ok(rows.every((row) => row.startsWith(" \x1b[48;2;20;30;40m") && row.endsWith("\x1b[49m ")));
 	assert.ok(rows.every((row) => visibleWidth(row) === 80));
+});
+
+test("T1 float prompt closing rule takes the bottom decorator at the rule width", () => {
+	const seen: number[] = [];
+	const rows = framePromptLines(["──", "draft", "──"], 40, options({
+		style: "float", bg: floatBg, fg: (_c, t) => t,
+		decorateBottomRule: (row, width) => { seen.push(width); return row.slice(0, -1) + "X"; },
+	}));
+	assert.deepEqual(seen, [38]);
+	assert.match(stripAnsi(rows[2]), /^ ╰─+X $/);
+	assert.equal(visibleWidth(rows[2]), 40);
+	const neonSeen: number[] = [];
+	framePromptLines(["──", "draft", "──"], 40, options({ decorateBottomRule: (row, width) => { neonSeen.push(width); return row; } }));
+	assert.deepEqual(neonSeen, [40]);
+});
+
+test("T1 float prompt paints its frame and labels only through theme roles", () => {
+	const fg = (role: string, text: string) => `<${role}>${text}</${role}>`;
+	// Wide enough that the fake role tags (counted as visible text) never truncate the status.
+	const rows = framePromptLines(["──", "draft", "──"], 120, options({ style: "float", bg: floatBg, fg, borderColor: (text) => fg("border", text) }));
+	for (const row of rows) {
+		const outside = row.replace(/<([A-Za-z]+)>[^<]*<\/\1>/g, "").replace(/\x1b\[48;2;20;30;40m|\x1b\[49m/g, "");
+		assert.match(outside, /^[ a-z]*$/, `only role-painted frame cells and editor text remain: ${JSON.stringify(row)}`);
+	}
+	assert.match(rows[0], /<border>╭─ <\/border>.*<muted>waiting for input<\/muted><border> ─+╮<\/border>/);
+	assert.match(rows[1], /<border>│<\/border> draft +<border>│<\/border>/);
 });
 
 test("T2 float prompt falls back byte-exactly before narrow or unusable backgrounds", () => {
@@ -257,7 +283,7 @@ test("T2 float prompt falls back byte-exactly before narrow or unusable backgrou
 		}
 		const float = framePromptLines(native, width, { ...plain, style: "float", bg: floatBg });
 		if (width < 10) assert.deepEqual(float, neon);
-		else assert.match(stripAnsi(float[1]), /^ ▎/);
+		else assert.match(stripAnsi(float[1]), /^ │ x +│ $/);
 		assert.ok(float.every((row) => visibleWidth(row) <= width));
 	}
 });

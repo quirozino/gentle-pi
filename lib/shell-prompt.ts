@@ -3,8 +3,9 @@ import { stripAnsi } from "./terminal-theme.ts";
 import { SHELL_GLYPHS } from "./shell-glyphs.ts";
 import { CARD_STYLE, type CardStyle } from "./shell-card.ts";
 
-// Pure prompt chrome: neon keeps Pi's rule/content/rule rows in a rounded
-// frame; float retains those indices as painted status/content/padding.
+// Pure prompt chrome: both styles keep Pi's rule/content/rule rows in the
+// configured frame (`╔═╗` with glyphs.frame=double); float draws it inside
+// the quiet card background with one margin and one padding cell per side.
 
 export const PROMPT_STATE = {
 	IDLE: "idle",
@@ -64,6 +65,11 @@ export interface PromptFrameOptions {
 	 * Ignored outside the WORKING state; undefined falls back to "working…".
 	 */
 	workingLabel?: string;
+	/**
+	 * Decorates the raw closing rule (before any float panel wrap) at the
+	 * width it was drawn with, e.g. the native selection count label.
+	 */
+	decorateBottomRule?: (row: string, width: number) => string;
 }
 
 // A terminal cell cannot grow, so the face earns presence with weight and the
@@ -169,7 +175,8 @@ export function resolvePromptLayout(width: number, style?: CardStyle, bg?: Promp
 			}
 		} catch { /* Missing theme background: retain the entire neon path. */ }
 	}
-	return { width, nativeWidth: Math.max(1, width - (background ? 5 : 2)), prefixWidth: background ? 3 : 1, background };
+	// Float: margin, frame edge and one padding cell on each side of the editor.
+	return { width, nativeWidth: Math.max(1, width - (background ? 6 : 2)), prefixWidth: background ? 3 : 1, background };
 }
 
 // Extended-colour parameters belong to one command: zero RGB channels
@@ -192,37 +199,52 @@ function rearmPromptBackground(text: string, background: string): string {
 		promptSgrCommands(parameters).some(([code]) => code === 0 || code === 49) ? sgr + background : sgr);
 }
 
-/** Same chrome and horizontal prefix for editable and native completion rows. */
-export function floatPromptRow(line: string, layout: PromptLayout, borderColor: PromptFrameOptions["borderColor"]): string {
-	const clipped = truncateToWidth(line, layout.nativeWidth, "");
-	const content = borderColor("▎") + " " + clipped + " ".repeat(Math.max(0, layout.nativeWidth - visibleWidth(clipped))) + " ";
-	return " " + layout.background + rearmPromptBackground(content, layout.background) + "\x1b[49m ";
+/** One full float panel row (a rule, already `layout.width - 2` wide) inside the transparent margins. */
+export function floatPromptRule(row: string, layout: PromptLayout): string {
+	return " " + layout.background + rearmPromptBackground(row, layout.background) + "\x1b[49m ";
 }
 
-function floatPromptHint(top: string, bottom: string, options: PromptFrameOptions, width: number): string {
+/**
+ * Same chrome and horizontal prefix for editable and native completion rows:
+ * the configured frame edges (`║` with glyphs.frame=double) around one padding
+ * cell on each side, inside the float background.
+ */
+export function floatPromptRow(line: string, layout: PromptLayout, borderColor: PromptFrameOptions["borderColor"]): string {
+	const clipped = truncateToWidth(line, layout.nativeWidth, "");
+	const vertical = borderColor(SHELL_GLYPHS.frame.vertical);
+	return floatPromptRule(vertical + " " + clipped + " ".repeat(Math.max(0, layout.nativeWidth - visibleWidth(clipped))) + " " + vertical, layout);
+}
+
+// The float top rule carries the face, the state label and any scroll or Esc
+// hints, so the closing rule stays free for the selection label.
+function floatTopRule(top: string, bottom: string, options: PromptFrameOptions, width: number): string {
 	const glyph = petalGlyph(options.state, options.tick);
 	const petal = options.fg(petalTone(options.state, options.tick), options.bold ? options.bold(glyph) : glyph);
 	const label = stateLabel(options) ?? "waiting for input";
-	let paintedLabel = "";
-	if (label) {
-		paintedLabel = options.state === PROMPT_STATE.WORKING
-			? scanWorkingText(label, options.tick, options.fg)
-			: options.fg(LABEL_ROLE, label);
-	}
+	const paintedLabel = options.state === PROMPT_STATE.WORKING
+		? scanWorkingText(label, options.tick, options.fg)
+		: options.fg(LABEL_ROLE, label);
 	const info = [scrollIndicator(top), options.escHint ?? scrollIndicator(bottom)]
 		.filter((text): text is string => Boolean(text))
 		.map((text) => options.fg(LABEL_ROLE, text));
-	const hint = truncateToWidth("  " + petal + (paintedLabel ? " " + paintedLabel : "") + (info.length ? " · " + info.join(" · ") : ""), width, "");
-	return hint + " ".repeat(Math.max(0, width - visibleWidth(hint)));
+	const { topLeft, topRight, horizontal } = SHELL_GLYPHS.frame;
+	const room = width - 5;
+	if (room < 1) return options.borderColor(`${topLeft}${rule(width - 2)}${topRight}`);
+	const status = truncateToWidth(petal + " " + paintedLabel + (info.length ? " · " + info.join(" · ") : ""), room, "");
+	const fill = room - visibleWidth(status);
+	return options.borderColor(`${topLeft}${horizontal} `) + status + options.borderColor(` ${rule(fill)}${topRight}`);
 }
 
 export function framePromptLines(lines: string[], width: number, options: PromptFrameOptions, layout = resolvePromptLayout(width, options.style, options.bg)): string[] {
 	width = Math.max(0, Math.floor(width));
 	if (layout.background && lines.length >= 2) {
+		const ruleWidth = layout.width - 2;
+		const { bottomLeft, bottomRight } = SHELL_GLYPHS.frame;
+		const closing = options.borderColor(`${bottomLeft}${rule(ruleWidth - 2)}${bottomRight}`);
 		return [
-			floatPromptRow(floatPromptHint(lines[0], lines[lines.length - 1], options, layout.nativeWidth).slice(2), layout, options.borderColor),
+			floatPromptRule(floatTopRule(lines[0], lines[lines.length - 1], options, ruleWidth), layout),
 			...lines.slice(1, -1).map((line) => floatPromptRow(line, layout, options.borderColor)),
-			floatPromptRow("", layout, options.borderColor),
+			floatPromptRule(options.decorateBottomRule ? options.decorateBottomRule(closing, ruleWidth) : closing, layout),
 		];
 	}
 	if (lines.length < 2) return lines.map((line) => truncateToWidth(line, width, ""));
@@ -242,7 +264,8 @@ export function framePromptLines(lines: string[], width: number, options: Prompt
 	const top = lines[0];
 	const bottom = lines[lines.length - 1];
 	const content = lines.slice(1, -1).map((line) => sideRules(line, innerWidth, options));
-	return [topRule(width, options, scrollIndicator(top)), ...content, bottomRule(width, options, options.escHint ?? scrollIndicator(bottom))];
+	const closing = bottomRule(width, options, options.escHint ?? scrollIndicator(bottom));
+	return [topRule(width, options, scrollIndicator(top)), ...content, options.decorateBottomRule ? options.decorateBottomRule(closing, width) : closing];
 }
 
 export function withPromptHint(line: string, hint: string, fg: PromptFrameOptions["fg"]): string {
