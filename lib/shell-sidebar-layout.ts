@@ -1,6 +1,7 @@
 import { ScrollView, VStack, visibleWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { sidebarState, type SidebarRail } from "./shell-sidebar.ts";
 import type { ShellBarTheme } from "./shell-bar.ts";
+import { CARD_STYLE, cardStyle, type CardStyle } from "./shell-card.ts";
 import { renderSidebarBanner } from "./shell-sidebar-banner.ts";
 import type { Density, HeaderPlacement, StatusPlacement } from "./visual-customization-policy.ts";
 
@@ -31,6 +32,7 @@ type PreparedRail = {
 	width: number;
 	mode: string | undefined;
 	headerPlacement: HeaderPlacement;
+	cardStyle: CardStyle;
 	root: LayoutRoot;
 	theme: ShellBarTheme;
 	parts: Array<[string, SidebarRail]>;
@@ -214,10 +216,11 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			}
 			return false;
 		}
+		const style = cardStyle();
 		const parts = [...state.parts.entries()];
 		const digests = parts.map(([, rail]) => railDigest(rail));
 		const unchanged = prepared?.revision === cache.revision &&
-			prepared.width === width && prepared.mode === host.mode && prepared.headerPlacement === headerPlacement() && prepared.root === root && prepared.theme === theme &&
+			prepared.width === width && prepared.mode === host.mode && prepared.headerPlacement === headerPlacement() && prepared.cardStyle === style && prepared.root === root && prepared.theme === theme &&
 			prepared.parts.length === parts.length && prepared.parts.every(([key, part], index) => parts[index]?.[0] === key && parts[index]?.[1] === part) &&
 			prepared.digests.length === digests.length && prepared.digests.every((digest, index) => digest === digests[index]);
 		if (unchanged) {
@@ -289,16 +292,16 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 				if (needsGap && density() === "comfortable") railLines.push("");
 				railLines.push(...branding.map((line) => " ".repeat(RAIL_PADDING) + line + " ".repeat(RAIL_PADDING)));
 				needsGap = true;
-			} else if (!needsGap && sections.length && headerActive && density() === "comfortable") {
-				// The banner used to hold the first card off the top; the header
-				// took its place, so keep one blank row between them.
+			} else if (!needsGap && sections.length && headerActive && density() === "comfortable" && style === CARD_STYLE.NEON) {
+				// Preserve neon's header gap. Float's painted top padding starts
+				// on the same body row as the transcript, without an external gap.
 				railLines.push("");
 			}
 			for (const section of [...sections, ...bottomSections]) pushSection(section);
 			// Height is owned by the native ScrollView, never by the transcript.
 			const active = railLines.length > 0 && railLines.every((line) => visibleWidth(line) <= contentWidth);
 			headerLines = headerActive && headerPlacement() === "top" ? preparedHeaderLines : [];
-			prepared = { revision: cache.revision, width, mode: host.mode, headerPlacement: headerPlacement(), root, theme, parts, digests, contentWidth, active, lines: railLines, hits, headerLines, headerActive: headerLines.length > 0 };
+			prepared = { revision: cache.revision, width, mode: host.mode, headerPlacement: headerPlacement(), cardStyle: style, root, theme, parts, digests, contentWidth, active, lines: railLines, hits, headerLines, headerActive: headerLines.length > 0 };
 			state.active = active;
 			return active;
 		} catch {

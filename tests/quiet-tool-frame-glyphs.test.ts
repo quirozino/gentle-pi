@@ -6,15 +6,15 @@ import test from "node:test";
 // any card renders. Each test file runs in its own process.
 process.env.GENTLE_PI_GLYPHS_FRAME = "double";
 delete process.env.GENTLE_PI_QUIET_TOOLS;
-const { default: quietTools } = await import("../extensions/quiet-tools.ts");
+const { createQuietToolRenderer } = await import("../extensions/quiet-tools.ts");
 
 const theme = { bold: (value: string) => value, fg: (_color: string, value: string) => value };
 const SINGLE_FRAME = /[╭╮╰╯─│]/;
 
-function bashTool() {
-	const tools = new Map<string, any>();
-	quietTools({ registerTool: (tool: any) => tools.set(tool.name, tool), registerCommand() {}, on() {} } as any);
-	return tools.get("bash");
+// Quiet tools no longer register a production bash tool (Pi's native Bash
+// keeps its executor); the renderer is the surface that draws the card.
+function bashTool(): any {
+	return { name: "bash", ...createQuietToolRenderer("bash") };
 }
 
 test("a quiet bash card draws its whole frame with the configured double glyphs", () => {
