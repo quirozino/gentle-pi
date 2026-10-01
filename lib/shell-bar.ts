@@ -366,9 +366,9 @@ interface StatusGroup {
 	lines: string[];
 }
 
-// Inner boxes keep the square light rule whatever the outer frame style is,
-// so the panels read as compartments of the card rather than nested cards.
-const PANEL = { topLeft: "┌", topRight: "┐", bottomLeft: "└", bottomRight: "┘", teeLeft: "├", teeRight: "┤", horizontal: "─", vertical: "│" } as const;
+// Inner boxes are double-ruled; the rules between groups stay single so the
+// compartments read as one box split into sections.
+const PANEL = { topLeft: "╔", topRight: "╗", bottomLeft: "╚", bottomRight: "╝", teeLeft: "╟", teeRight: "╢", horizontal: "═", divider: "─", vertical: "║" } as const;
 const STATUS_PANEL_ROLE = { FRAME: "border", TITLE: "accent", HEADING: "accent" } as const;
 // Outer frame plus its gutter, then the inner box plus its gutter.
 const STATUS_PANEL_INSET = 4;
@@ -387,7 +387,7 @@ function renderStatusPanel(groups: StatusGroup[], theme: ShellBarTheme, width: n
 		return clipped + " ".repeat(Math.max(0, size - visibleWidth(clipped)));
 	};
 	const shell = (row: string) => `${frame(outer.vertical)} ${row} ${frame(outer.vertical)}`;
-	const rule = (left: string, right: string) => shell(frame(left + PANEL.horizontal.repeat(boxWidth - 2) + right));
+	const rule = (left: string, right: string, line: string = PANEL.horizontal) => shell(frame(left + line.repeat(boxWidth - 2) + right));
 	const row = (text: string) => shell(`${frame(PANEL.vertical)} ${fit(text, content)} ${frame(PANEL.vertical)}`);
 	const pair = (key: string, text: string, keyRole: string = ROLE.LABEL): string[] => {
 		const keyText = theme.fg(keyRole, theme.bold(key));
@@ -416,7 +416,7 @@ function renderStatusPanel(groups: StatusGroup[], theme: ShellBarTheme, width: n
 		titleRow,
 		rule(PANEL.bottomLeft, PANEL.bottomRight),
 		rule(PANEL.topLeft, PANEL.topRight),
-		...sections.flatMap((section, index) => [...(index ? [rule(PANEL.teeLeft, PANEL.teeRight)] : []), ...section.map(row)]),
+		...sections.flatMap((section, index) => [...(index ? [rule(PANEL.teeLeft, PANEL.teeRight, PANEL.divider)] : []), ...section.map(row)]),
 		rule(PANEL.bottomLeft, PANEL.bottomRight),
 		frame(outer.bottomLeft + outer.horizontal.repeat(width - 2) + outer.bottomRight),
 	];

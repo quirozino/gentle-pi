@@ -59,7 +59,7 @@ function model(overrides: Partial<ShellBarModel> = {}): ShellBarModel {
 }
 
 function sidebarUsageRows(lines: string[]): string[] {
-	const body = lines.filter((line) => line.startsWith("│ │ ")).map((line) => line.slice(4, -4).trim());
+	const body = lines.filter((line) => line.startsWith("│ ║ ")).map((line) => line.slice(4, -4).trim());
 	const start = body.indexOf("Usage");
 	const end = body.indexOf("Integrations");
 	return body.slice(start + 1, end).filter((line) => /[▰▱]/.test(line) && !line.startsWith("Context"));
@@ -74,13 +74,13 @@ test("visual visibility hides only selected optional status segments", () => {
 
 test("Status title stays plain without an active review", () => {
 	const lines = renderShellSidebarBar(model(), plainTheme, 60);
-	assert.match(lines[2], /^│ │ +✿ Status +│ │$/);
+	assert.match(lines[2], /^│ ║ +✿ Status +║ │$/);
 	assert.doesNotMatch(lines.slice(1).join("\n"), /🌹 RDD/);
 });
 
 test("Status title stays plain above the review lifecycle block", () => {
 	const lines = renderShellSidebarBar(model({ review: { state: "reviewing", scope: "first.ts +2 files" } }), plainTheme, 60);
-	assert.match(lines[2], /^│ │ +✿ Status +│ │$/);
+	assert.match(lines[2], /^│ ║ +✿ Status +║ │$/);
 	assert.match(lines.slice(3).join("\n"), /🌹 RDD[\s\S]*Reviewers running…[\s\S]*first\.ts \+2 files/);
 });
 
@@ -106,7 +106,7 @@ test("Status and review lifecycle block respect terminal width", () => {
 		for (const review of [undefined, { state: "reviewing" as const, scope: "first.ts +2 files" }, { state: "approved" as const, scope: REVIEW_SCOPE_UNAVAILABLE }]) {
 			const lines = renderShellSidebarBar(model({ review }), plainTheme, width);
 			for (const line of lines) assert.ok(visibleWidth(line) <= width, `${width}: ${line}`);
-			if (width >= 20) assert.match(lines[2], /^│ │ +✿ Status +│ │$/);
+			if (width >= 20) assert.match(lines[2], /^│ ║ +✿ Status +║ │$/);
 			else if (width >= 8) assert.match(lines[0], /^╭─ ✿/);
 		}
 	}
@@ -328,10 +328,10 @@ test("Status panel boxes the title and splits groups with tee rules", () => {
 	const data = model({ profile: "team", changes: { files: 2, added: 7, deleted: 3 }, statuses: ["MCP connected"] });
 	const lines = renderShellSidebarBar(data, plainTheme, 46);
 	assert.ok(lines.every((line) => visibleWidth(line) === 46));
-	assert.match(lines[1], /^│ ┌─+┐ │$/);
-	assert.match(lines[3], /^│ └─+┘ │$/);
-	assert.match(lines.join("\n"), /│ Project +~\/work\/gentle-pi │[\s\S]*│ Branch +main │[\s\S]*│ Profile +team │/);
-	assert.equal(lines.filter((line) => /^│ ├─+┤ │$/.test(line)).length, 3, "Project | Changes | Usage | Integrations");
+	assert.match(lines[1], /^│ ╔═+╗ │$/);
+	assert.match(lines[3], /^│ ╚═+╝ │$/);
+	assert.match(lines.join("\n"), /║ Project +~\/work\/gentle-pi ║[\s\S]*║ Branch +main ║[\s\S]*║ Profile +team ║/);
+	assert.equal(lines.filter((line) => /^│ ╟─+╢ │$/.test(line)).length, 3, "Project | Changes | Usage | Integrations");
 });
 
 test("sidebar unifies project, captured changes and integrations in one frame", () => {
@@ -363,7 +363,7 @@ test("sidebar profile wraps long names without changing the compact bar", () => 
 		const lines = renderShellSidebarBar(active, plainTheme, width);
 		assert.ok(lines.every((line) => visibleWidth(line) <= width));
 		assert.match(lines.join("\n"), /Profile/);
-		assert.ok(lines.join("").replace(/[│\s]/g, "").includes(profile));
+		assert.ok(lines.join("").replace(/[│║\s]/g, "").includes(profile));
 	}
 	assert.deepEqual(renderShellBar(active, plainTheme, 120), renderShellBar(base, plainTheme, 120));
 });
