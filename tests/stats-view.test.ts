@@ -107,7 +107,12 @@ test("the heatmap shades days with theme roles and leaves future days blank", as
 	const text = view.render(100).join("\n");
 	const heat = text.split("\n").slice(4, 11).join("\n");
 	assert.ok(heat.includes(`${roleCode("accent")}█`), "the busiest day takes the strongest shade");
-	assert.ok(heat.includes(`${roleCode("accent")}░`), "a light day takes the faintest shade");
+	assert.ok(heat.includes(`${roleCode("dim")}░`), "a light day takes the faintest shade on the dim role");
+	// The legend walks the same dim -> muted -> success -> accent ladder.
+	const legend = text.split("\n").find((line) => line.includes("Less"))!;
+	for (const [role, shade] of [["dim", "░"], ["muted", "▒"], ["success", "▓"], ["accent", "█"]] as const) {
+		assert.ok(legend.includes(`${roleCode(role)}${shade}`), `${shade} paints with ${role}`);
+	}
 	assert.ok(heat.includes(`${roleCode("borderMuted")}·`), "idle days stay visible as dots");
 	// 96 content cells hold 46 two-cell weeks after the 4-cell weekday label.
 	const x = 2 + 4 + (Math.floor((96 - 4) / 2) - 1) * 2;

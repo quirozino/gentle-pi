@@ -52,6 +52,8 @@ const ROLE = {
 	KEY: "accent",
 	KEY_TEXT: "dim",
 	HEAT: "accent",
+	/** Faintest to busiest shade: the theme's dim -> muted -> success -> accent ladder. */
+	HEAT_LADDER: ["dim", "muted", "success", "accent"],
 	HEAT_IDLE: "borderMuted",
 	BAR_EMPTY: "borderMuted",
 	ADDED: "toolDiffAdded",
@@ -340,11 +342,11 @@ export class StatsView {
 				const tokens = stats.days[day];
 				if (tokens === undefined) return theme.fg(ROLE.HEAT_IDLE, HEAT_IDLE) + " ";
 				const level = max > 0 ? Math.min(HEAT_SHADES.length, Math.max(1, Math.ceil((HEAT_SHADES.length * tokens) / max))) : 1;
-				return theme.fg(ROLE.HEAT, HEAT_SHADES[level - 1]) + " ";
+				return theme.fg(ROLE.HEAT_LADDER[level - 1]!, HEAT_SHADES[level - 1]) + " ";
 			});
 			return theme.fg(ROLE.META, label.padEnd(HEATMAP_LABEL_WIDTH)) + cells.join("");
 		});
-		const legend = " ".repeat(HEATMAP_LABEL_WIDTH) + theme.fg(ROLE.META, "Less ") + [theme.fg(ROLE.HEAT_IDLE, HEAT_IDLE), ...HEAT_SHADES.map((shade) => theme.fg(ROLE.HEAT, shade))].join(" ") + theme.fg(ROLE.META, " More");
+		const legend = " ".repeat(HEATMAP_LABEL_WIDTH) + theme.fg(ROLE.META, "Less ") + [theme.fg(ROLE.HEAT_IDLE, HEAT_IDLE), ...HEAT_SHADES.map((shade, index) => theme.fg(ROLE.HEAT_LADDER[index]!, shade))].join(" ") + theme.fg(ROLE.META, " More");
 		return [theme.fg(ROLE.META, months.join("").trimEnd()), ...rows, legend];
 	}
 
