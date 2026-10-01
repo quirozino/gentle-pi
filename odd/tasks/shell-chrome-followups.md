@@ -111,6 +111,14 @@ Baseline: 1 known failure ("grouped Status preserves structured fields").
   (rdd-mode-chip.test.ts:79-84); unexplained room constant (shell-prompt.ts:231).
 - Parent spot check: 6 focused test files 71/71 pass; RPC startup has no
   extension warnings (only winshot's headless notice).
+- Upstream gentle-shell v4.0.0 (3 commits: pi >=1.0.0, gentle-ai 4.0.0 pin,
+  release prep) merged clean into this branch. `pnpm install
+  --frozen-lockfile`: ok; package-local Gentle AI v4.0.0 integrity-verified;
+  pi 1.0.0. `pnpm test`: 4662 tests, 5 failures = baseline "grouped Status"
+  + 4 `tests/gentle-shell-bin.test.ts` "on a TTY" timing tests that pass
+  128/128 when the file runs alone (suite-concurrency flake; merge did not
+  touch them). RPC smoke: 86 commands, no extension warnings; statuses RDD
+  on, MCP 15 servers, engram ready.
 
 ## Next step
 User restarts pi (or `/reload`) to load the new chrome; RDD review of the
