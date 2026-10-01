@@ -288,7 +288,9 @@ test("native context failures keep red useful previews and promote replay state"
 	roles.length = 0;
 	const partial = renderGentleAiResult(result, { expanded: false, isPartial: true }, theme, { state: {} });
 	assert.match(partial.render(80).join("\n"), /authority unavailable/);
-	assert.ok(roles.includes("warning"));
+	// A partial result continues the running call, which stays on the info tone.
+	assert.ok(roles.includes("border"));
+	assert.ok(!roles.includes("warning"));
 	assert.ok(!roles.includes("success"));
 	roles.length = 0;
 	const success = renderGentleAiResult(result, { expanded: false }, theme, { state: {} });

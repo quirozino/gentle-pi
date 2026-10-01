@@ -3312,7 +3312,8 @@ test("T4d unified float footer uses one live owner and restores legacy Changes o
 	writeCardStyle("float", { gentlePiConfigHome: home });
 	writeVisualSettings({ ...resolveVisualSettings({ gentlePiConfigHome: home }).settings, headerPlacement: "below-input" }, { gentlePiConfigHome: home });
 	const { pi, handlers, commands } = fakePi();
-	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	// The fork keeps the compact bottom bar opt-in; this test exercises it.
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_BAR: "1" });
 	const { ctx, ui, overlayReady } = fakeContext();
 	await fire(handlers, "session_start", ctx);
 	const tui = { mode: "fullscreen", terminal: { rows: 40, columns: 139 }, requestRender() {} };
@@ -3343,7 +3344,7 @@ test("T4d unified float footer uses one live owner and restores legacy Changes o
 			const rows = footer.render(width);
 			assert.equal(rows.length, 6);
 			assert.match(stripAnsi(rows[2]!), /1 file · \+2 −0/);
-			assert.match(stripAnsi(rows[3]!), /Gentle Shell/);
+			assert.match(stripAnsi(rows[3]!), /\bD[DAT]*\s+⟡/, "the animated DDATA brand leads the header");
 			assert.match(stripAnsi(rows[4]!), /^  MCP ready/);
 			assert.ok(rows.slice(1).every((row) => row.startsWith(bg)));
 			assert.deepEqual(changes.render(width), []);
@@ -3420,7 +3421,7 @@ test("T4d unified float footer uses one live owner and restores legacy Changes o
 		assert.equal(widget("gentle-shell-changes").render(240).length, 1, "top placement restores standalone Changes");
 		const above = railHeader.render(240);
 		assert.equal(above.length, 4);
-		assert.match(stripAnsi(above[1]!), /Gentle Shell/);
+		assert.match(stripAnsi(above[1]!), /\bD[DAT]*\s+⟡/, "the animated DDATA brand leads the header");
 		assert.equal(stripAnsi(above[3]!), "▔".repeat(240));
 		ui.overlayView!.handleInput("\x1b");
 		await pending;

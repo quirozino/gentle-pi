@@ -265,8 +265,8 @@ test("registered Gentle Review tools render reusable rose lifecycle call rows", 
 		assert.strictEqual(initial, running);
 		assert.strictEqual(running, completed);
 		assert.strictEqual(completed, failed);
-		assert.equal(cardTitle(initialText), title("running")); assert.equal(cardTone(initialText), "customMessageLabel");
-		assert.equal(cardTitle(runningText), title("running")); assert.equal(cardTone(runningText), "customMessageLabel");
+		assert.equal(cardTitle(initialText), title("running")); assert.equal(cardTone(initialText), "accent");
+		assert.equal(cardTitle(runningText), title("running")); assert.equal(cardTone(runningText), "accent");
 		assert.equal(cardTitle(completedText), title("")); assert.equal(cardTone(completedText), "success");
 		assert.doesNotMatch(cardTitle(completedText), /completed/);
 		assert.match(completedText, /to expand/);

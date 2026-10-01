@@ -621,8 +621,8 @@ test("quiet tool rendering transitions one Gentle AI header through lifecycle st
 	assert.strictEqual(completed, failed);
 	// The frame stays on the info tone while running so a long review is not painted
 	// entirely in the warning colour; the status word carries the state instead.
-	assert.equal(cardTitle(initialText), "🌹 rdd running · status"); assert.equal(cardTone(initialText), "customMessageLabel");
-	assert.equal(cardTitle(runningText), "🌹 rdd running · status"); assert.equal(cardTone(runningText), "customMessageLabel");
+	assert.equal(cardTitle(initialText), "🌹 rdd running · status"); assert.equal(cardTone(initialText), "accent");
+	assert.equal(cardTitle(runningText), "🌹 rdd running · status"); assert.equal(cardTone(runningText), "accent");
 	assert.equal(cardTitle(completedText), "🌹 rdd status"); assert.equal(cardTone(completedText), "success");
 	assert.equal(cardTitle(failedText), "🌹 rdd failed · status"); assert.equal(cardTone(failedText), "error");
 	assert.doesNotMatch(failedText, /private-change/);
@@ -798,7 +798,7 @@ test("quiet tool rendering recognizes only the exact resolved dev binary", () =>
 	] as const;
 	for (const [command, operationPath] of cases) {
 		const call = renderToString(tool.renderCall({ command }, statusTheme, routineRenderContext({ args: { command } })));
-		assert.equal(cardTitle(call), `🌹 ${operationPath}`, command); assert.equal(cardTone(call), "customMessageLabel", command);
+		assert.equal(cardTitle(call), `🌹 ${operationPath}`, command); assert.equal(cardTone(call), "accent", command);
 		assert.doesNotMatch(call, /gentle-ai-main|private|secret|hidden/);
 	}
 	const command = `${devPath} review status --prompt hidden-prompt --lineage lineage-secret --body private-body`;
