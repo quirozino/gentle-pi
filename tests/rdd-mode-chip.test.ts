@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -54,8 +55,15 @@ function uiContext(cwd: string, statuses: Map<string, string | undefined>): Exte
 	} as unknown as ExtensionContext;
 }
 
-async function settle(): Promise<void> {
-	for (let turn = 0; turn < 5; turn++) await new Promise<void>((resolve) => setImmediate(resolve));
+async function settle(done: () => boolean = () => false): Promise<void> {
+	// The Git probe is a real child process; wait for it, bounded.
+	for (let turn = 0; turn < 200 && !done(); turn++) await new Promise<void>((resolve) => setTimeout(resolve, 10));
+}
+
+async function gitCwd(): Promise<string> {
+	const cwd = await mkdtemp(join(tmpdir(), "gentle-pi-rdd-chip-cwd-"));
+	execFileSync("git", ["init", "-q"], { cwd, stdio: "ignore" });
+	return cwd;
 }
 
 function nativeMode(effective: "on" | "off", source: "default" | "global" | "clone_local", calls: string[] = []): NativeReviewCli {
@@ -84,12 +92,12 @@ test("session start publishes the RDD chip without waiting for the native read",
 		},
 	} as unknown as NativeReviewCli;
 	const { handlers } = harness(native);
-	const cwd = await mkdtemp(join(tmpdir(), "gentle-pi-rdd-chip-cwd-"));
+	const cwd = await gitCwd();
 	const statuses = new Map<string, string | undefined>();
 	await handlers.get("session_start")!({}, uiContext(cwd, statuses));
 	assert.equal(statuses.has(RDD_STATUS_KEY), false, "no chip while the native read is still pending");
 	release();
-	await settle();
+	await settle(() => statuses.has(RDD_STATUS_KEY));
 	assert.equal(statuses.get(RDD_STATUS_KEY), "🌹 RDD on (default)");
 });
 
@@ -103,11 +111,29 @@ test("session start shows RDD unknown when the native read fails", async (t) => 
 	__testing.clearRddStatusMemoForTesting();
 	const native = { reviewMode: async () => { throw new Error("native down"); } } as unknown as NativeReviewCli;
 	const { handlers } = harness(native);
-	const cwd = await mkdtemp(join(tmpdir(), "gentle-pi-rdd-chip-cwd-"));
+	const cwd = await gitCwd();
+	const statuses = new Map<string, string | undefined>();
+	await handlers.get("session_start")!({}, uiContext(cwd, statuses));
+	await settle(() => statuses.has(RDD_STATUS_KEY));
+	assert.equal(statuses.get(RDD_STATUS_KEY), "🌹 RDD unknown");
+});
+
+test("outside Git session start never reads the RDD switch and shows no chip", async (t) => {
+	const previousHome = process.env.GENTLE_PI_AGENT_HOME;
+	process.env.GENTLE_PI_AGENT_HOME = await mkdtemp(join(tmpdir(), "gentle-pi-rdd-chip-home-"));
+	t.after(() => {
+		if (previousHome === undefined) delete process.env.GENTLE_PI_AGENT_HOME;
+		else process.env.GENTLE_PI_AGENT_HOME = previousHome;
+	});
+	__testing.clearRddStatusMemoForTesting();
+	const calls: string[] = [];
+	const { handlers } = harness(nativeMode("on", "default", calls));
+	const cwd = await mkdtemp(join(tmpdir(), "gentle-pi-rdd-chip-nogit-"));
 	const statuses = new Map<string, string | undefined>();
 	await handlers.get("session_start")!({}, uiContext(cwd, statuses));
 	await settle();
-	assert.equal(statuses.get(RDD_STATUS_KEY), "🌹 RDD unknown");
+	assert.deepEqual(calls, []);
+	assert.equal(statuses.has(RDD_STATUS_KEY), false);
 });
 
 test("/gentle:review-mode refreshes the chip from the status native reports", async () => {

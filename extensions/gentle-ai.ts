@@ -235,7 +235,7 @@ import {
 } from "../lib/review-integration-v2.ts";
 import { reconcileUnknownReviewLastEventCapture } from "../lib/review-last-event-controller.ts";
 import { registerYoloSessionPolicy, updateYoloPrompt } from "../lib/yolo-session-policy.ts";
-import { publishRddModeChip } from "../lib/rdd-mode-chip.ts";
+import { insideGitWorktree, publishRddModeChip } from "../lib/rdd-mode-chip.ts";
 import { acquireChildStandingReviewPermissionClient, type ChildStandingReviewPermissionClient } from "../lib/review-session-standing-permission-ipc.ts";
 import { isPiConsentV3, presentReviewConsentUi } from "../lib/review-consent-ui.ts";
 import {
@@ -9365,13 +9365,17 @@ function createGentleAiExtensionForTesting(
 		},
 	}));
 
-	// The Status card's RDD chip. Fire-and-forget: the native read is bounded
-	// and memoized (resolveRddModeStatus), so render and session start never
-	// wait on it; until it answers the chip is simply absent.
+	// The Status card's RDD chip. Fire-and-forget: the Git probe and the native
+	// read are bounded and the read is memoized (resolveRddModeStatus), so
+	// render and session start never wait on them; until they answer the chip
+	// is simply absent. Outside Git there is no clone to report on, and passive
+	// session events there never reach native review.
 	const refreshRddModeChip = (ctx: ExtensionContext): void => {
 		if (!ctx.hasUI || permissionEnvironment.GENTLE_PI_AGENTS_CHILD === "1") return;
-		void resolveRddModeStatus(nativeReviewCli, ctx.cwd, AbortSignal.timeout(RDD_STATUS_TIMEOUT_MS))
-			.then((status) => publishRddModeChip(ctx, status), () => publishRddModeChip(ctx, undefined));
+		void (async () => {
+			if (!await insideGitWorktree(ctx.cwd)) return;
+			publishRddModeChip(ctx, await resolveRddModeStatus(nativeReviewCli, ctx.cwd, AbortSignal.timeout(RDD_STATUS_TIMEOUT_MS)));
+		})().catch(() => publishRddModeChip(ctx, undefined));
 	};
 
 	pi.on("session_start", async (event, ctx) => {

@@ -1,3 +1,6 @@
+import { execFile } from "node:child_process";
+import { worktreeGitEnvironment } from "./session-worktree-registry.ts";
+
 // The receipt-driven development switch as an extension status, so the Status
 // card lists it under Integrations next to the other integrations. Pure text:
 // the shell paints every extension status through its muted status role.
@@ -41,4 +44,21 @@ export function publishRddModeChip(ctx: StatusSink, status: RddModeChipStatus | 
 	} catch {
 		// Status chrome must never break a session or a command.
 	}
+}
+
+/**
+ * Whether `cwd` sits inside a Git work tree, asked asynchronously so session
+ * start never waits on it. RDD is clone-scoped: outside Git the chip has
+ * nothing to report and passive session events must not reach native review.
+ */
+export function insideGitWorktree(cwd: string, timeoutMs = 3000): Promise<boolean> {
+	return new Promise((resolve) => {
+		try {
+			execFile("git", ["--no-optional-locks", "-C", cwd, "rev-parse", "--is-inside-work-tree"], {
+				encoding: "utf8", timeout: timeoutMs, shell: false, windowsHide: true, env: worktreeGitEnvironment(),
+			}, (error, stdout) => resolve(!error && String(stdout).trim() === "true"));
+		} catch {
+			resolve(false);
+		}
+	});
 }
