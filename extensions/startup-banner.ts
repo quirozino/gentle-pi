@@ -16,6 +16,7 @@ import {
   type IntroMode,
 } from "../lib/banner-visibility.ts";
 import { PI_SUBCOMMANDS } from "../lib/gentle-shell-launcher.ts";
+import { countEnabledMcpServers, MCP_STATUS_KEY, mcpStatusText } from "../lib/mcp-servers-status.ts";
 
 
 export type BannerColor = "pink" | "cyan" | "yellow" | "green";
@@ -710,6 +711,13 @@ export default function (pi: ExtensionAPI) {
   registerToggleCommand("gentle:toggle-text-logo", "showTextLogo");
   registerColorCommand("gentle:banner-color");
 
+  const safeProjectTrusted = (ctx: { isProjectTrusted?: () => boolean }): boolean => {
+    try { return ctx.isProjectTrusted?.() === true; } catch { return false; }
+  };
+  const safeExtensionMcpServers = (api: ExtensionAPI): string[] => {
+    try { return (api.getMcpServers?.() ?? []).map((server) => server.name); } catch { return []; }
+  };
+
   pi.on("session_start", async (_event, ctx) => {
     disposeHeader();
     ownership = { installed: false, rendered: false };
@@ -718,6 +726,19 @@ export default function (pi: ExtensionAPI) {
 
     // CLI subcommands such as `pi update` or `pi install` skip the animated intro.
     if (isPiCliSubcommandInvocation(process.argv)) return;
+
+    // Enabled MCP servers from the same sources Pi's built-in MCP extension
+    // reads (active agent dir, trusted project, extension registrations).
+    // Read off the startup path; the banner and the extension status share it.
+    const mcpServers = countEnabledMcpServers({
+      agentDir: getAgentDir(),
+      cwd: ctx.cwd,
+      projectTrusted: safeProjectTrusted(ctx),
+      extensionServers: safeExtensionMcpServers(pi),
+    });
+    void mcpServers.then((count) => {
+      try { ctx.ui.setStatus(MCP_STATUS_KEY, mcpStatusText(count)); } catch { /* status chrome is optional */ }
+    });
 
     // Pi has already started its renderer. Let setHeader schedule the paint;
     // clearing stdout here would leave its previous-frame cache out of sync.
@@ -774,18 +795,10 @@ export default function (pi: ExtensionAPI) {
 
     setTimeout(() => {
       (async () => {
-        try {
-          // Same global mcp.json Pi itself loads: <agentDir>/mcp.json, which
-          // follows PI_CODING_AGENT_DIR (for example the Gentle Shell home).
-          const raw = await readFile(
-            join(getAgentDir(), "mcp.json"),
-            "utf8",
-          );
-          const cfg = JSON.parse(raw);
-          mcpServersCount = Object.keys(cfg.mcpServers || {}).length;
-        } catch {
-          mcpServersCount = 0;
-        }
+        // Same servers Pi itself loads: <agentDir>/mcp.json (following
+        // PI_CODING_AGENT_DIR, e.g. the Gentle Shell home) and the trusted
+        // project's .pi/mcp.json, counting only enabled ones.
+        mcpServersCount = await mcpServers;
         refreshStats();
       })();
     }, 150);

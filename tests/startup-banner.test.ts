@@ -290,10 +290,12 @@ test("startup banner counts MCP servers from the active Pi agent dir", async (t)
 	// Only the active agent dir's mcp.json declares two servers; any other
 	// mcp.json (for example ~/.pi/agent/mcp.json) declares five.
 	t.mock.method(fs, "readFile", async (path: string) => {
-		if (String(path) === join(agentDir, "mcp.json")) return JSON.stringify({ mcpServers: { one: {}, two: {} } });
+		if (String(path) === join(agentDir, "mcp.json")) return JSON.stringify({ mcpServers: { one: {}, two: {}, off: { enabled: false } } });
+		if (String(path) === join("/fixture", ".pi", "mcp.json")) return JSON.stringify({ mcpServers: { project: {} } });
 		if (String(path).endsWith("mcp.json")) return JSON.stringify({ mcpServers: { a: {}, b: {}, c: {}, d: {}, e: {} } });
 		return JSON.stringify({ showRose: false, showTextLogo: false, color: "pink" });
 	});
+	const statuses = new Map<string, string | undefined>();
 	t.mock.method(fs, "readdir", async () => [] as any);
 	syncBuiltinESMExports();
 	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
@@ -312,14 +314,19 @@ test("startup banner counts MCP servers from the active Pi agent dir", async (t)
 	coldStartup({ on: (name: string, fn: Function) => {
 		if (name === "session_start") start = fn;
 		if (name === "session_shutdown") shutdown = fn;
-	}, registerCommand() {}, getCommands: () => [], getAllTools: () => [] } as unknown as ExtensionAPI);
-	await start!({}, { hasUI: true, cwd: "/fixture", ui: { setHeader: (factory: Function) => {
-		header = factory({ requestRender() {} }, { fg: (_role: string, text: string) => text });
-	} } });
+	}, registerCommand() {}, getCommands: () => [], getAllTools: () => [], getMcpServers: () => [{ name: "registered" }] } as unknown as ExtensionAPI);
+	await start!({}, { hasUI: true, cwd: "/fixture", isProjectTrusted: () => true, ui: {
+		setStatus: (key: string, text: string | undefined) => { statuses.set(key, text); },
+		setHeader: (factory: Function) => {
+			header = factory({ requestRender() {} }, { fg: (_role: string, text: string) => text });
+		},
+	} });
 	t.mock.timers.tick(200);
 	for (let i = 0; i < 5; i++) await Promise.resolve();
 	try {
-		assert.match(stripAnsi(header!.render(160).join("\n")), /MCP:\s+2 server\(s\)/);
+		// two enabled global servers, the trusted project's one, one extension registration.
+		assert.match(stripAnsi(header!.render(160).join("\n")), /MCP:\s+4 server\(s\)/);
+		assert.equal(statuses.get("mcp"), "🔌 MCP: 4 servers enabled", "the enabled count is also an Integrations status");
 	} finally {
 		header!.dispose();
 		shutdown!();
