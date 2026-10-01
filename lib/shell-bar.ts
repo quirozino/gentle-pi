@@ -279,7 +279,6 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 	const value = (text: string) => theme.fg(ROLE.VALUE, theme.bold(text));
 	const label = (text: string) => theme.fg(ROLE.LABEL, text);
 	const changes = model.changes;
-	const branch = model.branch ? `${label("Branch")} ${value(model.branch)}` : "";
 	const percent = model.contextPercent === null ? "?%" : `${Math.round(model.contextPercent)}%`;
 	const capacity = label(`${formatTokens(model.contextWindow)} tokens`);
 	// Pre-wrap values before indenting so Unicode/ANSI continuation lines keep
@@ -306,14 +305,15 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 				const percent = `${Math.round(row.percent)}%`.padStart(4);
 				return `${name} ${paintGauge(row.percent, theme, SIDEBAR_USAGE_METER_CELLS, model.tick)} ${value(percent)}`;
 			});
-	const groups: Array<{ title: string; lines: string[] }> = [
+	const groups: StatusGroup[] = [
 		{
 			title: "Project",
-			lines: [
-				value(model.cwd),
-				...(branch ? [branch] : []),
-				...(model.sessionName ? [`${label("Session")} ${value(model.sessionName)}`] : []),
-				...(model.profile ? [`${label("Profile")} ${value(sanitizeStatus(model.profile))}`] : []),
+			value: model.cwd,
+			lines: [],
+			pairs: [
+				...(model.branch ? [["Branch", model.branch] as const] : []),
+				...(model.sessionName ? [["Session", model.sessionName] as const] : []),
+				...(model.profile ? [["Profile", sanitizeStatus(model.profile)] as const] : []),
 			],
 		},
 		...(presentation?.visibility.changes === false ? [] : [{
@@ -344,14 +344,82 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 			? model.statuses.map((status) => theme.fg(ROLE.STATUS, sanitizeStatus(status)))
 			: [label("No status reported")] },
 	];
-	// Wrap and indent every group line before it reaches the card, so Unicode and
-	// ANSI continuation lines keep the same inset without consuming the right border.
-	const body = groups.flatMap((group, index) => [
-		...(index && (!presentation || presentation.density === "comfortable") ? [""] : []),
-		...(presentation?.density === "minimal" ? [] : [label(group.title)]),
-		...group.lines.flatMap((line) => wrapTextWithAnsi(line, innerWidth - inset).map((part) => " ".repeat(inset) + part)),
-	]);
-	return renderCard({ title: "Status", body, tone: CARD_TONE.INFO, glyph: SHELL_GLYPHS.status }, theme, width, { expanded: true });
+	if (cardInnerWidth(width) - STATUS_PANEL_INSET < STATUS_PANEL_MIN_CONTENT) {
+		// Too narrow for nested boxes: the single frame keeps every fact readable.
+		const body = groups.flatMap((group, index) => [
+			...(index && (!presentation || presentation.density === "comfortable") ? [""] : []),
+			...(presentation?.density === "minimal" ? [] : [label(group.title)]),
+			...[...(group.value ? [value(group.value)] : []), ...(group.pairs ?? []).map(([key, text]) => `${label(key)} ${value(text)}`), ...group.lines]
+				.flatMap((line) => wrapTextWithAnsi(line, innerWidth - inset).map((part) => " ".repeat(inset) + part)),
+		]);
+		return renderCard({ title: "Status", body, tone: CARD_TONE.INFO, glyph: SHELL_GLYPHS.status }, theme, width, { expanded: true });
+	}
+	return renderStatusPanel(groups, theme, width, presentation);
+}
+
+interface StatusGroup {
+	title: string;
+	/** Shown flush right on the heading row, e.g. the project path. */
+	value?: string;
+	/** Label/value rows: the value sits flush right when both fit on one row. */
+	pairs?: ReadonlyArray<readonly [string, string]>;
+	lines: string[];
+}
+
+// Inner boxes keep the square light rule whatever the outer frame style is,
+// so the panels read as compartments of the card rather than nested cards.
+const PANEL = { topLeft: "┌", topRight: "┐", bottomLeft: "└", bottomRight: "┘", teeLeft: "├", teeRight: "┤", horizontal: "─", vertical: "│" } as const;
+const STATUS_PANEL_ROLE = { FRAME: "border", TITLE: "accent", HEADING: "accent" } as const;
+// Outer frame plus its gutter, then the inner box plus its gutter.
+const STATUS_PANEL_INSET = 4;
+const STATUS_PANEL_MIN_CONTENT = 12;
+
+// The Status card as a panel: an outer frame holding a boxed, centred title and
+// one inner box whose groups are split by tee rules. Same facts as the plain
+// card; only the layout differs.
+function renderStatusPanel(groups: StatusGroup[], theme: ShellBarTheme, width: number, presentation?: Presentation): string[] {
+	const outer = SHELL_GLYPHS.frame;
+	const frame = (text: string) => theme.fg(STATUS_PANEL_ROLE.FRAME, text);
+	const boxWidth = width - 4;
+	const content = boxWidth - 4;
+	const fit = (text: string, size: number) => {
+		const clipped = truncateToWidth(text, size, "…");
+		return clipped + " ".repeat(Math.max(0, size - visibleWidth(clipped)));
+	};
+	const shell = (row: string) => `${frame(outer.vertical)} ${row} ${frame(outer.vertical)}`;
+	const rule = (left: string, right: string) => shell(frame(left + PANEL.horizontal.repeat(boxWidth - 2) + right));
+	const row = (text: string) => shell(`${frame(PANEL.vertical)} ${fit(text, content)} ${frame(PANEL.vertical)}`);
+	const pair = (key: string, text: string, keyRole: string = ROLE.LABEL): string[] => {
+		const keyText = theme.fg(keyRole, theme.bold(key));
+		const valueText = theme.fg(ROLE.VALUE, theme.bold(text));
+		const gap = content - visibleWidth(key) - visibleWidth(text);
+		if (gap >= 1) return [`${keyText}${" ".repeat(gap)}${valueText}`];
+		return [keyText, ...wrapTextWithAnsi(valueText, content - 1).map((part) => ` ${part}`)];
+	};
+
+	const title = theme.fg(STATUS_PANEL_ROLE.TITLE, theme.bold(`${SHELL_GLYPHS.status ?? SHELL_GLYPHS.card} Status`));
+	const titleWidth = Math.min(visibleWidth(title), boxWidth - 2);
+	const lead = Math.floor((boxWidth - 2 - titleWidth) / 2);
+	const titleRow = shell(`${frame(PANEL.vertical)}${" ".repeat(lead)}${fit(title, boxWidth - 2 - lead)}${frame(PANEL.vertical)}`);
+
+	const sections = groups.map((group) => [
+		...(presentation?.density === "minimal"
+			? group.value ? pair("", group.value) : []
+			: group.value ? pair(group.title, group.value, STATUS_PANEL_ROLE.HEADING) : [theme.fg(STATUS_PANEL_ROLE.HEADING, theme.bold(group.title))]),
+		...(group.pairs ?? []).flatMap(([key, text]) => pair(key, text)),
+		...group.lines.flatMap((line) => wrapTextWithAnsi(line, content - 1).map((part) => ` ${part}`)),
+	]).filter((section) => section.length > 0);
+
+	return [
+		frame(outer.topLeft + outer.horizontal.repeat(width - 2) + outer.topRight),
+		rule(PANEL.topLeft, PANEL.topRight),
+		titleRow,
+		rule(PANEL.bottomLeft, PANEL.bottomRight),
+		rule(PANEL.topLeft, PANEL.topRight),
+		...sections.flatMap((section, index) => [...(index ? [rule(PANEL.teeLeft, PANEL.teeRight)] : []), ...section.map(row)]),
+		rule(PANEL.bottomLeft, PANEL.bottomRight),
+		frame(outer.bottomLeft + outer.horizontal.repeat(width - 2) + outer.bottomRight),
+	];
 }
 
 const HEADER_BRAND_TEXT = "DDATA";
