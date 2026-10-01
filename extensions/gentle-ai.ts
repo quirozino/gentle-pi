@@ -235,6 +235,7 @@ import {
 } from "../lib/review-integration-v2.ts";
 import { reconcileUnknownReviewLastEventCapture } from "../lib/review-last-event-controller.ts";
 import { registerYoloSessionPolicy, updateYoloPrompt } from "../lib/yolo-session-policy.ts";
+import { publishRddModeChip } from "../lib/rdd-mode-chip.ts";
 import { acquireChildStandingReviewPermissionClient, type ChildStandingReviewPermissionClient } from "../lib/review-session-standing-permission-ipc.ts";
 import { isPiConsentV3, presentReviewConsentUi } from "../lib/review-consent-ui.ts";
 import {
@@ -9364,8 +9365,18 @@ function createGentleAiExtensionForTesting(
 		},
 	}));
 
+	// The Status card's RDD chip. Fire-and-forget: the native read is bounded
+	// and memoized (resolveRddModeStatus), so render and session start never
+	// wait on it; until it answers the chip is simply absent.
+	const refreshRddModeChip = (ctx: ExtensionContext): void => {
+		if (!ctx.hasUI || permissionEnvironment.GENTLE_PI_AGENTS_CHILD === "1") return;
+		void resolveRddModeStatus(nativeReviewCli, ctx.cwd, AbortSignal.timeout(RDD_STATUS_TIMEOUT_MS))
+			.then((status) => publishRddModeChip(ctx, status), () => publishRddModeChip(ctx, undefined));
+	};
+
 	pi.on("session_start", async (event, ctx) => {
 		yolo.reset(ctx);
+		refreshRddModeChip(ctx);
 		reviewSidebar.reset(ctx);
 		elapsedTiming = new GentleAiElapsedTimingLedger(ctx.sessionManager, pi);
 		reminderSessionActive = true;
@@ -9483,6 +9494,8 @@ function createGentleAiExtensionForTesting(
 					readActiveToolNames(pi),
 					await resolveRddStatusLine(nativeReviewCli, ctx.cwd, AbortSignal.timeout(RDD_STATUS_TIMEOUT_MS), undefined, ctx),
 				)}`;
+		// The read above refreshed the memo, so the chip costs no second spawn.
+		if (isPrimarySession) refreshRddModeChip(ctx);
 		// gentle-pi#560 / gentle-ai#4056, #4057: inject the mirrored provider
 		// contract bundle's review execution contract for the primary session
 		// only, and only when a native review CLI is actually present.
@@ -9754,6 +9767,10 @@ function createGentleAiExtensionForTesting(
 			}
 			try {
 				const result = await nativeReviewCli.reviewMode({ cwd: ctx.cwd, operation: subAction as NativeReviewModeOperation });
+				// The switch may have moved: drop the memoized read and show the
+				// status native just reported.
+				rddStatusMemo.delete(ctx.cwd);
+				publishRddModeChip(ctx, result.status);
 				if (subAction === NATIVE_REVIEW_MODE_OPERATION.DISABLE && result.status.effective === "off") {
 					cleanupAllPendingReviewConsents(
 						pendingReviewConsentRegistry,
