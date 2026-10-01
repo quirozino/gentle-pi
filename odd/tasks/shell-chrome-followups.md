@@ -20,6 +20,8 @@ and surface missing state, under the custom Matrix-Green theme.
   peerDependency; 0.2.0 fixes it. Upgrade the pin
   (`npm:gentle-engram@0.1.15` in ~/.pi/agent/settings.json) and confirm
   `scripts/patch-engram-chrome.mjs` still applies (or adapt it).
+- T6 (bug, 2026-10-01): on `/reload` the `🌹 RDD on (default)` chip flashes
+  on Pi's native footer line before moving into the Status card.
 
 Done outside the repo (config): `-builtin:codemode` added to
 ~/.pi/agent/settings.json `extensions` (same remedy upstream applies to the
@@ -76,6 +78,30 @@ Baseline: 1 known failure ("grouped Status preserves structured fields").
   pristine `renderCallText`/`renderResultText` and index render anchors):
   V4 chrome + V2 index markers present; engram's own chrome tests 14/14.
 
+- [x] T6 no status flash on Pi's native footer. Route: delegated (writer).
+  `f588ea147`. Cause (pi 1.0.0): `ExtensionRunner.emit` awaits handlers one
+  extension at a time (dist/core/extensions/runner.js:807-834); `/reload`
+  calls `resetExtensionUI()` → `setExtensionFooter(undefined)` restoring the
+  native footer (dist/modes/interactive/interactive-mode.js:1857-1872,
+  5303), whose render appends every extension status as a last line
+  (components/footer.js:252-261). Extensions load in readdir order
+  (loader.js:633), so gentle-ai's session_start fires the RDD chip probe
+  before gentle-shell's handler calls `setFooter`; the chip resolved in
+  between and painted on the native footer. Fix: `lib/shell-chrome-gate.ts`,
+  a synchronous handshake on the shared event bus (module state is not
+  shared: jiti `moduleCache: false`, loader.js:472-474). gentle-shell arms
+  the gate at load and per session_start, releases it right after
+  `setFooter`, on the no-UI return and in a `finally` backstop; publishers
+  (`afterShellChrome`: RDD chip, startup-banner MCP status) publish at once
+  when no shell answers or the footer already exists. YOLO left as is: its
+  session_start publish only clears; text appears only after a human action.
+  Tests: tests/shell-chrome-gate.test.ts (gate order/idempotence/re-arm,
+  chip held until ready, chip without shell), gentle-shell.test.ts (real
+  shell releases after setFooter; no-UI release).
+  Frames (200x55, /reload, 50 ms): before, 9 reloading frames (f024-f032)
+  show `🌹 RDD on (default)` on the native footer; after, 34 reloading
+  frames all clean, RDD first appears in the Status card (f035).
+
 ## Progress / evidence
 - Commits: `e43016c30` (T1 + this document), `ec10f4ad4` (T2),
   `e336fe11b` + `9e57a29b3` (T3), `a2330179a` (T4).
@@ -119,6 +145,11 @@ Baseline: 1 known failure ("grouped Status preserves structured fields").
   128/128 when the file runs alone (suite-concurrency flake; merge did not
   touch them). RPC smoke: 86 commands, no extension warnings; statuses RDD
   on, MCP 15 servers, engram ready.
+
+- T6 checks: shell-chrome-gate, rdd-mode-chip, startup-banner,
+  mcp-servers-status 28/28; gentle-shell 252/252; typecheck 188 recorded,
+  no regressions; `pnpm test` 4669 tests, 1 failure (baseline "grouped
+  Status"), provider-contract PASS, runtime-harness PASS.
 
 ## Next step
 User restarts pi (or `/reload`) to load the new chrome; RDD review of the
