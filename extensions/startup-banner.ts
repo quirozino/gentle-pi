@@ -17,6 +17,7 @@ import {
 } from "../lib/banner-visibility.ts";
 import { PI_SUBCOMMANDS } from "../lib/gentle-shell-launcher.ts";
 import { countEnabledMcpServers, MCP_STATUS_KEY, mcpStatusText } from "../lib/mcp-servers-status.ts";
+import { afterShellChrome } from "../lib/shell-chrome-gate.ts";
 
 
 export type BannerColor = "pink" | "cyan" | "yellow" | "green";
@@ -736,9 +737,9 @@ export default function (pi: ExtensionAPI) {
       projectTrusted: safeProjectTrusted(ctx),
       extensionServers: safeExtensionMcpServers(pi),
     });
-    void mcpServers.then((count) => {
+    void mcpServers.then((count) => afterShellChrome(pi, () => {
       try { ctx.ui.setStatus(MCP_STATUS_KEY, mcpStatusText(count)); } catch { /* status chrome is optional */ }
-    });
+    }));
 
     // Pi has already started its renderer. Let setHeader schedule the paint;
     // clearing stdout here would leave its previous-frame cache out of sync.

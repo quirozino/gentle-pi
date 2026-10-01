@@ -19,6 +19,7 @@ import { stripAnsi } from "../lib/terminal-theme.ts";
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import { decodeReviewStatusV3 } from "../lib/review-integration-v2.ts";
 import { REVIEW_SIDEBAR_EVENT } from "../lib/review-sidebar-state.ts";
+import { afterShellChrome } from "../lib/shell-chrome-gate.ts";
 import type { NativeReviewCli } from "../lib/native-review-cli.ts";
 import { resolveVisualSettings, writeVisualSettings } from "../lib/visual-customization-policy.ts";
 import { resolveAnimationPolicy } from "../lib/animation-policy.ts";
@@ -278,6 +279,33 @@ test("buildShellBarModel shortens the home directory and hides effort for non-re
 	assert.equal(built.cwd, "~/work/gentle-pi");
 	assert.equal(built.effort, undefined);
 	assert.equal(built.branch, null);
+});
+
+test("a status published before the shell footer is installed waits for it, then publishes immediately", async () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui } = fakeContext();
+	const published: boolean[] = [];
+	// An extension that runs before gentle-shell resolves its status first.
+	afterShellChrome(pi, () => published.push(ui.footerFactory !== undefined));
+	await Promise.resolve();
+	assert.deepEqual(published, [], "no status reaches the UI before the shell footer exists");
+	await fire(handlers, "session_start", ctx);
+	await Promise.resolve();
+	assert.deepEqual(published, [true], "released only once the shell footer is installed");
+	afterShellChrome(pi, () => published.push(true));
+	assert.deepEqual(published, [true, true], "after the footer is installed statuses publish synchronously");
+});
+
+test("without a UI the shell releases held statuses instead of holding them forever", async () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	const { ctx } = fakeContext({ hasUI: false });
+	let published = 0;
+	afterShellChrome(pi, () => { published += 1; });
+	await fire(handlers, "session_start", ctx);
+	await Promise.resolve();
+	assert.equal(published, 1);
 });
 
 test("gentleShell installs the footer on session_start when a UI exists", () => {

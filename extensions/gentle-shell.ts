@@ -23,6 +23,7 @@ import { bannerPreviewSample, sourcePalettePreview } from "../lib/theme-customiz
 import { DEFAULT_VISUAL_SETTINGS, DENSITY, HEADER_PLACEMENT, STATUS_PLACEMENT, VISUAL_SECTION_KEYS, resolveVisualSettings, writeVisualSettings } from "../lib/visual-customization-policy.ts";
 import { BANNER_COLORS, DEFAULT_BANNER_CONFIG, readBannerConfig, readBannerConfigForEdit, writeBannerConfig } from "./startup-banner.ts";
 import { agentsViewKey } from "../lib/agents-keys.ts";
+import { serveShellChrome } from "../lib/shell-chrome-gate.ts";
 import { GentleAiDevBinaryOverrideError, resolveGentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
 import { DOUBLE_ESC_CANCEL_HINT, floatPromptRow, framePromptLines, resolvePromptLayout, IDLE_ESC_CLEAR_HINT, PROMPT_HINT, PROMPT_STATE, SHELL_PULSE_MS, withPromptHint, type PromptState } from "../lib/shell-prompt.ts";
 import { SHELL_GLYPHS } from "../lib/shell-glyphs.ts";
@@ -2130,7 +2131,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			return { content: [{ type: "text", text: `Registered session worktree: ${root}` }], details: { root, sessionId: registry.sessionId } };
 		},
 	});
-	pi.on("session_start", async (_event, ctx) => {
+	// Statuses published by extensions whose session_start runs before this one
+	// wait for this footer instead of flashing on Pi's native footer line.
+	const shellChrome = serveShellChrome(pi);
+	const startShellSession = async (ctx: ExtensionContext): Promise<void> => {
 		closeCustomize?.();
 		if (review) {
 			review = undefined;
@@ -2143,7 +2147,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		registry = new SessionWorktreeRegistry(pi, ctx.sessionManager, ctx.cwd, deps.resolveWorktree);
 		registry.start();
 		applyCardStyle();
-		if (!ctx.hasUI) return;
+		if (!ctx.hasUI) { shellChrome.ready(); return; }
 		visualSettings = resolveVisualSettings(animationOptions).settings;
 		if (!overrides.activeProfile) {
 			profileReader.bind(ctx.cwd, deps.resolveWorktree);
@@ -2256,6 +2260,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				},
 				dispose() { untrim(); ctx.ui.setWidget(HEADER_WIDGET_KEY, undefined); disposeHeader(); uninstall(); part.dispose(); if (sidebarTui === tui) { sidebarTui = undefined; groupedChangesOwner = () => false; } } };
 		});
+		shellChrome.ready();
 		void refreshUsage(ctx, true).catch(() => undefined);
 		const ownsPrompt = installPrompt(
 			ctx,
@@ -2280,6 +2285,11 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		if (changes !== tracker) return;
 		shown = "";
 		applyChanges(ctx, tracker.model);
+	};
+	pi.on("session_start", async (_event, ctx) => {
+		shellChrome.begin();
+		// Backstop: a throw before setFooter must never hold statuses back forever.
+		try { await startShellSession(ctx); } finally { shellChrome.ready(); }
 	});
 	pi.on("session_shutdown", (_event, ctx) => {
 		closeCustomize?.();

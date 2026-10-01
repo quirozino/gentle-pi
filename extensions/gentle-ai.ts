@@ -235,6 +235,7 @@ import {
 } from "../lib/review-integration-v2.ts";
 import { reconcileUnknownReviewLastEventCapture } from "../lib/review-last-event-controller.ts";
 import { registerYoloSessionPolicy, updateYoloPrompt } from "../lib/yolo-session-policy.ts";
+import { afterShellChrome } from "../lib/shell-chrome-gate.ts";
 import { insideGitWorktree, publishRddModeChip } from "../lib/rdd-mode-chip.ts";
 import { acquireChildStandingReviewPermissionClient, type ChildStandingReviewPermissionClient } from "../lib/review-session-standing-permission-ipc.ts";
 import { isPiConsentV3, presentReviewConsentUi } from "../lib/review-consent-ui.ts";
@@ -9370,12 +9371,15 @@ function createGentleAiExtensionForTesting(
 	// render and session start never wait on them; until they answer the chip
 	// is simply absent. Outside Git there is no clone to report on, and passive
 	// session events there never reach native review.
+	// While Gentle Shell is still installing its footer the chip waits for it
+	// (afterShellChrome), so it never paints on Pi's native footer line.
 	const refreshRddModeChip = (ctx: ExtensionContext): void => {
 		if (!ctx.hasUI || permissionEnvironment.GENTLE_PI_AGENTS_CHILD === "1") return;
 		void (async () => {
 			if (!await insideGitWorktree(ctx.cwd)) return;
-			publishRddModeChip(ctx, await resolveRddModeStatus(nativeReviewCli, ctx.cwd, AbortSignal.timeout(RDD_STATUS_TIMEOUT_MS)));
-		})().catch(() => publishRddModeChip(ctx, undefined));
+			const status = await resolveRddModeStatus(nativeReviewCli, ctx.cwd, AbortSignal.timeout(RDD_STATUS_TIMEOUT_MS));
+			afterShellChrome(pi, () => publishRddModeChip(ctx, status));
+		})().catch(() => afterShellChrome(pi, () => publishRddModeChip(ctx, undefined)));
 	};
 
 	pi.on("session_start", async (event, ctx) => {
