@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { getAgentDir, VERSION } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, InteractiveMode, VERSION } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import * as os from "node:os";
 import { execFile } from "node:child_process";
@@ -18,6 +18,7 @@ import {
 import { PI_SUBCOMMANDS } from "../lib/gentle-shell-launcher.ts";
 import { countEnabledMcpServers, MCP_STATUS_KEY, mcpStatusText } from "../lib/mcp-servers-status.ts";
 import { afterShellChrome } from "../lib/shell-chrome-gate.ts";
+import { armBuiltInHeaderHold, installBuiltInHeaderHold, releaseBuiltInHeaderHold } from "../lib/builtin-header-hold.ts";
 
 
 export type BannerColor = "pink" | "cyan" | "yellow" | "green";
@@ -637,6 +638,11 @@ export function isPiCliSubcommandInvocation(argv: readonly string[]): boolean {
 
 export default function (pi: ExtensionAPI) {
   let disposeHeader = () => {};
+  // Factories run before pi constructs InteractiveMode, so pi's built-in
+  // header (logo) is held hidden from its very first paint until this banner
+  // installs its header in session_start or declines and releases the hold.
+  installBuiltInHeaderHold(InteractiveMode);
+  armBuiltInHeaderHold();
   // Header-ownership tracking (Problem B): reset at the start of every
   // session_start so /clone, /resume and /reload re-arm detection instead of
   // carrying a stale verdict or a burned notify budget across sessions.
@@ -723,10 +729,16 @@ export default function (pi: ExtensionAPI) {
     disposeHeader();
     ownership = { installed: false, rendered: false };
     ownershipReported = false;
-    if (!ctx.hasUI) return;
+    if (!ctx.hasUI) {
+      releaseBuiltInHeaderHold();
+      return;
+    }
 
     // CLI subcommands such as `pi update` or `pi install` skip the animated intro.
-    if (isPiCliSubcommandInvocation(process.argv)) return;
+    if (isPiCliSubcommandInvocation(process.argv)) {
+      releaseBuiltInHeaderHold();
+      return;
+    }
 
     // Enabled MCP servers from the same sources Pi's built-in MCP extension
     // reads (active agent dir, trusted project, extension registrations).
@@ -772,7 +784,10 @@ export default function (pi: ExtensionAPI) {
     // disagree again. Fixing only one of them is exactly how the wordmark
     // once vanished -- this early return let a resolved wordmark through,
     // but render() still silently dropped it with its own separate check.
-    if (bannerSuppressed(currentIntroMode(), wordmark !== undefined)) return;
+    if (bannerSuppressed(currentIntroMode(), wordmark !== undefined)) {
+      releaseBuiltInHeaderHold();
+      return;
+    }
     void warmupLetterStrokes();
 
     let gitBranch = "Not a git repo";
