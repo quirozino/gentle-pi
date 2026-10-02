@@ -484,6 +484,8 @@ Baseline: 1 known failure ("grouped Status preserves structured fields").
   (gentle-shell.ts:2143); animator wiring untested (gentle-shell.ts:2223-2240);
   static rail columns (shell-sidebar-layout.ts:142).
 
+- RDD T15 (ad8d24b19..d514ebec5, 8 files, 558 lines): consent granted, approved, acknowledged. Advisory: fullscreen-only gate untested (shell-sidebar-layout.ts:428).
+
 ## Next step
 User restarts pi (or `/reload`) to see T7–T15 (T15: the herdr pane should
 show `#030904` instead of gray); RDD review of the work-unit commits
