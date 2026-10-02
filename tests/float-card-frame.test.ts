@@ -45,6 +45,9 @@ const DOUBLE = /^[╔╗╚╝║═]$/u;
 const SINGLE = /[╭╮╰╯│─▎]/u;
 
 const plain = (row: string) => stripAnsi(row);
+// A running card's frame paints `accent` (the RUNNING tone), the sweep's own
+// role, so its pulse is drawn in the contrast role instead.
+const PULSE = "text";
 
 /** Every visible cell's foreground role, keyed "row:column". */
 function roleMap(rows: readonly string[]): Map<string, { role: string | undefined; glyph: string }> {
@@ -150,12 +153,12 @@ test("frames paint through theme roles only and keep the tone's role", () => {
 	const ctx = rowContext({ sweep: false });
 	// Wide enough that no row truncates: the tags count as visible width here.
 	const edit = editTool.renderCall!(ctx.args as never, taggedTheme as never, ctx as never).render(160);
-	assert.ok(edit[0]!.includes("<warning>╔"), "a running tool frame keeps the pending tone");
-	assert.ok(edit[2]!.includes("<warning>║</warning>"), "side rows too");
+	assert.ok(edit[0]!.includes("<accent>╔"), "a running tool frame takes the running tone (green accent), never warning");
+	assert.ok(edit[2]!.includes("<accent>║</accent>"), "side rows too");
 	const sweeping = renderAgentsCard([task()], taggedTheme, 160, 5000, { collapsed: false, activeOnly: true, tick: 0, sweep: true, idleAfterMs: 60_000 });
 	const quiet = renderAgentsCard([task()], taggedTheme, 160, 5000, { collapsed: false, activeOnly: true, idleAfterMs: 60_000 });
-	assert.ok(quiet[0]!.includes("<border>╔"), "the info frame stays in the border role");
-	assert.match(sweeping[0]!, new RegExp(`<${SWEEP_ROLE.WORKING}>╔`), "the pulse head starts on the top-left corner in the accent role");
+	assert.ok(quiet[0]!.includes("<accent>╔"), "a running Agents frame takes the running tone (accent)");
+	assert.match(sweeping[0]!, new RegExp(`<${PULSE}>╔`), "the pulse head starts on the top-left corner in the contrast role on the accent frame");
 	for (const rows of [edit, sweeping, quiet]) {
 		for (const row of rows) {
 			const escapes = row.match(/\x1b\[[\d;]*m/g) ?? [];
@@ -168,7 +171,7 @@ test("frames paint through theme roles only and keep the tone's role", () => {
 
 test("a running card's pulse visits all four sides of the frame", () => {
 	const width = 50;
-	const role = SWEEP_ROLE.WORKING;
+	const role = PULSE;
 	// Agents: the panel; the tick drives the position.
 	assert.deepEqual(lapSides((position) => agentsRows(width, position / 10), width, role), new Set(["top", "right", "bottom", "left"]));
 	// Tool and Code cards: the clock drives the position; render at chosen sweeps.
@@ -189,13 +192,13 @@ test("the pulse advances with the tick and recolours only frame cells", () => {
 	const still = renderAgentsCard([task()], theme, 60, 5000, { collapsed: false, activeOnly: true, tick: 0, idleAfterMs: 60_000 });
 	const first = agentsRows(60, 0);
 	const next = agentsRows(60, 1);
-	assert.equal(roleCells(first, SWEEP_ROLE.WORKING).length, 3, "head plus a two-cell trail");
-	assert.notDeepEqual(roleCells(first, SWEEP_ROLE.WORKING), roleCells(next, SWEEP_ROLE.WORKING), "the pulse moves");
+	assert.equal(roleCells(first, PULSE).length, 3, "head plus a two-cell trail");
+	assert.notDeepEqual(roleCells(first, PULSE), roleCells(next, PULSE), "the pulse moves");
 	const base = roleMap(still);
 	for (const [key, cell] of roleMap(first)) {
 		const before = base.get(key)!;
 		assert.equal(cell.glyph, before.glyph, `${key} keeps its glyph`);
-		if (cell.role !== before.role) assert.ok(DOUBLE.test(cell.glyph) && cell.role === SWEEP_ROLE.WORKING, `${key} "${cell.glyph}" changed role without being a frame cell`);
+		if (cell.role !== before.role) assert.ok(DOUBLE.test(cell.glyph) && cell.role === PULSE, `${key} "${cell.glyph}" changed role without being a frame cell`);
 	}
 });
 
@@ -213,8 +216,8 @@ test("the sweep stops when the card finishes, and animations off keep a static f
 	assert.match(plain(rows[0]!), /^ ╔═+╗ $/);
 	assert.match(plain(rows.at(-1)!), /^ ╚═+╝ $/);
 
-	assert.deepEqual(roleCells(editRows(60, rowContext({ sweep: false })), SWEEP_ROLE.WORKING), [], "animations off: no pulse");
-	assert.deepEqual(roleCells(codeRows(60, rowContext({ sweep: false, args: { code: "1" } })), SWEEP_ROLE.WORKING), [], "animations off: no pulse");
+	assert.deepEqual(roleCells(editRows(60, rowContext({ sweep: false })), PULSE), [], "animations off: no pulse");
+	assert.deepEqual(roleCells(codeRows(60, rowContext({ sweep: false, args: { code: "1" } })), PULSE), [], "animations off: no pulse");
 	assert.equal(liveCardSweep(rowContext({ sweep: false }), true, 0), undefined);
 	assert.deepEqual(liveCardSweep(rowContext(), true, 2 * CARD_SWEEP_TICK_MS), cardSweepAt(2 * CARD_SWEEP_TICK_MS));
 });
@@ -257,7 +260,7 @@ test("a streaming bash card sweeps one perimeter across its call and partial res
 		} finally { Date.now = now; }
 	};
 	assertFramed(render(0), width);
-	const sides = lapSides(render, width, SWEEP_ROLE.WORKING);
+	const sides = lapSides(render, width, PULSE);
 	assert.deepEqual(sides, new Set(["top", "right", "bottom", "left"]), [...sides].join(","));
 });
 
@@ -294,7 +297,7 @@ test("neon keeps the outlined card and its perimeter sweep", () => {
 		const rows = agentsRows(50, 0);
 		assert.match(plain(rows[0]!), /^╔═ .*╗$/u, "neon carries the title in the top rule");
 		assert.ok(rows.every((row) => !row.includes(BG_OPEN)), "no background in neon");
-		assert.deepEqual(lapSides((position) => agentsRows(50, position / 10).map((row) => ` ${row} `), 52, SWEEP_ROLE.WORKING), new Set(["top", "right", "bottom", "left"]));
+		assert.deepEqual(lapSides((position) => agentsRows(50, position / 10).map((row) => ` ${row} `), 52, PULSE), new Set(["top", "right", "bottom", "left"]));
 		const edit = editRows(50).map(plain);
 		assert.match(edit[0]!, /^╔═ \S+ edit/u);
 		assert.match(edit.at(-1)!, /^╚═+╝$/u);

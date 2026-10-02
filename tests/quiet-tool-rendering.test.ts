@@ -621,8 +621,8 @@ test("quiet tool rendering transitions one Gentle AI header through lifecycle st
 	assert.strictEqual(initial, running);
 	assert.strictEqual(running, completed);
 	assert.strictEqual(completed, failed);
-	// The frame stays on the info tone while running so a long review is not painted
-	// entirely in the warning colour; the status word carries the state instead.
+	// A running review takes the running tone (green), never the warning colour;
+	// the status word carries the state.
 	assert.equal(cardTitle(initialText), "🌹 rdd running · status"); assert.equal(cardTone(initialText), "accent");
 	assert.equal(cardTitle(runningText), "🌹 rdd running · status"); assert.equal(cardTone(runningText), "accent");
 	assert.equal(cardTitle(completedText), "🌹 rdd status"); assert.equal(cardTone(completedText), "success");
@@ -1427,7 +1427,7 @@ test("quiet tool calls draw a rounded petal card in the lifecycle tone", () => {
 	const header = bash.renderCall(args, passthroughTheme, routineRenderContext({ args, isPartial: false })).render(width);
 	assert.deepEqual(header, [`╭─ $ bash $ printf output ${"─".repeat(3)}╮`]);
 	const running = bash.renderCall(args, statusTheme, routineRenderContext({ args, executionStarted: true, isPartial: true })).render(width);
-	assert.match(running[0] ?? "", /^<warning>╭<\/warning><warning>─ <\/warning><warning>\$ (?:<toolTitle>)?bash/);
+	assert.match(running[0] ?? "", /^<accent>╭<\/accent><accent>─ <\/accent><accent>\$ (?:<toolTitle>)?bash/);
 	assert.match(bash.renderCall(args, statusTheme, routineRenderContext({ args, isPartial: false, isError: true })).render(width)[0] ?? "", /^<error>╭<\/error>/);
 
 	const expanded = bash.renderResult(textResult("alpha\nbeta"), { expanded: true, isPartial: false }, passthroughTheme, { args }).render(width);
@@ -1485,7 +1485,7 @@ test("a running quiet card closes its own frame with one running row until a res
 	]);
 	const painted = piToolRow(read, args, undefined, pending(), 40, statusTheme).join("\n");
 	assert.match(painted, /<muted>running…<\/muted>/);
-	assert.match(painted, /<warning>╰<\/warning>/);
+	assert.match(painted, /<accent>╰<\/accent>/);
 	for (const width of [0, 1, 2, 3, 4, 5, 6, 7, 8]) {
 		const rows = piToolRow(read, args, undefined, pending(), width);
 		assert.ok(rows.every((row) => visibleWidth(row) <= width), `width ${width}`);

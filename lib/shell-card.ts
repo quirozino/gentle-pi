@@ -5,8 +5,13 @@ import { SHELL_GLYPHS } from "./shell-glyphs.ts";
 // and above the editor. The same rounded frame as the prompt and the
 // overlays, with the title in the card's tone. Pure: strings in, lines out.
 
+// Colour semantics, shared by every card and panel: yellow (`warning`) is for
+// genuine warnings only; green is work in progress (RUNNING: running, pending,
+// partial, waiting) and information (INFO); red (`error`) is a failure or a
+// stop by error/abort; SUCCESS is the finished look.
 export const CARD_TONE = {
 	INFO: "info",
+	RUNNING: "running",
 	SUCCESS: "success",
 	WARNING: "warning",
 	ERROR: "error",
@@ -86,6 +91,18 @@ export interface CardSweep {
 	role: string;
 }
 
+// The pulse must stand out from the frame it travels on. A running card's
+// frame already paints `accent`, the role the sweep uses, so on a frame of the
+// same role the pulse takes `text` (the theme's brightest foreground, pale
+// against the accent line in Matrix-Green) instead of vanishing.
+const SWEEP_CONTRAST_ROLE = "text";
+
+/** The sweep as drawn on a frame of this tone: never in the frame's own role. */
+export function visibleSweep(tone: CardTone, sweep: CardSweep | undefined): CardSweep | undefined {
+	if (!sweep || sweep.role !== FRAME_ROLE[tone]) return sweep;
+	return { ...sweep, role: SWEEP_CONTRAST_ROLE };
+}
+
 /** Recolours one frame cell by absolute column; undefined keeps the tone's frame role. */
 export type CellRole = (column: number) => string | undefined;
 
@@ -96,12 +113,14 @@ export const CARD_GLYPH = SHELL_GLYPHS.card;
 // review preflight, a quiet Agents widget, ...) uses.
 const FRAME_ROLE: Record<CardTone, string> = {
 	[CARD_TONE.INFO]: "border",
+	[CARD_TONE.RUNNING]: "accent",
 	[CARD_TONE.SUCCESS]: "success",
 	[CARD_TONE.WARNING]: "warning",
 	[CARD_TONE.ERROR]: "error",
 };
 const TITLE_ROLE: Record<CardTone, string> = {
 	[CARD_TONE.INFO]: "accent",
+	[CARD_TONE.RUNNING]: "accent",
 	[CARD_TONE.SUCCESS]: "success",
 	[CARD_TONE.WARNING]: "warning",
 	[CARD_TONE.ERROR]: "error",
@@ -384,6 +403,7 @@ const FLOAT_MARGIN = 1;
 const FLOAT_MIN_WIDTH = 10;
 const FLOAT_BG_ROLE: Record<CardTone, string> = {
 	[CARD_TONE.INFO]: "toolSuccessBg",
+	[CARD_TONE.RUNNING]: "toolPendingBg",
 	[CARD_TONE.SUCCESS]: "toolSuccessBg",
 	[CARD_TONE.WARNING]: "toolPendingBg",
 	[CARD_TONE.ERROR]: "toolErrorBg",
@@ -485,7 +505,7 @@ export function floatRows(tone: CardTone, theme: CardTheme, width: number, rende
 	const draw = () => {
 		const measured = render(inner);
 		const slots = floatLayout(measured, Boolean(open));
-		const sweep = options.sweep;
+		const sweep = visibleSweep(tone, options.sweep);
 		if (!sweep && !options.split) return assemble(measured, slots);
 		const { offset, height } = splitGeometry(options.split, slots.length);
 		if (!sweep) return assemble(measured, slots);
@@ -586,7 +606,8 @@ export function renderCard(card: Card, theme: CardTheme, width: number, options:
 	const open = options.panel ? floatOpener(theme, card.tone, width) : "";
 	if (open) return paintFloat(withChrome(options.frame === false ? FLOAT_CHROME : FRAMED_FLOAT_CHROME, () => floatPanel(card, theme, Math.floor(width) - FLOAT_MARGIN * 2, options)), open);
 	const text = cardText(card, theme, cardInnerWidth(width), options.expanded);
-	const roleFor = options.sweep ? sweepRoles(options.sweep, Math.floor(width), text.length + 2) : undefined;
+	const sweep = visibleSweep(card.tone, options.sweep);
+	const roleFor = sweep ? sweepRoles(sweep, Math.floor(width), text.length + 2) : undefined;
 	const top = cardTop(card, theme, width, options.hint, roleFor?.(0));
 	const bottom = cardBottom(card.tone, theme, width, undefined, roleFor?.(text.length + 1));
 	return [top, ...text.map((line, index) => cardLine(line, card.tone, theme, width, roleFor?.(index + 1))), bottom];
@@ -625,7 +646,8 @@ function floatPanel(card: Card, theme: CardTheme, width: number, options: CardRe
 	const text = cardText(card, theme, cardInnerWidth(width), options.expanded);
 	const height = text.length > 0 ? text.length + 4 : 3;
 	// Framed: the sweep travels the whole perimeter; frameless: down the bar.
-	const roleFor = options.sweep ? chrome.framed ? sweepRoles(options.sweep, width, height) : floatSweepRoles(options.sweep, height) : undefined;
+	const sweep = visibleSweep(card.tone, options.sweep);
+	const roleFor = sweep ? chrome.framed ? sweepRoles(sweep, width, height) : floatSweepRoles(sweep, height) : undefined;
 	const blank = (row: number) => cardBottom(card.tone, theme, width, undefined, roleFor?.(row));
 	const top = chrome.framed ? frameTopRule(card.tone, theme, width, roleFor?.(0)) : blank(0);
 	const pad = chrome.framed ? framePadRow(card.tone, theme, width, roleFor?.(2)) : blank(2);

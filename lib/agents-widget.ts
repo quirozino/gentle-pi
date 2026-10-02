@@ -17,7 +17,9 @@ export const SWEEP_CELLS_PER_TICK = 10;
 // While agents only wait, idle or queue the pulse crawls: one step per second
 // derived from the clock, so the slow re-render cadence never makes it jump.
 export const SWEEP_WAITING_STEP_MS = 1000;
-export const SWEEP_ROLE = { WORKING: "accent", WAITING: "warning" } as const;
+// Waiting, idle or queued work pulses in `muted` at the slower pace: still
+// green-family work in progress, never the warning yellow.
+export const SWEEP_ROLE = { WORKING: "accent", WAITING: "muted" } as const;
 
 /**
  * The card glyph for a tick: the configured wink cycle when there is one, the
@@ -105,10 +107,10 @@ interface MetaColumnWidths {
 const LOOK: Record<TaskStatus, StatusLook> = {
 	[TASK_STATUS.QUEUED]: { glyph: "○", role: "muted" },
 	[TASK_STATUS.RUNNING]: { glyph: "◐", role: "accent" },
-	[TASK_STATUS.WAITING]: { glyph: "?", role: "warning" },
+	[TASK_STATUS.WAITING]: { glyph: "?", role: "accent" },
 	[TASK_STATUS.COMPLETED]: { glyph: "✓", role: "success" },
 	[TASK_STATUS.FAILED]: { glyph: "✗", role: "error" },
-	[TASK_STATUS.CANCELLED]: { glyph: "–", role: "dim" },
+	[TASK_STATUS.CANCELLED]: { glyph: "–", role: "error" },
 	[TASK_STATUS.TIMED_OUT]: { glyph: "✗", role: "error" },
 };
 const FINISHED_TTL_MS = 60_000;
@@ -359,9 +361,12 @@ function counts(tasks: readonly TaskRecord[]): string {
 		.join(" · ");
 }
 
+// Red when a shown task failed, timed out or was cancelled; green (RUNNING)
+// while any task is unfinished (running, waiting for an answer, queued); the
+// info look once everything finished well.
 function tone(tasks: readonly TaskRecord[]): CardTone {
-	if (tasks.some((task) => task.status === TASK_STATUS.WAITING)) return CARD_TONE.WARNING;
-	if (tasks.some((task) => task.status === TASK_STATUS.FAILED || task.status === TASK_STATUS.TIMED_OUT)) return CARD_TONE.ERROR;
+	if (tasks.some((task) => task.status === TASK_STATUS.FAILED || task.status === TASK_STATUS.TIMED_OUT || task.status === TASK_STATUS.CANCELLED)) return CARD_TONE.ERROR;
+	if (tasks.some((task) => !isFinished(task.status))) return CARD_TONE.RUNNING;
 	return CARD_TONE.INFO;
 }
 

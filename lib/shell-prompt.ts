@@ -20,7 +20,6 @@ const PETAL_TONE = {
 	ROSE: "accent",
 	SOFT: "thinkingHigh",
 	DEEP: "mdQuoteBorder",
-	WARNING: "warning",
 } as const;
 
 export type PetalTone = (typeof PETAL_TONE)[keyof typeof PETAL_TONE];
@@ -91,8 +90,10 @@ const STATE_LABEL: Record<PromptState, string | undefined> = {
 	[PROMPT_STATE.QUEUED]: "queued",
 };
 
+// A queued message is pending work: the steady rose (green in Matrix-Green),
+// never the warning yellow.
 export function petalTone(state: PromptState, tick: number): PetalTone {
-	if (state === PROMPT_STATE.QUEUED) return PETAL_TONE.WARNING;
+	if (state === PROMPT_STATE.QUEUED) return PETAL_TONE.ROSE;
 	if (state === PROMPT_STATE.WORKING) return PETAL_TONE_FRAMES[tick % PETAL_TONE_FRAMES.length];
 	return PETAL_TONE.BRIGHT;
 }

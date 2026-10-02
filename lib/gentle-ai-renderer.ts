@@ -69,13 +69,12 @@ const LIFECYCLE_STATUS = {
 
 type LifecycleStatus = (typeof LIFECYCLE_STATUS)[keyof typeof LIFECYCLE_STATUS];
 
-// The frame stays on the info tone while an operation runs instead of turning
-// amber: a long-running review would otherwise paint every border in the warning
-// colour. The status word in the subtitle still says what is happening, and a
-// failure keeps the error tone.
+// An operation in flight takes the RUNNING tone (green), like every running
+// tool card, never the warning yellow. The status word in the subtitle still
+// says what is happening, and a failure keeps the error tone.
 const STATUS_TONE: Record<LifecycleStatus, CardTone> = {
-	[LIFECYCLE_STATUS.PREPARING]: CARD_TONE.INFO,
-	[LIFECYCLE_STATUS.RUNNING]: CARD_TONE.INFO,
+	[LIFECYCLE_STATUS.PREPARING]: CARD_TONE.RUNNING,
+	[LIFECYCLE_STATUS.RUNNING]: CARD_TONE.RUNNING,
 	[LIFECYCLE_STATUS.COMPLETED]: CARD_TONE.SUCCESS,
 	[LIFECYCLE_STATUS.FAILED]: CARD_TONE.ERROR,
 };
@@ -116,7 +115,7 @@ export function getGentleAiRenderState(state: unknown): GentleAiRenderState | un
 // also closes the frame, because no result row exists yet; once a final
 // result is in, the result card closes it instead.
 export class GentleAiCallCard {
-	private card: Card = { title: REVIEW_TITLE, body: [], tone: CARD_TONE.WARNING, glyph: CARD_GLYPH };
+	private card: Card = { title: REVIEW_TITLE, body: [], tone: CARD_TONE.RUNNING, glyph: CARD_GLYPH };
 	private theme: GentleAiRenderTheme = passthroughTheme;
 	private detail: string | undefined;
 	private hint: string | undefined;

@@ -319,8 +319,8 @@ test("registered Gentle Review tools preserve result envelopes and preview usefu
 			assert.match(collapsedBody, /safe result[\s\S]*lineage=secret body=private[\s\S]*third useful detail/, `${name} previews actual result content, not redaction`);
 			assert.doesNotMatch(collapsedBody, /\d+ lines?\b|fourth expanded detail|to expand|\x1b\[/);
 			assert.equal(collapsedBody.split("\n").length, 3, `${name} has three useful collapsed rows`);
-			// A partial result continues the running call, which stays on the info tone.
-			assert.match(collapsed, new RegExp(`<${options.isError ? "error" : options.isPartial ? "border" : "success"}>│`), "host outcome preserves the semantic frame tone");
+			// A partial result continues the running call, which takes the running tone (green).
+			assert.match(collapsed, new RegExp(`<${options.isError ? "error" : options.isPartial ? "accent" : "success"}>│`), "host outcome preserves the semantic frame tone");
 			assert.equal((collapsed.match(/╰/g) ?? []).length, options.isPartial ? 0 : 1, "only final results close the frame");
 		}
 		const expanded = renderComponent(tool.renderResult({ content: [{ type: "text", text: resultText }] }, { expanded: true, isPartial: false, isError: true }, lifecycleTheme, {}));

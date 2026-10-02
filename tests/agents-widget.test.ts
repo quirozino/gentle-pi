@@ -80,11 +80,14 @@ test("widgetExpiryMs says how long until the next finished row leaves the card",
 	assert.equal(widgetExpiryMs([], 100_000), undefined);
 });
 
-test("renderAgentsCard paints the quiet-state INFO card with the rose frame (border) and title (accent)", () => {
+test("renderAgentsCard paints a running card green (accent frame and title) and a finished one in the info border", () => {
 	const taggedTheme = { fg: (color: string, text: string) => `<${color}>${text}</${color}>` };
 	const lines = renderAgentsCard([task({ status: TASK_STATUS.RUNNING })], taggedTheme, 60, 5000, { collapsed: false });
-	assert.match(lines[0]!, /^<border>╭<\/border>/);
+	assert.match(lines[0]!, /^<accent>╭<\/accent>/);
 	assert.match(lines[0]!, /<accent>❀ Agents<\/accent>/);
+	const done = renderAgentsCard([task({ status: TASK_STATUS.COMPLETED, endedAt: 4000 })], taggedTheme, 60, 5000, { collapsed: false, keepFinished: true });
+	assert.match(done[0]!, /^<border>╭<\/border>/);
+	assert.match(done[0]!, /<accent>❀ Agents<\/accent>/);
 });
 
 test("renderAgentsCard draws columns for agent, task, and model · tokens · cost · time, with the batch time in the rule", () => {
@@ -367,7 +370,9 @@ test("the idle column degrades like the others as the card narrows, and elapsed 
 // unfinished tasks only wait or sit idle, off unless the caller opts in.
 
 const roleTheme = { fg: (role: string, text: string) => `<${role}>${text}</${role}>` };
-const SWEEP_ROLES = ["accent", "warning"];
+// The running frame paints `accent`, so a working pulse is drawn in the
+// contrast role (`text`); waiting, idle or queued work pulses in `muted`.
+const SWEEP_ROLES = ["text", "muted", "warning"];
 
 
 // Sweep roles found on frame glyphs across one lap of ticks, so the result
@@ -382,22 +387,23 @@ function frameSweepRoles(render: (tick: number) => string[]): Set<string> {
 	return roles;
 }
 
-test("sweep paints the frame accent while a running task is actively working", () => {
+test("sweep pulses in the contrast role on the accent frame while a running task is actively working", () => {
 	const roles = frameSweepRoles((tick) => renderAgentsCard([task({ lastActivityAt: 99_000 })], roleTheme, 60, 100_000, { collapsed: false, tick, idleAfterMs: 120_000, sweep: true }));
-	assert.deepEqual([...roles], ["accent"]);
+	assert.deepEqual([...roles], ["text"]);
 });
 
-test("sweep paints the frame warning when the running task is idle", () => {
+test("sweep pulses muted, never warning, when the running task is idle", () => {
 	const roles = frameSweepRoles((tick) => renderAgentsCard([task({ lastActivityAt: 1000 })], roleTheme, 60, 400_000, { collapsed: false, tick, idleAfterMs: 120_000, sweep: true }));
-	assert.deepEqual([...roles], ["warning"]);
+	assert.deepEqual([...roles], ["muted"]);
 });
 
-test("sweep paints warning for queued or waiting-only tasks and accent once one works", () => {
+test("sweep pulses muted for queued or waiting-only tasks and in the contrast role once one works", () => {
 	const queued = task({ id: "q", status: TASK_STATUS.QUEUED, startedAt: null });
 	const waiting = task({ id: "w", status: TASK_STATUS.WAITING });
 	const opts = { collapsed: false, sweep: true };
-	assert.deepEqual([...frameSweepRoles((tick) => renderAgentsCard([queued, waiting], roleTheme, 60, 2000, { ...opts, tick }))], ["warning"]);
-	assert.deepEqual([...frameSweepRoles((tick) => renderAgentsCard([queued, task({ id: "r" })], roleTheme, 60, 2000, { ...opts, tick }))], ["accent"]);
+	// The waiting pulse follows the clock at its slower step, so the clock moves with the tick here.
+	assert.deepEqual([...frameSweepRoles((tick) => renderAgentsCard([queued, waiting], roleTheme, 60, 2000 + tick * SWEEP_WAITING_STEP_MS, { ...opts, tick }))], ["muted"]);
+	assert.deepEqual([...frameSweepRoles((tick) => renderAgentsCard([queued, task({ id: "r" })], roleTheme, 60, 2000, { ...opts, tick }))], ["text"]);
 });
 
 test("sweep never colours the frame when off, untick'd or nothing is unfinished", () => {
@@ -543,5 +549,6 @@ test("renderAgentsCard in the float style is a float panel two rows taller than 
 	useCardStyle(t, CARD_STYLE.FLOAT);
 	const tagged = withBackground({ fg: (color: string, text: string) => `<${color}>${text}</${color}>` });
 	const [, header] = renderAgentsCard([task({ status: TASK_STATUS.WAITING })], tagged, 120, 5000, { collapsed: true, collapseKey: "ctrl+a" });
-	assert.match(stripAnsi(header!), /^ <warning>│<\/warning> <warning>❀ Agents<\/warning>  <muted>1 waiting<\/muted> +<muted>ctrl\+a expand<\/muted><warning> │<\/warning> $/);
+	// A task waiting for an answer is work in progress: green, never the warning yellow.
+	assert.match(stripAnsi(header!), /^ <accent>│<\/accent> <accent>❀ Agents<\/accent>  <muted>1 waiting<\/muted> +<muted>ctrl\+a expand<\/muted><accent> │<\/accent> $/);
 });

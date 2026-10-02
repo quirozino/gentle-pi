@@ -65,10 +65,10 @@ const GLYPH: Record<string, string> = {
 const GLYPH_ROLE: Record<string, string> = {
 	[TASK_STATUS.QUEUED]: "muted",
 	[TASK_STATUS.RUNNING]: "accent",
-	[TASK_STATUS.WAITING]: "warning",
+	[TASK_STATUS.WAITING]: "accent",
 	[TASK_STATUS.COMPLETED]: "success",
 	[TASK_STATUS.FAILED]: "error",
-	[TASK_STATUS.CANCELLED]: "dim",
+	[TASK_STATUS.CANCELLED]: "error",
 	[TASK_STATUS.TIMED_OUT]: "error",
 };
 const MAX_FINISHED_PER_SESSION = 200;

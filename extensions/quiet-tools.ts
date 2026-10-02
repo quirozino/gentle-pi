@@ -562,11 +562,16 @@ class BoundedRows implements Component {
 // frame tone carries the status the painted Box would otherwise show. The call
 // owns the top rule; the result draws the sides and always closes the frame.
 // Until the first result exists, the call closes the frame itself.
-type ToolTone = typeof CARD_TONE.WARNING | typeof CARD_TONE.SUCCESS | typeof CARD_TONE.ERROR;
+// The running label of a partial result: green like its card.
+const PARTIAL_LABEL_ROLE = "accent";
+
+// Pending and partial cards take the RUNNING tone (green), never the warning
+// yellow: yellow is reserved for genuine warnings.
+type ToolTone = typeof CARD_TONE.RUNNING | typeof CARD_TONE.SUCCESS | typeof CARD_TONE.ERROR;
 
 function toolTone(pending: boolean, failed: boolean): ToolTone {
 	if (failed) return CARD_TONE.ERROR;
-	return pending ? CARD_TONE.WARNING : CARD_TONE.SUCCESS;
+	return pending ? CARD_TONE.RUNNING : CARD_TONE.SUCCESS;
 }
 
 class ToolCardTop implements Component {
@@ -752,10 +757,10 @@ export function createQuietToolRenderer(
 			scheduleCardSweep(renderContext, sweep !== undefined);
 			const carded = (component: () => Component): Component => new ToolCardBody(component, resultTone, theme, sweep, renderContext?.state);
 			if (options.isPartial) {
-				if (options.expanded) return carded(() => new Text(`${theme.fg("warning", partialLabel(toolName, text))}\n${theme.fg("muted", text)}`, 0, 0));
+				if (options.expanded) return carded(() => new Text(`${theme.fg(PARTIAL_LABEL_ROLE, partialLabel(toolName, text))}\n${theme.fg("muted", text)}`, 0, 0));
 				const visible = lastOutputLines(text, PREVIEW_LINE_LIMIT);
 				return carded(() => new BoundedRows([
-					{ text: theme.fg("warning", partialLabel(toolName, text)), rows: 1 },
+					{ text: theme.fg(PARTIAL_LABEL_ROLE, partialLabel(toolName, text)), rows: 1 },
 					...(visible ? [{ text: theme.fg("muted", visible), rows: PREVIEW_LINE_LIMIT, tail: true }] : []),
 				], cacheKey));
 			}

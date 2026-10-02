@@ -209,7 +209,48 @@ Baseline: 1 known failure ("grouped Status preserves structured fields").
   gentle-shell 252/252.
 - [ ] T11 abandoned-stream sweep stops.
 - [ ] T12 full-window frame investigation.
-- [ ] T13 running/pending cards green, failures red, warnings only yellow.
+- [x] T13 running/pending cards green, failures red, warnings only yellow.
+  Route: inline (writer subagent executing directly; the parent delegated
+  this unit). `lib/shell-card.ts`: new `CARD_TONE.RUNNING` (frame and title
+  `accent`, background `toolPendingBg`) and `visibleSweep`: a pulse whose
+  role equals the frame role is drawn in `text` (pale on the bright accent
+  line), applied in floatRows, renderCard and float panels, so running
+  frames keep a visible sweep. Remapped off `warning`: quiet tool pending /
+  partial cards and the partial label (extensions/quiet-tools.ts); λ Code
+  partial call/result and running child status (lib/codemode-renderer.ts,
+  child roles now explicit: error/success/accent); Gentle AI preparing and
+  running and its initial placeholder (lib/gentle-ai-renderer.ts); Agents
+  card tone (ERROR when a shown task failed, timed out or was cancelled,
+  RUNNING while any is unfinished, INFO when all finished well), waiting
+  glyph `accent`, cancelled glyph `error`, waiting/idle/queued pulse `muted`
+  (lib/agents-widget.ts, lib/agents-view.ts); queued prompt petal steady
+  rose (lib/shell-prompt.ts). Whole-panel warnings removed: Todos always
+  INFO, only `stale · N turns` is `warning` (lib/shell-todo.ts); the Stale
+  agent result card is INFO with only its stale mark in `warning`
+  (extensions/gentle-agents.ts). Kept yellow (genuine warnings): the dev
+  binary override card, the agents idle marker, changes capture-limit
+  notice, gauges at 80%, notifications, hover role. Status and header had
+  no whole-panel warning tone. Docs: gentle-shell.md colour semantics,
+  Todos/stale/queued wording; README Todo row.
+  Tests: new tests/card-tone-semantics.test.ts (float and neon: pending,
+  partial, running, waiting, queued tool/Code/Gentle AI/Agents cards paint
+  no `warning` and a green frame; idle running Agents frame green with only
+  the idle marker yellow; failed tool, failed/cancelled Code call, failed
+  Gentle AI, failed/timed-out/cancelled Agents paint `error`; stale Todos
+  frame `border`, title `accent`, `warning` only on `stale · 5 turns`).
+  Updated expectations: float-card-frame (pulse role `text` on running
+  frames; two formerly vacuous lap checks now meaningful), agents-widget
+  (sweep roles; waiting pulse test now drives the clock: it previously
+  passed only because the whole frame was yellow), gentle-ai-renderer,
+  quiet-tool-rendering, codemode-rendering, gentle-agents, gentle-ai,
+  shell-prompt.
+  Checks: card-tone-semantics 6/6, float-card-frame 11/11, agents-widget
+  34/34, gentle-ai-renderer 43/43, quiet-tool-rendering 56/56,
+  codemode-rendering 28/28, gentle-agents 175/175, gentle-ai 91/91,
+  shell-prompt 25/25, shell-todo 20/20, gentle-todo 11/11, agents-view
+  28/28; typecheck 188 recorded, no regressions (10 pairs improved, baseline
+  not shrunk); `pnpm test` 4694 tests, 1 failure (baseline "grouped
+  Status"), provider-contract PASS, runtime-harness PASS.
 
 ## Progress / evidence
 - Commits: `e43016c30` (T1 + this document), `ec10f4ad4` (T2),

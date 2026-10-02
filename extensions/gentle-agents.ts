@@ -1031,11 +1031,12 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		const age = ageSeconds < 90 ? `${ageSeconds}s` : ageSeconds < 3600 ? `${Math.round(ageSeconds / 60)}m` : `${Math.round(ageSeconds / 3600)}h`;
 		const body = [
 			`Subagent ${sanitizeTerminalText(agent)} (task ${sanitizeTerminalText(taskId)}, "${sanitizeTerminalText(label)}") ${sanitizeTerminalText(status)} about ${age} ago, while the orchestrator was still busy.`,
-			"Marked stale: the result was not replayed into the conversation. It stays available through subagent_status and subagent_result.",
+			// The stale mark is the warning; the card itself keeps the info tone.
+			theme.fg("warning", "Marked stale: the result was not replayed into the conversation. It stays available through subagent_status and subagent_result."),
 		];
 		return {
 			render(width: number) {
-				return renderCard({ title: "Stale agent result", subtitle: `${agent} · task ${taskId}`, body, tone: CARD_TONE.WARNING, glyph: AGENTS_GLYPH }, theme, width, { expanded: options.expanded, previewRows: 3, hint: expandHint(options.expanded) });
+				return renderCard({ title: "Stale agent result", subtitle: `${agent} · task ${taskId}`, body, tone: CARD_TONE.INFO, glyph: AGENTS_GLYPH }, theme, width, { expanded: options.expanded, previewRows: 3, hint: expandHint(options.expanded) });
 			},
 			invalidate() {},
 		};

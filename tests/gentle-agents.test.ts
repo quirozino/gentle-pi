@@ -3287,7 +3287,10 @@ test("the Stale agent result card previews its truthful warning when collapsed",
 	assert.match(collapsed[0]!, /^╭─ ❀ Stale agent result · explore · task t9 ─+ expand ╮$/);
 	assert.match(collapsed.join("\n"), /Subagent explore \(task t9, "map lib"\) completed about 2m ago/);
 	assert.doesNotMatch(collapsed.join("\n"), /All done|Last answer/, "no invented answer");
-	assert.match(render(entry, { expanded: false }, { fg: (color: string, text: string) => `<${color}>${text}</${color}>` }).render(80)[0]!, /^<warning>╭/);
+	// The card keeps the info frame; only the stale mark itself is the warning.
+	const tagged = render(entry, { expanded: true }, { fg: (color: string, text: string) => `<${color}>${text}</${color}>` }).render(80);
+	assert.match(tagged[0]!, /^<border>╭/);
+	assert.match(tagged.join("\n"), /<warning>Marked stale/);
 	assert.match(render(entry, { expanded: true }, plainTheme).render(80).map(stripAnsi).join("\n"), /subagent_status and subagent_result/);
 	assert.deepEqual(render(entry, { expanded: false }, plainTheme).render(0), []);
 });

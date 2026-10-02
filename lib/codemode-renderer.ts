@@ -72,10 +72,12 @@ function failed(call: ObservedCall): boolean {
 
 function childLine(call: ObservedCall, theme: CardTheme): string {
 	const status = call.status ?? "status unavailable";
-	const tone = failed(call) ? CARD_TONE.ERROR : call.status === CALL_STATUS.OK ? CARD_TONE.SUCCESS : CARD_TONE.WARNING;
+	// Roles: red for a failed or cancelled call, the finished look for ok,
+	// green for one still running; never the warning yellow.
+	const role = failed(call) ? "error" : call.status === CALL_STATUS.OK ? "success" : "accent";
 	const time = duration(call.durationMs);
 	// Arguments are deliberately never read; error payloads have their own bounded preview.
-	return `${theme.fg(tone, status)} · ${call.name || "name unavailable"}${time ? ` · ${time}` : ""}${call.error && call.status !== CALL_STATUS.ERROR ? " · error reported" : ""}`;
+	return `${theme.fg(role, status)} · ${call.name || "name unavailable"}${time ? ` · ${time}` : ""}${call.error && call.status !== CALL_STATUS.ERROR ? " · error reported" : ""}`;
 }
 
 class CodemodeCard implements Component {
@@ -132,7 +134,7 @@ export function decorateCodemodeTool(tool: ToolDefinition): ToolDefinition {
 		...tool,
 		renderShell: "self",
 		renderCall(args, theme, context) {
-			const tone = context.isError ? CARD_TONE.ERROR : context.isPartial ? CARD_TONE.WARNING : CARD_TONE.INFO;
+			const tone = context.isError ? CARD_TONE.ERROR : context.isPartial ? CARD_TONE.RUNNING : CARD_TONE.INFO;
 			const code = record(args).code;
 			const rows = context.expanded && typeof code === "string" ? [safe(code)] : [];
 			const hint = stripAnsi(keyHint("app.tools.expand", context.expanded ? "to collapse" : "to expand"));
@@ -145,7 +147,7 @@ export function decorateCodemodeTool(tool: ToolDefinition): ToolDefinition {
 			const calls = observedCalls(result.details);
 			const isError = context.isError || record(result).isError === true;
 			const failures = calls.filter(failed).length;
-			const tone = isError || failures > 0 ? CARD_TONE.ERROR : options.isPartial ? CARD_TONE.WARNING : CARD_TONE.INFO;
+			const tone = isError || failures > 0 ? CARD_TONE.ERROR : options.isPartial ? CARD_TONE.RUNNING : CARD_TONE.INFO;
 			const shown = options.expanded ? calls : calls.slice(0, COLLAPSED_CALL_LIMIT);
 			const output = textOutput(result, context.showImages).flatMap((text) => {
 				const rows = text.split("\n");

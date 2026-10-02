@@ -92,6 +92,8 @@ const STATUS_GLYPH: Record<TodoStatus, string> = { [TODO_STATUS.PENDING]: "○",
 const STATUS_ROLE: Record<TodoStatus, string> = { [TODO_STATUS.PENDING]: "text", [TODO_STATUS.IN_PROGRESS]: "accent", [TODO_STATUS.DONE]: "dim" };
 const GLYPH_ROLE: Record<TodoStatus, string> = { [TODO_STATUS.PENDING]: "muted", [TODO_STATUS.IN_PROGRESS]: "accent", [TODO_STATUS.DONE]: "success" };
 const NOTE_ROLE = "muted";
+// The one genuine warning on the Todos card.
+const STALE_ROLE = "warning";
 const STALE_AFTER_TURNS = 2;
 /** Above this many rows the finished tasks fold into one line and the rest is capped. */
 const ROW_CAP = 12;
@@ -281,9 +283,13 @@ function collapsedRow(state: TodoState, theme: TodoTheme, inner: number): string
 	return `${theme.fg(GLYPH_ROLE[TODO_STATUS.PENDING], STATUS_GLYPH[TODO_STATUS.PENDING])} ${theme.fg(NOTE_ROLE, `${open} open`)}`;
 }
 
-/** The tone the Todos card renders in: warning once the list went stale, info otherwise. */
-export function todoCardTone(staleTurns: number): CardTone {
-	return staleTurns >= STALE_AFTER_TURNS ? CARD_TONE.WARNING : CARD_TONE.INFO;
+/**
+ * The tone the Todos card renders in: always info (green). A stale list is a
+ * warning about one fact, so only its `stale · N turns` note is yellow; the
+ * frame and title never take the warning tone.
+ */
+export function todoCardTone(_staleTurns: number): CardTone {
+	return CARD_TONE.INFO;
 }
 
 export function renderTodoCard(state: TodoState, theme: TodoTheme, width: number, options: TodoRenderOptions): string[] {
@@ -301,7 +307,7 @@ export function renderTodoCard(state: TodoState, theme: TodoTheme, width: number
 	// Content columns of the card body in the active style (float is narrower).
 	const inner = panelInnerWidth(theme, width, tone);
 	const rows = options.collapsed ? [collapsedRow(state, theme, inner)] : options.scrollable ? state.tasks.map((task) => taskRow(task, theme, inner)) : bodyRows(state, theme, inner);
-	const body = stale ? [theme.fg(NOTE_ROLE, `stale · ${options.staleTurns} turns`), ...rows] : rows;
+	const body = stale ? [theme.fg(STALE_ROLE, `stale · ${options.staleTurns} turns`), ...rows] : rows;
 	// The clickable control paints the shared hover role while hovered --
 	// same treatment every other clickable surface uses -- instead of its
 	// ordinary accent role.

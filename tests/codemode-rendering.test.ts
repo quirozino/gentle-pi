@@ -342,7 +342,7 @@ test("Code components repaint semantic colors after theme invalidation without b
 
 test("collapsed Code output has a fixed physical row budget and semantic tones", () => {
 	const tool = registeredCodemode();
-	for (const [isError, isPartial, expected] of [[false, false, "border"], [true, false, "error"], [false, true, "warning"]] as const) {
+	for (const [isError, isPartial, expected] of [[false, false, "border"], [true, false, "error"], [false, true, "accent"]] as const) {
 		const roles: string[] = [];
 		const painted = { fg: (role: string, text: string) => { roles.push(role); return text; } };
 		const ctx = context({ isError, isPartial });
@@ -442,7 +442,7 @@ test("a running Code card closes its own frame with one running row until a resu
 	assert.match(running[2]!, /^╰─+╯$/);
 	for (const row of running) assert.equal(visibleWidth(row), 70);
 	assert.ok(roles.includes("muted:running…"), "the running row is muted");
-	assert.ok(roles.includes("warning:╰"), "the running frame keeps the pending tone");
+	assert.ok(roles.includes("accent:╰"), "the running frame takes the running tone (green), never warning");
 	for (const width of [0, 1, 2, 3, 4, 5, 6, 7, 8]) {
 		const rows = piRow(tool, undefined, pending(), width);
 		assert.ok(rows.every((row) => visibleWidth(row) <= width), `width ${width}`);

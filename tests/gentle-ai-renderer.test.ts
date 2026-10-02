@@ -288,8 +288,8 @@ test("native context failures keep red useful previews and promote replay state"
 	roles.length = 0;
 	const partial = renderGentleAiResult(result, { expanded: false, isPartial: true }, theme, { state: {} });
 	assert.match(partial.render(80).join("\n"), /authority unavailable/);
-	// A partial result continues the running call, which stays on the info tone.
-	assert.ok(roles.includes("border"));
+	// A partial result continues the running call, which takes the running tone (green accent).
+	assert.ok(roles.includes("accent"));
 	assert.ok(!roles.includes("warning"));
 	assert.ok(!roles.includes("success"));
 	roles.length = 0;
@@ -362,7 +362,7 @@ test("a seeded replay with a frozen end arms no ticking timer", () => {
 
 const sweepTheme = {
 	fg(color: string, text: string) {
-		return color === "border" || color === "accent" || color === "success" || color === "error" ? `<${color}>${text}</${color}>` : text;
+		return color === "border" || color === "accent" || color === "text" || color === "success" || color === "error" ? `<${color}>${text}</${color}>` : text;
 	},
 };
 
@@ -391,7 +391,7 @@ function renderLive(context: Record<string, unknown>, now: number, detail = "$ g
 	return renderGentleAiLifecycleCall("review capture", sweepTheme, context as never, detail, now).render(80);
 }
 
-test("a running Gentle AI card sweeps a 3-cell accent pulse around its frame", (t) => {
+test("a running Gentle AI card sweeps a 3-cell contrast pulse around its accent frame", (t) => {
 	t.mock.timers.enable({ apis: ["setTimeout"] });
 	const context = liveContext();
 	renderLive(context, 1_000); // stamps the live start
@@ -399,7 +399,7 @@ test("a running Gentle AI card sweeps a 3-cell accent pulse around its frame", (
 	const plain = renderLive(liveContext({ state: context.state, sweep: false }), 1_000 + 160 * 10);
 	const pulsed = pulsedCells(swept, plain);
 	assert.ok(pulsed.length > 0 && pulsed.length <= 3, `pulse cells: ${pulsed.join(" ")}`);
-	for (const cell of pulsed) assert.match(cell, /:accent$/);
+	for (const cell of pulsed) assert.match(cell, /:text$/);
 	assert.equal(swept.length, 3); // top + detail + bottom: the whole frame is swept
 });
 
@@ -495,7 +495,7 @@ test("a preparing card pulses once its arguments are seen streaming", (t) => {
 	const plain = renderLive(preparingContext({}, { lineageId: "l" }, false), 1_000 + 160 * 10);
 	const pulsed = pulsedCells(swept, plain);
 	assert.ok(pulsed.length > 0 && pulsed.length <= 3, `pulse cells: ${pulsed.join(" ")}`);
-	for (const cell of pulsed) assert.match(cell, /:accent$/);
+	for (const cell of pulsed) assert.match(cell, /:text$/);
 	assert.equal(stateStartedAt(state), undefined, "streaming arguments is not execution: no duration is invented");
 	assert.notEqual(statePendingTimer(state), undefined, "a streaming preparing row wakes itself to move the pulse");
 });
@@ -742,9 +742,9 @@ test("float rose cards keep the elapsed time on the blank closing row and add no
 	assert.match(plain[2]!, /^ ╰─+ 3s ╯ $/);
 	assert.match(plain[3]!, /^ │ working +│ $/);
 	assert.equal(plain.length, 4);
-	// The fork keeps a running call on the info tone, so it paints the info
-	// (tool success) background rather than the pending one.
-	for (const line of rows) assert.ok(line.startsWith(" \x1b[48;5;22m"), JSON.stringify(line));
+	// A running call takes the running tone, so it paints the pending tool
+	// background (green frame, never the warning yellow).
+	for (const line of rows) assert.ok(line.startsWith(" \x1b[48;5;58m"), JSON.stringify(line));
 });
 
 test("float rose error results paint the error background on every row", () => {

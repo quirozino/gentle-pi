@@ -122,10 +122,10 @@ test("framePromptLines stays width-safe at narrow widths with the longest ODD ph
 	assert.match(stripAnsi(comfortable[0]), /implementing…/);
 });
 
-test("petalTone rests bright, walks the rose ramp while working, and turns to warning when queued", () => {
+test("petalTone rests bright, walks the rose ramp while working, and stays green (accent, never warning) when queued", () => {
 	assert.equal(petalTone(PROMPT_STATE.IDLE, 2), "borderAccent");
 	assert.deepEqual([0, 1, 2, 3, 4].map((tick) => petalTone(PROMPT_STATE.WORKING, tick)), ["mdQuoteBorder", "thinkingHigh", "accent", "borderAccent", "accent"]);
-	assert.equal(petalTone(PROMPT_STATE.QUEUED, 1), "warning");
+	assert.equal(petalTone(PROMPT_STATE.QUEUED, 1), "accent");
 });
 
 test("petalGlyph spins through the flowers while working and rests otherwise", () => {
@@ -145,7 +145,7 @@ test("framePromptLines scans the working word while preserving the frame and que
 	assert.equal(visibleWidth(workingPlain[0]), 40);
 
 	const queued = framePromptLines(editorLines(40), 40, options({ state: PROMPT_STATE.QUEUED }));
-	assert.match(queued[0], /<warning>✿<\/warning>/);
+	assert.match(queued[0], /<accent>✿<\/accent>/);
 	assert.match(queued[0], /<muted>queued<\/muted>/);
 	const queuedPlain = framePromptLines(editorLines(40), 40, options({ state: PROMPT_STATE.QUEUED, fg: plain }));
 	assert.match(stripAnsi(queuedPlain[0]), /^╭─ ✿ queued ─+╮$/);
