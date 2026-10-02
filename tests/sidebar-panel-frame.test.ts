@@ -107,7 +107,7 @@ test("mouse selection skips the outer and nested frame glyphs of the Status pane
 
 test("the header bar rule follows the double frame", () => {
 	assert.equal(renderShellHeaderRule(theme, 12), "═".repeat(12), "float style");
-	assert.equal(renderShellHeaderRule({ fg: theme.fg }, 12), "═".repeat(12), "outlined style (no background)");
+	assert.equal(renderShellHeaderRule({ fg: theme.fg, bold: theme.bold }, 12), "═".repeat(12), "outlined style (no background)");
 	assert.equal(renderShellHeaderRule(tagged, 4), "<border>════</border>", "the rule keeps the border role");
 	assert.equal(renderShellHeaderRule(theme, 0), "");
 	const chrome = renderShellHeaderChrome(buildShellHeaderModel(model()), theme, 60, "alt+u");
