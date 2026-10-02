@@ -408,6 +408,17 @@ Baseline: 1 known failure ("grouped Status preserves structured fields").
   pi-mcp-adapter package registers `/mcp`, so Pi skips its built-in `mcp`
   (environment, not this branch).
 
+- RDD T8-T14: full range (37 files, 1732 lines) hit `lens_context_budget_exceeded`
+  (also needed a full `gentle-ai sync`: `sync --agent claude-code` did not clear
+  `managed_assets_outdated`). Reviewed in two slices from detached worktrees,
+  consent granted for each, both approved and acknowledged:
+  A acb8ebb08..669458995 (30 files, 822 lines), B 669458995..37f1f0d9a
+  (11 files, 912 lines). Advisory follow-ups (non-blocking): narrow Status
+  frame content (shell-bar.ts:363); cancelled Code frame unasserted
+  (card-tone-semantics.test.ts:113); window-frame env override injection
+  (gentle-shell.ts:2143); animator wiring untested (gentle-shell.ts:2223-2240);
+  static rail columns (shell-sidebar-layout.ts:142).
+
 ## Next step
 User restarts pi (or `/reload`) to see T7–T14; RDD review of the work-unit
 commits (T8–T14) is the parent's call.
