@@ -449,3 +449,28 @@ test("railColumns and framed() read the live frame state, not the install-time o
 		assert.equal(sidebarState(h.tui).framed?.(), false, "a terminal too small to frame is not framed");
 	} finally { h.dispose(); }
 });
+
+test("railColumns is a live accessor that survives spreads and older builds assigning it", async () => {
+	let on = false;
+	const h = await harness(160, 24, insetOptions(() => on));
+	try {
+		const state = sidebarState(h.tui) as unknown as Record<string, unknown>;
+		const descriptor = Object.getOwnPropertyDescriptor(state, "railColumns")!;
+		assert.equal(typeof descriptor.get, "function", "published as a getter so it tracks the frame");
+		assert.equal(descriptor.enumerable, true, "a spread copies the current value");
+		on = true;
+		h.tui.requestRender(true);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		assert.equal({ ...state }.railColumns, 55, "a spread snapshots the live value");
+		// A build from before the getter (still loaded until /reload) assigns a
+		// plain number; strict-mode code must not throw on a getter-only property.
+		assert.doesNotThrow(() => { state.railColumns = 53; });
+		assert.equal(state.railColumns, 53, "the assigning build owns the value until the next install");
+		const reinstall = installSidebar(h.tui, theme, undefined, undefined, undefined, { windowFrame: () => on });
+		try {
+			assert.equal(state.railColumns, 55, "a fresh install restores the live getter");
+			on = false;
+			assert.equal(state.railColumns, 53);
+		} finally { reinstall(); }
+	} finally { h.dispose(); }
+});

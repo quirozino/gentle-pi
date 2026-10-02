@@ -147,11 +147,17 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 	state.headerOwnsStatus = headerOwnsStatus;
 	// The frame's right edge and its padding column sit outside the rail, two
 	// more columns from the editor. Read live: the frame turns on and off with the setting and with
-	// terminal size, and the state outlives this install.
+	// terminal size, and the state outlives this install. A plain assignment
+	// (a build from before this getter, still loaded until /reload) turns it
+	// back into a data property instead of throwing on a getter-only field;
+	// the next install restores the live getter.
 	Object.defineProperty(state, "railColumns", {
 		configurable: true,
 		enumerable: true,
 		get: () => SIDEBAR_RAIL_COLUMNS + (framed() ? WINDOW_FRAME_INSET / 2 : 0),
+		set: (value: number | undefined) => {
+			Object.defineProperty(state, "railColumns", { configurable: true, enumerable: true, writable: true, value });
+		},
 	});
 	state.ownsHost = () => !stopped && host.mode === "fullscreen" && layoutColumns() >= SIDEBAR_BREAKPOINT && (placement() === "auto" || placement() === "right") && !!host.layoutRoot && roots.has(host.layoutRoot);
 	const rail: Component = {
