@@ -47,6 +47,10 @@ and surface missing state, under the custom Matrix-Green theme.
   (`error`) for failures, problems and error/abort stops; done keeps its
   finished look. Remap running/pending tones off `warning`, keep the sweep
   visible against the new frame role.
+- T14 (2026-10-02): the boxed Status title plays an adaptation of the user's
+  HTML loop (reveal, pause, scanner band, hold, hide, rest) inside its one
+  title row: same 3 rows and width, legible, roles only, `quality` policy
+  only, one pending redraw, none while the rail is not shown.
 
 Done outside the repo (config): `-builtin:codemode` added to
 ~/.pi/agent/settings.json `extensions` (same remedy upstream applies to the
@@ -310,6 +314,37 @@ Baseline: 1 known failure ("grouped Status preserves structured fields").
   28/28; typecheck 188 recorded, no regressions (10 pairs improved, baseline
   not shrunk); `pnpm test` 4694 tests, 1 failure (baseline "grouped
   Status"), provider-contract PASS, runtime-harness PASS.
+
+- [x] T14 Status title animation. Route: inline (writer subagent executing
+  directly; new pure module + 2 small integrations).
+  `lib/status-title-animation.ts`: pure timeline `statusTitleFrame(length,
+  elapsed)` (reveal 1 char / 40 ms frame, pause 250 ms, scan: a 3-cell band
+  over length+2 steps in ~1.25 s, hold 1.8 s, hide 3 chars / frame, rest
+  0.5 s; ~4.45 s loop for `(o_o) Status`; no jitter, deterministic);
+  `paintStatusTitle` (hidden characters are spaces of their own width; band
+  ladder `success`/`text`/`success` over the accent title, a space under the
+  band keeps the base role); `StatusTitleAnimator` (epoch clock, policy gate,
+  one pending wake at the next frame change, dispose). The HTML's vertical
+  scan line cannot exist in one row: folded into the same band pass.
+  `lib/shell-bar.ts`: `ShellBarModel.statusTitle` frame, `statusTitleText()`,
+  statusBoxRows paints the title through it (centring/clipping unchanged;
+  neon and float). `extensions/gentle-shell.ts`: the Status rail part's
+  digest reads the frame and schedules the wake (the rail asks for digests
+  only on passes it paints, so a hidden/narrow rail ends the chain), the
+  frame key joins the digest so only the Status section re-renders, render
+  draws that frame; gate = the shell's live animation policy `quality`;
+  animator disposed with the part.
+  Tests: new tests/status-title-animation.test.ts (phase order, one char per
+  reveal frame, band -1..N, hide left to right, loop repeat; constant width
+  in every frame; role ladder via tag theme; Status card rows/widths
+  constant and only the title row changes at widths 20..60, float and neon,
+  title stays one row between its box rules; band roles painted; animator
+  static and unscheduled under non-quality, one wake, dispose; real
+  TuiAltScreen: at 100 cols the rail never asks and no wake is pending, at
+  160 cols it asks and one wake is pending). gentle-shell "T3 live style
+  Cards" pins `performance` policy for its byte comparisons.
+  Live: tmux 200x55, 40 samples over ~5 s show reveal (`(o`, `(o_o) St`),
+  full title, hide (`      Status`) and blank rest frames.
 
 ## Progress / evidence
 - Commits: `e43016c30` (T1 + this document), `ec10f4ad4` (T2),

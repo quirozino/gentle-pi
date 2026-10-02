@@ -22,7 +22,7 @@ import { REVIEW_SIDEBAR_EVENT } from "../lib/review-sidebar-state.ts";
 import { afterShellChrome } from "../lib/shell-chrome-gate.ts";
 import type { NativeReviewCli } from "../lib/native-review-cli.ts";
 import { resolveVisualSettings, writeVisualSettings } from "../lib/visual-customization-policy.ts";
-import { resolveAnimationPolicy } from "../lib/animation-policy.ts";
+import { resolveAnimationPolicy, writeAnimationPolicy } from "../lib/animation-policy.ts";
 import { resolveVimPolicy, writeVimPolicy } from "../lib/vim-policy.ts";
 import { resolveHistoryCapturePolicy, writeHistoryCapturePolicy } from "../lib/history-capture-policy.ts";
 import { readBannerConfig } from "../extensions/startup-banner.ts";
@@ -2981,6 +2981,8 @@ test("T3 live style Cards action refreshes cached TODO, header, footer and promp
 	const previous = cardStyle();
 	t.after(() => setCardStyle(previous));
 	writeCardStyle(CARD_STYLE.NEON, { gentlePiConfigHome: home });
+	// Byte comparisons across frames need the static Status title.
+	writeAnimationPolicy("performance", { gentlePiConfigHome: home });
 	const { pi, handlers, commands } = fakePi();
 	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home }, { activeProfile: () => "team" });
 	const { ctx, ui, overlayReady } = fakeContext();
@@ -3059,6 +3061,8 @@ test("T3 live style failed persistence leaves live style and sidebar revision un
 	const previous = cardStyle();
 	t.after(() => setCardStyle(previous));
 	writeCardStyle(CARD_STYLE.NEON, { gentlePiConfigHome: home });
+	// Byte comparisons across frames need the static Status title.
+	writeAnimationPolicy("performance", { gentlePiConfigHome: home });
 	const { pi, handlers, commands } = fakePi();
 	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home }, { activeProfile: () => "team" });
 	const { ctx, ui, overlayReady } = fakeContext();

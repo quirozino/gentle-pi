@@ -4,6 +4,7 @@ import { allowanceGroupsSupported, groupUsageLimits, modelUsageRows, renderUsage
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 import { CARD_TONE, cardBottom, cardLine, floatRows, panelHeaderRow, panelInnerWidth, renderCard } from "./shell-card.ts";
 import { SHELL_GLYPHS } from "./shell-glyphs.ts";
+import { paintStatusTitle, type StatusTitleFrame } from "./status-title-animation.ts";
 import { bannerFrame } from "./shell-sidebar-banner.ts";
 import { REVIEW_SCOPE_UNAVAILABLE, REVIEW_SIDEBAR_LABELS, type ReviewSidebarSnapshot } from "./review-sidebar-state.ts";
 import type { VisualSettings } from "./visual-customization-policy.ts";
@@ -54,6 +55,8 @@ export interface ShellBarModel {
 	 * Absent means static output, which is what every narrow-mode caller gets.
 	 */
 	tick?: number;
+	/** The Status title box animation frame; absent draws the static title. */
+	statusTitle?: StatusTitleFrame;
 }
 
 // The live header row above the fullscreen rail: session identity plus the
@@ -370,14 +373,14 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 	// panel header: the title box replaces it. Static: Status has no running
 	// state, so it never sweeps.
 	if (panelHeaderRow(theme, width) === 1) {
-		const box = statusBoxRows(groups, theme, innerWidth, presentation, true);
+		const box = statusBoxRows(groups, theme, innerWidth, presentation, true, model.statusTitle);
 		return floatRows(CARD_TONE.INFO, theme, width, (inner) => ({
 			openTop: true,
 			body: box.map((row) => cardLine(row, CARD_TONE.INFO, theme, inner)),
 			bottom: cardBottom(CARD_TONE.INFO, theme, inner),
 		}));
 	}
-	return renderStatusPanel(groups, theme, width, presentation);
+	return renderStatusPanel(groups, theme, width, presentation, model.statusTitle);
 }
 
 interface StatusGroup {
@@ -387,6 +390,11 @@ interface StatusGroup {
 	/** Label/value rows: the value sits flush right when both fit on one row. */
 	pairs?: ReadonlyArray<readonly [string, string]>;
 	lines: string[];
+}
+
+/** The text of the boxed Status title, e.g. `(o_o) Status`. */
+export function statusTitleText(): string {
+	return `${SHELL_GLYPHS.status ?? SHELL_GLYPHS.card} Status`;
 }
 
 // Inner boxes are double-ruled; the rules between groups stay single so the
@@ -401,13 +409,13 @@ const STATUS_PANEL_MIN_CONTENT = 12;
 // one inner box whose groups are split by tee rules. Same facts as the plain
 // card; only the layout differs. This is the neon (outlined) rendering; the
 // float style wraps the same group box in its own panel chrome instead.
-function renderStatusPanel(groups: StatusGroup[], theme: ShellBarTheme, width: number, presentation?: Presentation): string[] {
+function renderStatusPanel(groups: StatusGroup[], theme: ShellBarTheme, width: number, presentation?: Presentation, titleFrame?: StatusTitleFrame): string[] {
 	const outer = SHELL_GLYPHS.frame;
 	const frame = (text: string) => theme.fg(STATUS_PANEL_ROLE.FRAME, text);
 	const shell = (row: string) => `${frame(outer.vertical)} ${row} ${frame(outer.vertical)}`;
 	return [
 		frame(outer.topLeft + outer.horizontal.repeat(width - 2) + outer.topRight),
-		...statusBoxRows(groups, theme, width - 4, presentation, true).map(shell),
+		...statusBoxRows(groups, theme, width - 4, presentation, true, titleFrame).map(shell),
 		frame(outer.bottomLeft + outer.horizontal.repeat(width - 2) + outer.bottomRight),
 	];
 }
@@ -415,7 +423,7 @@ function renderStatusPanel(groups: StatusGroup[], theme: ShellBarTheme, width: n
 // The double-ruled boxes of the Status panel, each row exactly `boxWidth`
 // columns: an optional boxed, centred title, then one box whose groups are
 // split by single tee rules.
-function statusBoxRows(groups: StatusGroup[], theme: ShellBarTheme, boxWidth: number, presentation: Presentation | undefined, withTitle: boolean): string[] {
+function statusBoxRows(groups: StatusGroup[], theme: ShellBarTheme, boxWidth: number, presentation: Presentation | undefined, withTitle: boolean, titleFrame?: StatusTitleFrame): string[] {
 	const frame = (text: string) => theme.fg(STATUS_PANEL_ROLE.FRAME, text);
 	const content = boxWidth - 4;
 	const fit = (text: string, size: number) => {
@@ -432,7 +440,9 @@ function statusBoxRows(groups: StatusGroup[], theme: ShellBarTheme, boxWidth: nu
 		return [keyText, ...wrapTextWithAnsi(valueText, content - 1).map((part) => ` ${part}`)];
 	};
 
-	const title = theme.fg(STATUS_PANEL_ROLE.TITLE, theme.bold(`${SHELL_GLYPHS.status ?? SHELL_GLYPHS.card} Status`));
+	// The animated title keeps the static title's width (hidden characters are
+	// spaces), so centring and clipping below never move.
+	const title = paintStatusTitle(statusTitleText(), theme, STATUS_PANEL_ROLE.TITLE, titleFrame);
 	const titleWidth = Math.min(visibleWidth(title), boxWidth - 2);
 	const lead = Math.floor((boxWidth - 2 - titleWidth) / 2);
 	const titleRow = `${frame(PANEL.vertical)}${" ".repeat(lead)}${fit(title, boxWidth - 2 - lead)}${frame(PANEL.vertical)}`;

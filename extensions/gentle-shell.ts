@@ -8,7 +8,7 @@ import { profilesFilePath, profileRoleEntries, readProfileOrchestrator, readProf
 import { resolveProfilePin } from "../lib/agent-profile-pin.ts";
 import * as os from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { buildShellHeaderModel, renderShellBar, renderShellBelowInputFloat, renderShellBottomOnlyBar, renderShellHeaderChrome, renderShellSidebarBar, shellBarEnabled, shellEnabled, shellHeaderUsageHit, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
+import { buildShellHeaderModel, renderShellBar, renderShellBelowInputFloat, renderShellBottomOnlyBar, renderShellHeaderChrome, renderShellSidebarBar, shellBarEnabled, shellEnabled, shellHeaderUsageHit, statusTitleText, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
 import { CHANGE_STATUS, RootBranchLabels, renderChangesWidget, type ChangedFile, type ChangesModel, type GitRunner, type WorktreeChanges } from "../lib/shell-changes.ts";
 import { WorktreeChangesView } from "../lib/shell-changes-view.ts";
 import { SessionWorktreeRegistry, resolveSessionWorktree, worktreeGitEnvironment, type WorktreeResolver, type WorktreeIdentity } from "../lib/session-worktree-registry.ts";
@@ -147,6 +147,7 @@ import { sidebarHeader, sidebarPart, sidebarState, VISUAL_SETTINGS_CHANGED, type
 import { installSelectionFrameTrim } from "../lib/selection-frame-trim.ts";
 import { installSidebar, invalidateSidebar, narrowStatusOwner, STATUS_OWNER } from "../lib/shell-sidebar-layout.ts";
 import { resolveWindowFrame } from "../lib/window-frame.ts";
+import { StatusTitleAnimator, statusTitleKey, type StatusTitleFrame } from "../lib/status-title-animation.ts";
 import { SessionChanges, SESSION_CHANGE_EVENT } from "../lib/session-changes.ts";
 import { REVIEW_SIDEBAR_EVENT, isReviewSidebarSnapshot, type ReviewSidebarSnapshot } from "../lib/review-sidebar-state.ts";
 import { installSessionChangeCapture } from "../lib/session-change-capture.ts";
@@ -2215,9 +2216,26 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					return { handled: true, render: true };
 				},
 			};
+			// The Status title box animation. The rail asks every part for its
+			// digest on each pass it shows, so the frame is read (and the one
+			// pending wake scheduled) only while the rail paints: a hidden or
+			// narrow rail never asks, and the chain stops by itself.
+			const titleAnimator = new StatusTitleAnimator({
+				now: () => deps.now(),
+				// The shell's own animation policy (`quality` only), the gate the
+				// card sweeps use; /gentle:animations updates it live.
+				enabled: () => animationPolicy === "quality",
+				requestRender: () => tui.requestRender(),
+				text: statusTitleText,
+			});
+			let titleFrame: StatusTitleFrame | undefined;
 			const part = sidebarPart(tui, "footer", bottomBar, {
-				digest: () => JSON.stringify([footerModel(), tracker.model, visualSettings, cardStyle()]),
-				render: (width) => renderShellSidebarBar(footerModel(), theme, width, visualSettings),
+				digest: () => {
+					titleFrame = titleAnimator.frame();
+					titleAnimator.schedule(titleFrame);
+					return JSON.stringify([footerModel(), tracker.model, visualSettings, cardStyle(), statusTitleKey(titleFrame)]);
+				},
+				render: (width) => renderShellSidebarBar({ ...footerModel(), statusTitle: titleFrame }, theme, width, visualSettings),
 				invalidate() {},
 			});
 			// The header row carries everything that ticks every frame (model,
@@ -2263,7 +2281,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					return rows.length === 0 && (tui as TUI & { mode?: string }).mode === "fullscreen"
 						&& resolvePromptLayout(width, cardStyle(), theme.bg?.bind(theme)).background ? [""] : rows;
 				},
-				dispose() { untrim(); ctx.ui.setWidget(HEADER_WIDGET_KEY, undefined); disposeHeader(); uninstall(); part.dispose(); if (sidebarTui === tui) { sidebarTui = undefined; groupedChangesOwner = () => false; } } };
+				dispose() { titleAnimator.dispose(); untrim(); ctx.ui.setWidget(HEADER_WIDGET_KEY, undefined); disposeHeader(); uninstall(); part.dispose(); if (sidebarTui === tui) { sidebarTui = undefined; groupedChangesOwner = () => false; } } };
 		});
 		shellChrome.ready();
 		void refreshUsage(ctx, true).catch(() => undefined);
