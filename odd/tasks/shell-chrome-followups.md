@@ -22,6 +22,13 @@ and surface missing state, under the custom Matrix-Green theme.
   `scripts/patch-engram-chrome.mjs` still applies (or adapt it).
 - T6 (bug, 2026-10-01): on `/reload` the `🌹 RDD on (default)` chip flashes
   on Pi's native footer line before moving into the Status card.
+- T7 (2026-10-02): float cards lost their frame. The Agents card (widget and
+  conversation cards), Pi 1.0's `λ Code` codemode card and the quiet tool
+  cards (edit, write, bash, read, ...) render as filled panels with a left
+  accent bar only. Frame them with the configured frame (double with
+  glyphs.frame=double) inside the float background, and sweep a pulse around
+  the whole perimeter while a card runs; static once it finishes or with
+  animations off. Neon unchanged; selection trim and widths must hold.
 
 Done outside the repo (config): `-builtin:codemode` added to
 ~/.pi/agent/settings.json `extensions` (same remedy upstream applies to the
@@ -102,6 +109,55 @@ Baseline: 1 known failure ("grouped Status preserves structured fields").
   show `🌹 RDD on (default)` on the native footer; after, 34 reloading
   frames all clean, RDD first appears in the Status card (f035).
 
+- [x] T7 framed float cards + running perimeter sweep. Route: inline
+  (writer subagent executing directly; the parent delegated this unit).
+  Design: `lib/shell-card.ts` gains `FRAMED_FLOAT_CHROME`, the float layout
+  inside the frame: the top padding row becomes the top rule, the closing
+  row the bottom rule (elapsed content still rides it), heading and body are
+  side rows (`║ … ║`), the separator a blank side row. Same four frame
+  columns and the same row count as the frameless float, so
+  `panelInnerWidth`/`panelHeaderRow`(1)/`panelExtraRows`(2), hit-testing and
+  row budgets are unchanged. Framed is the float default for `floatRows`
+  and float panels; `frame: false` keeps the frameless chrome, used only by
+  the Status card and the header bar (T2 design kept; not in this request).
+  Todos is a float panel too, so it is framed with Agents (consistent rail).
+  Sweep: `floatRows(..., { sweep, split })` measures the parts, then renders
+  them again with per-row frame-cell roles (`CardPartRoles`) so the pulse
+  travels the whole perimeter (neon and framed float; the frameless float
+  keeps the accent-bar pulse). A card drawn by two components (call row +
+  partial result) shares its row counts through pi's row state (`split`),
+  so one perimeter spans both. `sweepRoles` now skips non-edge cells of
+  side rows (a padding space inside a frame run is not perimeter).
+  `lib/card-sweep.ts`: pulse at the Agents pace (10 cells / 160 ms tick,
+  `accent`), `quality` animation policy only, live rows only (execution
+  started, or arguments seen streaming; replays never), at most one pending
+  invalidate per row, cancelled by the final render. Quiet tool cards and
+  `λ Code` sweep while awaiting a result or showing a partial one; the
+  Gentle AI card reuses the same tick/policy helpers; conversation Agents
+  cards wink and sweep only while their task is unfinished (widget clock).
+  Tone semantics kept: frame and title paint the card tone (pending tool
+  cards stay `warning`/yellow, info panels `border`), the pulse paints
+  `accent` (Matrix-Green) on frame glyphs only; roles only, no hex.
+  Tests: new tests/float-card-frame.test.ts (double glyphs on Agents, Code,
+  tool and agent-result cards; role-only painting with the tag theme; the
+  pulse visits all four sides while running, incl. a split bash card;
+  static when finished / animations off / replayed; one wake per row;
+  widths never exceed 0..90; selection trim skips `║`; neon intact).
+  Float expectations in shell-card, agents-widget, gentle-ai-renderer,
+  quiet-tool-rendering, codemode-rendering, shell-todo, gentle-todo moved to
+  the framed shape; shell-card keeps frameless coverage via `frame: false`.
+  Rendering tests pin `sweep: false` in their shared contexts so running
+  rows are deterministic.
+  Commit: `5332f4c61`. Checks: 17 focused files (float-card-frame 11/11,
+  shell-card 37, agents-widget 34, gentle-ai-renderer 43, quiet-tool-rendering
+  56, codemode-rendering 28, shell-todo 20, gentle-todo 11, shell-bar 63,
+  gentle-agents 175, gentle-ai 91, selection-frame-trim 18, ...) all pass;
+  `CI=true pnpm run typecheck`: 188 recorded, no regressions; `pnpm test`:
+  4680 tests, 1 failure (baseline "grouped Status"), provider-contract PASS,
+  runtime-harness PASS. Visual: harness render (72 cols, double glyphs)
+  shows the pulse on the top, bottom and left/right edges across ticks and a
+  static frame when finished. Not checked: live pi session (needs restart).
+
 ## Progress / evidence
 - Commits: `e43016c30` (T1 + this document), `ec10f4ad4` (T2),
   `e336fe11b` + `9e57a29b3` (T3), `a2330179a` (T4).
@@ -152,5 +208,5 @@ Baseline: 1 known failure ("grouped Status preserves structured fields").
   Status"), provider-contract PASS, runtime-harness PASS.
 
 ## Next step
-User restarts pi (or `/reload`) to load the new chrome; RDD review of the
-work-unit commits is the parent's call.
+User restarts pi (or `/reload`) to see framed float cards (T7); RDD review of
+the work-unit commits is the parent's call.
