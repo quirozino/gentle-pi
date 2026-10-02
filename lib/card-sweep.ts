@@ -38,11 +38,28 @@ export interface SweepRowContext {
 	sweep?: unknown;
 }
 
+/**
+ * How long a row that is not executing stays live after its arguments last
+ * changed. pi hands a fresh args object on every streamed delta, so a stream
+ * that stops changing for this long was abandoned (an aborted turn, a dropped
+ * connection, a call that never starts): the row stops sweeping and stops
+ * scheduling redraws. A later delta or the execution start brings it back,
+ * because pi renders the row again on either.
+ */
+export const STREAM_IDLE_MS = 5000;
+
+/** Whether a streaming row whose arguments last changed at `changedAt` is still live at `now`. */
+export function streamStillLive(changedAt: number | undefined, now: number): boolean {
+	return changedAt !== undefined && now >= changedAt && now - changedAt < STREAM_IDLE_MS;
+}
+
 const SWEEP_SLOT = Symbol.for("gentle-pi.card-sweep");
 interface SweepSlot {
 	timer?: ReturnType<typeof setTimeout>;
 	args?: { value: unknown };
 	streaming?: boolean;
+	/** Clock time of the last observed argument change. */
+	changedAt?: number;
 }
 
 function slotOf(state: unknown): SweepSlot | undefined {
@@ -55,16 +72,22 @@ function slotOf(state: unknown): SweepSlot | undefined {
  * The sweep a tool row draws now, or undefined. `running` is the renderer's
  * own unfinished state (no final result yet). The row must be live: pi
  * started executing it, or its arguments changed between renders while still
- * incomplete (streaming). Records the argument identity in the row state.
+ * incomplete (streaming) within the last STREAM_IDLE_MS. Records the argument
+ * identity and the time it last changed in the row state.
  */
 export function liveCardSweep(context: SweepRowContext | undefined, running: boolean, now: number): CardSweep | undefined {
 	const slot = slotOf(context?.state);
 	if (!context || !slot || !running) return undefined;
 	if (context.executionStarted !== true && context.argsComplete !== true) {
-		if (slot.args !== undefined && slot.args.value !== context.args) slot.streaming = true;
+		if (slot.args !== undefined && slot.args.value !== context.args) {
+			slot.streaming = true;
+			slot.changedAt = now;
+		}
 		slot.args = { value: context.args };
 	}
-	const live = context.executionStarted === true || slot.streaming === true;
+	// An abandoned stream (no new delta, no execution start) goes still, so its
+	// self-scheduled redraws end instead of running forever.
+	const live = context.executionStarted === true || (slot.streaming === true && streamStillLive(slot.changedAt, now));
 	if (!live) return undefined;
 	const enabled = typeof context.sweep === "boolean" ? context.sweep : sweepAnimationsEnabled(now);
 	return enabled ? cardSweepAt(now) : undefined;

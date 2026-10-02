@@ -7,6 +7,7 @@ import { Box, visibleWidth } from "@earendil-works/pi-tui";
 import { renderGentleAiLifecycleCall, renderGentleAiResult, GentleAiCallCard } from "../lib/gentle-ai-renderer.ts";
 import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
+import { STREAM_IDLE_MS } from "../lib/card-sweep.ts";
 
 initTheme("dark");
 
@@ -498,6 +499,24 @@ test("a preparing card pulses once its arguments are seen streaming", (t) => {
 	for (const cell of pulsed) assert.match(cell, /:text$/);
 	assert.equal(stateStartedAt(state), undefined, "streaming arguments is not execution: no duration is invented");
 	assert.notEqual(statePendingTimer(state), undefined, "a streaming preparing row wakes itself to move the pulse");
+});
+
+test("an abandoned preparing stream goes still and stops waking itself", (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const state: Record<string, unknown> = {};
+	const args = { lineageId: "l", collectBindings: ["b"] };
+	renderLive(preparingContext(state, { lineageId: "l" }), 1_000);
+	renderLive(preparingContext(state, args), 2_000);
+	assert.notEqual(statePendingTimer(state), undefined, "a live stream wakes itself");
+	// The stream stops: only the row's own wakes render it, with the same arguments.
+	renderLive(preparingContext(state, args), 2_000 + STREAM_IDLE_MS - 1);
+	assert.notEqual(statePendingTimer(state), undefined, "still live just inside the idle window");
+	const still = renderLive(preparingContext(state, args), 2_000 + STREAM_IDLE_MS);
+	assert.equal(statePendingTimer(state), undefined, "an abandoned stream schedules no further redraw");
+	assert.deepEqual(still, renderLive(preparingContext({}, args, false), 2_000 + STREAM_IDLE_MS), "and draws the static frame");
+	// A new delta revives it.
+	renderLive(preparingContext(state, { ...args, more: true }), 2_000 + STREAM_IDLE_MS + 100);
+	assert.notEqual(statePendingTimer(state), undefined, "a new delta makes the row live again");
 });
 
 test("a history row stuck in preparing with unchanged arguments never pulses or ticks", (t) => {

@@ -3,7 +3,7 @@ import { truncateToWidth } from "@earendil-works/pi-tui";
 import { type GentleAiTimingLookup } from "./gentle-ai-elapsed-store.ts";
 import { CARD_TONE, cardBodyRows, cardBottom, cardInnerWidth, cardLine, cardTop, floatRows, type Card, type CardTheme, type CardTone } from "./shell-card.ts";
 import { formatElapsed } from "./agents-widget.ts";
-import { cardSweepAt, CARD_SWEEP_TICK_MS, sweepAnimationsEnabled } from "./card-sweep.ts";
+import { cardSweepAt, CARD_SWEEP_TICK_MS, streamStillLive, sweepAnimationsEnabled } from "./card-sweep.ts";
 import { sanitizeTerminalText, stripAnsi } from "./terminal-theme.ts";
 
 // Gentle AI tool cards: every call into the gentle-ai binary and every
@@ -35,6 +35,8 @@ export interface GentleAiRenderState {
 	 * is live evidence that the model is still writing this call. */
 	preparingArgs?: { value: unknown };
 	argsStreaming?: boolean;
+	/** Clock time of the last observed argument change; an abandoned stream goes still. */
+	argsChangedAt?: number;
 }
 
 export interface GentleAiRenderContext {
@@ -327,7 +329,10 @@ export function renderGentleAiLifecycleCall(
 				? LIFECYCLE_STATUS.PREPARING
 				: LIFECYCLE_STATUS.RUNNING;
 	if (state && status === LIFECYCLE_STATUS.PREPARING && context?.executionStarted !== true) {
-		if (state.preparingArgs !== undefined && state.preparingArgs.value !== context?.args) state.argsStreaming = true;
+		if (state.preparingArgs !== undefined && state.preparingArgs.value !== context?.args) {
+			state.argsStreaming = true;
+			state.argsChangedAt = now;
+		}
 		state.preparingArgs = { value: context?.args };
 	}
 	if (state) {
@@ -355,9 +360,10 @@ export function renderGentleAiLifecycleCall(
 		: new GentleAiCallCard();
 	if (state) state.lifecycleComponent = true;
 	// Sweep only a live, open card: a replayed row never stamps a start, and a
-	// preparing row counts as live only once its arguments were seen streaming.
+	// preparing row counts as live only once its arguments were seen streaming,
+	// and only while that stream keeps changing (an abandoned one goes still).
 	const liveExecution = state?.startedAt !== undefined && state.endedAt === undefined;
-	const liveStreaming = status === LIFECYCLE_STATUS.PREPARING && state?.argsStreaming === true;
+	const liveStreaming = status === LIFECYCLE_STATUS.PREPARING && state?.argsStreaming === true && streamStillLive(state.argsChangedAt, now);
 	const sweeping = (status === LIFECYCLE_STATUS.RUNNING || status === LIFECYCLE_STATUS.PREPARING)
 		&& (liveExecution || liveStreaming)
 		&& (context?.sweep ?? sweepAnimationsEnabled(now));

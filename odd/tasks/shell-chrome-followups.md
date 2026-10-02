@@ -207,7 +207,27 @@ Baseline: 1 known failure ("grouped Status preserves structured fields").
   column), shell-usage and gentle-shell expectations without the mark.
   Checks: shell-usage-view + shell-usage 75/75 (before the new test 74),
   gentle-shell 252/252.
-- [ ] T11 abandoned-stream sweep stops.
+- [x] T11 abandoned-stream sweep stops (review R3-abandoned-stream-sweep).
+  Route: inline (2 source files, small). `lib/card-sweep.ts`: the row slot
+  records when its arguments last changed; a row that is not executing is
+  live only while `streamStillLive(changedAt, now)` (STREAM_IDLE_MS 5000 ms
+  since the last delta). An abandoned stream (no new delta, no execution
+  start, also argsComplete-but-never-started) goes still, and since the
+  sweep is off `scheduleCardSweep(false)` cancels the wake, so the
+  self-invalidate chain ends. A new delta or the execution start (pi renders
+  the row on either) revives it; executing rows sweep however long they
+  run. The Gentle AI preparing card had the same unbounded chain via
+  `argsStreaming`; it now records `argsChangedAt` and uses the same check.
+  R3-split-stale-geometry (shell-card.ts splitGeometry) not changed: the
+  stale count is one frame of cosmetic pulse offset that self-corrects on
+  the next render, and a fix needs component-lifecycle knowledge the split
+  slot does not have; not cheap and safe.
+  Tests: float-card-frame "an abandoned stream stops sweeping and stops
+  scheduling redraws" (live inside the window, static and zero wakes past
+  it, argsComplete-not-started goes still, a delta or execution revives);
+  gentle-ai-renderer "an abandoned preparing stream goes still and stops
+  waking itself" (pending timer cleared past the window, static frame, new
+  delta revives).
 - [ ] T12 full-window frame investigation.
 - [x] T13 running/pending cards green, failures red, warnings only yellow.
   Route: inline (writer subagent executing directly; the parent delegated

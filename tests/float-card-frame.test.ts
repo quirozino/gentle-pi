@@ -16,7 +16,7 @@ const { renderAgentsCard, SWEEP_ROLE } = await import("../lib/agents-widget.ts")
 const { TASK_STATUS } = await import("../lib/agents-protocol.ts");
 const { createQuietToolRenderer } = await import("../extensions/quiet-tools.ts");
 const { decorateCodemodeTool } = await import("../lib/codemode-renderer.ts");
-const { cardSweepAt, CARD_SWEEP_TICK_MS, liveCardSweep, scheduleCardSweep } = await import("../lib/card-sweep.ts");
+const { cardSweepAt, CARD_SWEEP_TICK_MS, liveCardSweep, scheduleCardSweep, STREAM_IDLE_MS } = await import("../lib/card-sweep.ts");
 const { trimFrameRange } = await import("../lib/selection-frame-trim.ts");
 const { stripAnsi } = await import("../lib/terminal-theme.ts");
 
@@ -229,6 +229,35 @@ test("only a live row sweeps: a replayed row without execution never does, a str
 	const streaming = { ...replay, args: { path: "/b" } };
 	assert.ok(liveCardSweep(streaming, true, 0), "new arguments while incomplete: streaming");
 	assert.equal(liveCardSweep(rowContext(), false, 0), undefined, "a finished row never sweeps");
+});
+
+test("an abandoned stream stops sweeping and stops scheduling redraws", async () => {
+	// A row whose arguments stream in and then never change again (an aborted
+	// turn, a call that never starts): only its own wakes render it.
+	let wakes = 0;
+	const state = {};
+	const streamed = (args: unknown, overrides: Record<string, unknown> = {}) => rowContext({ executionStarted: false, argsComplete: false, state, args, invalidate: () => { wakes++; }, ...overrides });
+	const render = (ctx: ReturnType<typeof rowContext>, now: number) => {
+		const clock = Date.now;
+		Date.now = () => now;
+		try { return editTool.renderCall!(ctx.args as never, theme as never, ctx as never).render(60); } finally { Date.now = clock; }
+	};
+	const args = { path: "/srv/b.md" };
+	render(streamed({ path: "/srv/b" }), 0);
+	assert.ok(roleCells(render(streamed(args), 1000), PULSE).length > 0, "a live stream sweeps");
+	assert.ok(roleCells(render(streamed(args), 1000 + STREAM_IDLE_MS - 1), PULSE).length > 0, "still live inside the idle window");
+	assert.equal(liveCardSweep(streamed(args), true, 1000 + STREAM_IDLE_MS), undefined, "past the idle window the stream is abandoned");
+	const still = render(streamed(args), 1000 + STREAM_IDLE_MS);
+	assert.deepEqual(roleCells(still, PULSE), [], "an abandoned stream draws a static frame");
+	wakes = 0;
+	await new Promise((resolve) => setTimeout(resolve, CARD_SWEEP_TICK_MS * 2));
+	assert.equal(wakes, 0, "and schedules no further redraw");
+	// Arguments that finished streaming but never started executing go still too.
+	assert.equal(liveCardSweep(streamed(args, { argsComplete: true }), true, 1000 + STREAM_IDLE_MS + 1), undefined);
+	// A new delta, or the execution start, makes the row live again.
+	assert.ok(liveCardSweep(streamed({ path: "/srv/c.md" }), true, 1000 + STREAM_IDLE_MS + 2), "a new delta revives the stream");
+	assert.ok(liveCardSweep(streamed(args, { executionStarted: true, argsComplete: true }), true, 1000 + 10 * STREAM_IDLE_MS), "an execution sweeps however long it runs");
+	scheduleCardSweep(streamed(args), false);
 });
 
 test("a sweeping row wakes itself once per tick and the final render cancels the wake", async () => {
