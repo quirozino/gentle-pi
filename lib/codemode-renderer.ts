@@ -8,9 +8,10 @@ import {
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { getCapabilities, imageFallback, type Component } from "@earendil-works/pi-tui";
+import { liveCardSweep, scheduleCardSweep, type SweepRowContext } from "./card-sweep.ts";
 import {
-	CARD_TONE, cardAwaitingResult, cardBodyRows, cardBottom, cardLine, cardRunningLine, cardTop, floatRows, markCardResult,
-	type CardRowContext, type CardTheme, type CardTone,
+	CARD_TONE, cardAwaitingResult, cardBodyText, cardBottom, cardLine, cardRunningLine, cardTop, floatRows, markCardResult,
+	type CardRowContext, type CardSweep, type CardTheme, type CardTone,
 } from "./shell-card.ts";
 import { sanitizeTerminalText, stripAnsi } from "./terminal-theme.ts";
 
@@ -80,6 +81,7 @@ function childLine(call: ObservedCall, theme: CardTheme): string {
 class CodemodeCard implements Component {
 	private readonly theme: CardTheme;
 	private readonly tone: CardTone;
+	// Content lines at the card's content columns; the card frames them.
 	private readonly body: (width: number) => string[];
 	private readonly top: boolean;
 	private readonly hint?: string;
@@ -87,8 +89,11 @@ class CodemodeCard implements Component {
 	private readonly afterBody: boolean;
 	// The call card's render context: until a result exists, the call closes the frame.
 	private readonly row?: CardRowContext;
+	// A running card sweeps its frame; `state` is the row state both parts share.
+	private readonly sweep?: CardSweep;
+	private readonly state?: unknown;
 
-	constructor(theme: CardTheme, tone: CardTone, body: (width: number) => string[], top: boolean, hint?: string, afterBody = false, row?: CardRowContext) {
+	constructor(theme: CardTheme, tone: CardTone, body: (width: number) => string[], top: boolean, hint?: string, afterBody = false, row?: CardRowContext, sweep?: CardSweep, state?: unknown) {
 		this.theme = theme;
 		this.tone = tone;
 		this.body = body;
@@ -96,18 +101,26 @@ class CodemodeCard implements Component {
 		this.hint = hint;
 		this.afterBody = afterBody;
 		this.row = row;
+		this.sweep = sweep;
+		this.state = state;
 	}
 
 	render(width: number): string[] {
 		const target = Math.max(0, Math.floor(width));
 		if (target === 0) return [];
 		const running = this.top && this.row !== undefined && cardAwaitingResult(this.row);
-		return floatRows(this.tone, this.theme, target, (inner) => ({
-			head: this.top ? [cardTop({ title: "Code", glyph: "λ", body: [], tone: this.tone }, this.theme, inner, this.hint)] : [],
-			body: running ? [...this.body(inner), cardRunningLine(this.tone, this.theme, inner)] : this.body(inner),
-			bottom: this.top && !running ? undefined : cardBottom(this.tone, this.theme, inner),
-			afterHeading: !this.top && !this.afterBody,
-		}));
+		// The call row alone while it closes the frame, else the head (call) or
+		// tail (partial result) of the card the sweep travels around.
+		const split = !this.sweep || running ? undefined : { state: this.state, part: this.top ? "head" as const : "tail" as const };
+		return floatRows(this.tone, this.theme, target, (inner, roles) => {
+			const lines = this.body(inner).map((line, index) => cardLine(line, this.tone, this.theme, inner, roles?.body(index)));
+			return {
+				head: this.top ? [cardTop({ title: "Code", glyph: "λ", body: [], tone: this.tone }, this.theme, inner, this.hint, roles?.head(0))] : [],
+				body: running ? [...lines, cardRunningLine(this.tone, this.theme, inner, roles?.body(lines.length))] : lines,
+				bottom: this.top && !running ? undefined : cardBottom(this.tone, this.theme, inner, undefined, roles?.bottom()),
+				afterHeading: !this.top && !this.afterBody,
+			};
+		}, { sweep: this.sweep, split });
 	}
 
 	invalidate(): void {}
@@ -123,7 +136,9 @@ export function decorateCodemodeTool(tool: ToolDefinition): ToolDefinition {
 			const code = record(args).code;
 			const rows = context.expanded && typeof code === "string" ? [safe(code)] : [];
 			const hint = stripAnsi(keyHint("app.tools.expand", context.expanded ? "to collapse" : "to expand"));
-			return new CodemodeCard(theme, tone, (width) => cardBodyRows(rows, tone, theme, width, { expanded: true }), true, hint, false, context);
+			const sweep = liveCardSweep(context as SweepRowContext, context.isPartial !== false && !context.isError, Date.now());
+			scheduleCardSweep(context as SweepRowContext, sweep !== undefined);
+			return new CodemodeCard(theme, tone, (width) => cardBodyText(rows, width, { expanded: true }), true, hint, false, context, sweep, context.state);
 		},
 		renderResult(result, options, theme, context) {
 			markCardResult(context?.state);
@@ -143,6 +158,8 @@ export function decorateCodemodeTool(tool: ToolDefinition): ToolDefinition {
 			const path = record(result.details).fullOutputPath;
 			// Mirrors renderCall: an expanded call shows the script as its body.
 			const callHasBody = options.expanded && typeof record(context?.args).code === "string";
+			const sweep = options.isPartial && !isError ? liveCardSweep(context as SweepRowContext, true, Date.now()) : undefined;
+			scheduleCardSweep(context as SweepRowContext, sweep !== undefined);
 			return new CodemodeCard(theme, tone, (width) => {
 				const rows = shown.flatMap((call) => [
 					childLine(call, theme),
@@ -152,17 +169,15 @@ export function decorateCodemodeTool(tool: ToolDefinition): ToolDefinition {
 				if (isError) rows.push(theme.fg("error", "Script failed"));
 				if (calls.length === 0) rows.push(theme.fg("muted", "No observed child calls"));
 				// Each child gets one collapsed physical row, preserving the observed order.
-				const body = options.expanded
-					? cardBodyRows(rows, tone, theme, width, { expanded: true })
-					: rows.map((row) => cardLine(row, tone, theme, width));
+				const body = options.expanded ? cardBodyText(rows, width, { expanded: true }) : [...rows];
 				if (!options.expanded) {
 					const errors = calls.filter((call) => call.error).map((call) => `${call.name || "name unavailable"}: ${call.error}`);
-					body.push(...cardBodyRows(errors.map((error) => theme.fg("error", error)), tone, theme, width, { expanded: false, previewRows: 2 }));
+					body.push(...cardBodyText(errors.map((error) => theme.fg("error", error)), width, { expanded: false, previewRows: 2 }));
 				}
-				body.push(...cardBodyRows(output.filter((row) => options.expanded || row.trim().length > 0).map((row) => theme.fg(isError ? "error" : "toolOutput", row)), tone, theme, width, { expanded: options.expanded, previewRows: 3 }));
-				if (typeof path === "string") body.push(...cardBodyRows([theme.fg("muted", `Full output: ${safe(path)}`)], tone, theme, width, { expanded: options.expanded, previewRows: 1 }));
+				body.push(...cardBodyText(output.filter((row) => options.expanded || row.trim().length > 0).map((row) => theme.fg(isError ? "error" : "toolOutput", row)), width, { expanded: options.expanded, previewRows: 3 }));
+				if (typeof path === "string") body.push(...cardBodyText([theme.fg("muted", `Full output: ${safe(path)}`)], width, { expanded: options.expanded, previewRows: 1 }));
 				return body;
-			}, false, undefined, callHasBody);
+			}, false, undefined, callHasBody, undefined, sweep, context?.state);
 		},
 	};
 }

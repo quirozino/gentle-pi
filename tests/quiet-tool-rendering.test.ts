@@ -37,6 +37,8 @@ const statusTheme = {
 
 function routineRenderContext(overrides: Record<string, unknown> = {}) {
 	return {
+		// Running cards sweep by the clock; rendering tests pin it off (sweep tests opt in).
+		sweep: false,
 		args: {},
 		toolCallId: "tool-call",
 		invalidate() {},
@@ -1550,13 +1552,13 @@ test("float quiet cards render the call and result as one panel with a single se
 		assert.ok(line.startsWith(" \x1b[48;5;22m"), JSON.stringify(line));
 		assert.ok(line.endsWith("\x1b[49m "), JSON.stringify(line));
 	}
-	assert.doesNotMatch(plain.join("\n"), /[╭╮╰╯│─]/);
-	assert.match(plain[0]!, /^ ▎ +$/);
-	assert.match(plain[1]!, /^ ▎ ≡ read package\.json +.*to expand {4}$/);
-	assert.match(plain[2]!, /^ ▎ +$/);
-	assert.match(plain[3]!, /^ ▎ \{ +$/);
-	assert.match(plain[4]!, /^ ▎ {3}"name": "gentle-pi" +$/);
-	assert.match(plain.at(-1)!, /^ ▎ +$/);
+	// Framed float: the configured frame (single in tests) inside the background.
+	assert.match(plain[0]!, /^ ╭─+╮ $/);
+	assert.match(plain[1]!, /^ │ ≡ read package\.json +.*to expand  │ $/);
+	assert.match(plain[2]!, /^ │ +│ $/);
+	assert.match(plain[3]!, /^ │ \{ +│ $/);
+	assert.match(plain[4]!, /^ │ {3}"name": "gentle-pi" +│ $/);
+	assert.match(plain.at(-1)!, /^ ╰─+╯ $/);
 	assert.equal(plain.length, 6);
 	assert.equal(plain[1]!.indexOf("≡"), plain[3]!.indexOf("{"), "the glyph starts in the body text column");
 });
@@ -1565,15 +1567,14 @@ test("float quiet cards close a running call as one panel and add no separator w
 	const tools = registeredQuietTools();
 	const read = tools.get("read");
 	const running = withFloatCards(() => read.renderCall({ path: "a.md" }, floatToolTheme, routineRenderContext({ args: { path: "a.md" }, state: {} })).render(40)).map(stripAnsi);
-	assert.equal(running.length, 5, "blank row, heading, separator, running row, closing row");
-	assert.match(running[0]!, /^ ▎ +$/);
-	assert.match(running[1]!, /^ ▎ ≡ read a\.md +$/);
-	assert.match(running[2]!, /^ ▎ +$/);
-	assert.match(running[3]!, /^ ▎ running… +$/);
-	assert.match(running[4]!, /^ ▎ +$/);
-	assert.doesNotMatch(running.join("\n"), /[╭╮╰╯│─]/);
+	assert.equal(running.length, 5, "top rule, heading, separator, running row, bottom rule");
+	assert.match(running[0]!, /^ ╭─+╮ $/);
+	assert.match(running[1]!, /^ │ ≡ read a\.md +│ $/);
+	assert.match(running[2]!, /^ │ +│ $/);
+	assert.match(running[3]!, /^ │ running… +│ $/);
+	assert.match(running[4]!, /^ ╰─+╯ $/);
 	const empty = withFloatCards(() => read.renderResult(textResult(""), { expanded: false, isPartial: false }, floatToolTheme, routineRenderContext({ isPartial: false })).render(40)).map(stripAnsi);
-	assert.deepEqual(empty, [` ▎${" ".repeat(37)} `], "an empty result only closes the panel");
+	assert.deepEqual(empty, [` ╰${"─".repeat(36)}╯ `], "an empty result only closes the panel");
 });
 
 test("quiet cards stay outlined in the neon style with a background-capable theme", () => {

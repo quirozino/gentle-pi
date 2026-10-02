@@ -701,7 +701,10 @@ function withFloatCards<T>(run: () => T): T {
 	}
 }
 
-const BLANK = /^ ▎ +$/;
+// Framed float (the default): the configured frame (single in tests) inside the background.
+const TOP = /^ ╭─+╮ $/;
+const BLANK = /^ │ +│ $/;
+const BOTTOM = /^ ╰─+╯ $/;
 
 test("float rose cards join the call and the JSON summary into one panel", () => {
 	const rows = withFloatCards(() => {
@@ -716,13 +719,12 @@ test("float rose cards join the call and the JSON summary into one panel", () =>
 		assert.equal(visibleWidth(line), 70);
 		assert.ok(line.startsWith(" \x1b[48;5;22m") && line.endsWith("\x1b[49m "), JSON.stringify(line));
 	}
-	assert.doesNotMatch(plain.join("\n"), /[╭╮╰╯│─]/);
-	assert.match(plain[0]!, BLANK);
-	assert.match(plain[1]!, /^ ▎ 🌹 rdd inspect +ctrl\+o to expand {4}$/);
-	assert.match(plain[2]!, /^ ▎ \$ gentle-ai review inspect +$/, "the command stays with the heading");
+	assert.match(plain[0]!, TOP);
+	assert.match(plain[1]!, /^ │ 🌹 rdd inspect +ctrl\+o to expand  │ $/);
+	assert.match(plain[2]!, /^ │ \$ gentle-ai review inspect +│ $/, "the command stays with the heading");
 	assert.match(plain[3]!, BLANK);
-	assert.match(plain[4]!, /^ ▎ ready · medium +$/);
-	assert.match(plain[5]!, BLANK);
+	assert.match(plain[4]!, /^ │ ready · medium +│ $/);
+	assert.match(plain[5]!, BOTTOM);
 	assert.equal(plain.length, 6);
 	assert.equal(plain[1]!.indexOf("🌹"), plain[4]!.indexOf("ready"));
 });
@@ -735,10 +737,10 @@ test("float rose cards keep the elapsed time on the blank closing row and add no
 		return [...call.render(40), ...partial.render(40)];
 	});
 	const plain = rows.map(stripAnsi);
-	assert.match(plain[0]!, BLANK);
-	assert.match(plain[1]!, /^ ▎ 🌹 rdd running · status +$/);
-	assert.match(plain[2]!, /^ ▎ +3s {3}$/);
-	assert.match(plain[3]!, /^ ▎ working +$/);
+	assert.match(plain[0]!, TOP);
+	assert.match(plain[1]!, /^ │ 🌹 rdd running · status +│ $/);
+	assert.match(plain[2]!, /^ ╰─+ 3s ╯ $/);
+	assert.match(plain[3]!, /^ │ working +│ $/);
 	assert.equal(plain.length, 4);
 	// The fork keeps a running call on the info tone, so it paints the info
 	// (tool success) background rather than the pending one.
@@ -748,6 +750,7 @@ test("float rose cards keep the elapsed time on the blank closing row and add no
 test("float rose error results paint the error background on every row", () => {
 	const rows = withFloatCards(() => renderGentleAiResult({ content: [{ type: "text", text: "boom\nsecond" }] } as never, { isError: true }, floatTheme).render(40));
 	const plain = rows.map(stripAnsi);
-	assert.deepEqual(plain.map((line) => BLANK.test(line)), [true, false, false, true]);
+	assert.deepEqual(plain.map((line) => BLANK.test(line)), [true, false, false, false]);
+	assert.match(plain[3]!, BOTTOM);
 	for (const line of rows) assert.ok(line.startsWith(" \x1b[48;5;52m"), JSON.stringify(line));
 });

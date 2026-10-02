@@ -1476,7 +1476,15 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		if (taskId === undefined) return [];
 		const task = store.get(taskId);
 		if (!task) return [];
-		return renderAgentsCard([task], theme, width, deps.now(), { collapsed: false, maxRows: widgetRows(undefined), keepFinished: true, idleAfterMs: AGENTS_IDLE_AFTER_MS });
+		// A running task's card winks and sweeps its frame like the widget, on
+		// the widget's clock (it re-renders the screen while a task runs); a
+		// finished one is static.
+		const now = deps.now();
+		const live = !isFinished(task.status);
+		return renderAgentsCard([task], theme, width, now, {
+			collapsed: false, maxRows: widgetRows(undefined), keepFinished: true, idleAfterMs: AGENTS_IDLE_AFTER_MS,
+			...(live ? { tick: Math.floor(now / AGENTS_WINK_MS), sweep: sweepEnabled() } : {}),
+		});
 	};
 
 	// Tools whose task_id parameter names the task the call is about, so a

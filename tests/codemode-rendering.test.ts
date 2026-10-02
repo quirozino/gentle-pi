@@ -46,7 +46,9 @@ function context(overrides: Partial<ToolRenderContext> = {}): ToolRenderContext 
 		args: { code: "await tools.read({path: '/private/argument'});" },
 		toolCallId: "code-1", invalidate() {}, lastComponent: undefined, state: {}, cwd: "/fixture",
 		executionStarted: true, argsComplete: true, isPartial: false, expanded: false, showImages: false,
-		isError: false, ...overrides,
+		isError: false,
+		// Running cards sweep by the clock; rendering tests pin it off (sweep tests opt in).
+		...({ sweep: false } as object), ...overrides,
 	};
 }
 
@@ -400,19 +402,19 @@ test("float Code cards separate the heading from the first body rows exactly onc
 		assert.equal(visibleWidth(line), 70);
 		assert.ok(line.startsWith(" \x1b[48;5;22m") && line.endsWith("\x1b[49m "), JSON.stringify(line));
 	}
-	assert.doesNotMatch(plain.join("\n"), /[╭╮╰╯│─]/);
-	assert.match(plain[0]!, /^ ▎ +$/);
-	assert.match(plain[1]!, /^ ▎ λ Code /);
-	assert.match(plain[2]!, /^ ▎ +$/);
-	assert.match(plain[3]!, /^ ▎ ok · read/);
-	assert.match(plain.at(-1)!, /^ ▎ +$/);
-	assert.equal(plain.filter((line) => /^ ▎ +$/.test(line)).length, 3);
+	// Framed float: the configured frame (single in tests) inside the background.
+	assert.match(plain[0]!, /^ ╭─+╮ $/);
+	assert.match(plain[1]!, /^ │ λ Code /);
+	assert.match(plain[2]!, /^ │ +│ $/);
+	assert.match(plain[3]!, /^ │ ok · read/);
+	assert.match(plain.at(-1)!, /^ ╰─+╯ $/);
+	assert.equal(plain.filter((line) => /^ │ +│ $/.test(line)).length, 1);
 
 	// Expanded, the script is the first body: the separator moves above it.
 	const expanded = renderFloat(tool, value, context({ expanded: true })).map(stripAnsi);
-	assert.match(expanded[2]!, /^ ▎ +$/);
-	assert.match(expanded[3]!, /^ ▎ await tools\.read/);
-	assert.equal(expanded.filter((line) => /^ ▎ +$/.test(line)).length, 3, "no second separator above the result");
+	assert.match(expanded[2]!, /^ │ +│ $/);
+	assert.match(expanded[3]!, /^ │ await tools\.read/);
+	assert.equal(expanded.filter((line) => /^ │ +│ $/.test(line)).length, 1, "no second separator above the result");
 
 	const failed = renderFloat(tool, result([], "Script failed"), context({ isError: true }));
 	for (const line of failed) assert.ok(line.startsWith(" \x1b[48;5;52m"), JSON.stringify(line));
@@ -474,16 +476,17 @@ test("a running float Code card is one closed panel with a single separator", ()
 		const running = piRow(tool, undefined, pending(), 70, floatTheme);
 		const plain = running.map(stripAnsi);
 		for (const line of running) assert.equal(visibleWidth(line), 70);
-		assert.doesNotMatch(plain.join("\n"), /[╭╮╰╯│─]/);
 		assert.equal(plain.length, 5, plain.join("\n"));
-		assert.match(plain[0]!, /^ ▎ +$/);
-		assert.match(plain[1]!, /^ ▎ λ Code /);
-		assert.match(plain[2]!, /^ ▎ +$/);
-		assert.match(plain[3]!, /^ ▎ running… +$/);
-		assert.match(plain[4]!, /^ ▎ +$/);
+		assert.match(plain[0]!, /^ ╭─+╮ $/);
+		assert.match(plain[1]!, /^ │ λ Code /);
+		assert.match(plain[2]!, /^ │ +│ $/);
+		assert.match(plain[3]!, /^ │ running… +│ $/);
+		assert.match(plain[4]!, /^ ╰─+╯ $/);
 
 		const partial = piRow(tool, result([{ name: "read", status: "running" }], "partial output"), pending(), 70, floatTheme).map(stripAnsi);
-		assert.equal(partial.filter((line) => /^ ▎ +$/.test(line)).length, 3, "one blank above, one separator, one closing row");
+		assert.equal(partial.filter((line) => /^ │ +│ $/.test(line)).length, 1, "one separator between heading and body");
+		assert.match(partial[0]!, /^ ╭─+╮ $/, "the call opens the frame");
+		assert.match(partial.at(-1)!, /^ ╰─+╯ $/, "the partial result closes it");
 		assert.doesNotMatch(partial.join("\n"), /running…/);
 	} finally {
 		setCardStyle(CARD_STYLE.NEON);

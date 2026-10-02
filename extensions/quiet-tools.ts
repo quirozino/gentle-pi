@@ -15,10 +15,11 @@ import { resolveGentleAiDevBinaryOverride, type GentleAiDevBinaryOverride } from
 import { GentleAiElapsedTimingLedger } from "../lib/gentle-ai-elapsed-store.ts";
 import { quietToolsEnabled } from "../lib/quiet-tools-config.ts";
 import { registerCompactCodemode } from "../lib/codemode-renderer.ts";
+import { liveCardSweep, scheduleCardSweep } from "../lib/card-sweep.ts";
 import { getGentleAiRenderState, renderGentleAiLifecycleCall, renderGentleAiResult, type GentleAiRenderContext } from "../lib/gentle-ai-renderer.ts";
 import {
 	CARD_TONE, cardAwaitingResult, cardBottom, cardInnerWidth, cardLine, cardRunningLine, cardTopRows, floatRows, markCardResult,
-	type CardRowContext, type CardTheme,
+	type CardRowContext, type CardSweep, type CardTheme,
 } from "../lib/shell-card.ts";
 import { sanitizeTerminalText, stripAnsi } from "../lib/terminal-theme.ts";
 
@@ -575,14 +576,16 @@ class ToolCardTop implements Component {
 	private readonly theme: CardTheme;
 	private readonly hint: string | undefined;
 	private readonly row: CardRowContext | undefined;
+	private readonly sweep: CardSweep | undefined;
 
-	constructor(header: () => string, tone: ToolTone, theme: CardTheme, glyph: string, hint?: string, row?: CardRowContext) {
+	constructor(header: () => string, tone: ToolTone, theme: CardTheme, glyph: string, hint?: string, row?: CardRowContext, sweep?: CardSweep) {
 		this.header = header;
 		this.glyph = glyph;
 		this.tone = tone;
 		this.theme = theme;
 		this.hint = hint;
 		this.row = row;
+		this.sweep = sweep;
 	}
 
 	/** Renders `╭─ <icon> <call> ── <hint> ╮` in the configured frame glyphs (shell.json glyphs.frame, via the card chrome), reserving applicable hint space before wrapping the call. A call that does not fit the rule (a long or multi-line command) continues on card rows below it, so every line of the command stays visible. */
@@ -590,11 +593,13 @@ class ToolCardTop implements Component {
 		const target = Math.max(0, Math.floor(width));
 		if (target === 0) return [];
 		const running = this.row !== undefined && cardAwaitingResult(this.row);
-		return floatRows(this.tone, this.theme, target, (inner) => ({
-			head: cardTopRows({ title: this.header(), glyph: this.glyph, body: [], tone: this.tone }, this.theme, inner, this.hint),
-			body: running ? [cardRunningLine(this.tone, this.theme, inner)] : undefined,
-			bottom: running ? cardBottom(this.tone, this.theme, inner) : undefined,
-		}));
+		// A running card sweeps its frame: alone while it closes the frame
+		// itself, as the head of the card once a partial result draws below.
+		return floatRows(this.tone, this.theme, target, (inner, roles) => ({
+			head: cardTopRows({ title: this.header(), glyph: this.glyph, body: [], tone: this.tone }, this.theme, inner, this.hint, roles?.head),
+			body: running ? [cardRunningLine(this.tone, this.theme, inner, roles?.body(0))] : undefined,
+			bottom: running ? cardBottom(this.tone, this.theme, inner, undefined, roles?.bottom()) : undefined,
+		}), { sweep: this.sweep, split: running || !this.sweep ? undefined : { state: this.row?.state, part: "head" } });
 	}
 
 	invalidate(): void {}
@@ -604,22 +609,28 @@ class ToolCardBody implements Component {
 	private readonly inner: () => Component;
 	private readonly tone: ToolTone;
 	private readonly theme: CardTheme;
+	private readonly sweep: CardSweep | undefined;
+	private readonly state: unknown;
 
-	constructor(inner: () => Component, tone: ToolTone, theme: CardTheme) {
+	constructor(inner: () => Component, tone: ToolTone, theme: CardTheme, sweep?: CardSweep, state?: unknown) {
 		this.inner = inner;
 		this.tone = tone;
 		this.theme = theme;
+		this.sweep = sweep;
+		this.state = state;
 	}
 
 	/** Renders the inner component between the card sides and closes the frame, even when the result has no rows. */
 	render(width: number): string[] {
 		const target = Math.max(0, Math.floor(width));
 		if (target === 0) return [];
-		return floatRows(this.tone, this.theme, target, (inner) => ({
-			body: this.inner().render(cardInnerWidth(inner)).map((line) => cardLine(line.trimEnd(), this.tone, this.theme, inner)),
-			bottom: cardBottom(this.tone, this.theme, inner),
+		// A partial result is the tail of a running card: the sweep continues
+		// around the frame the call row started.
+		return floatRows(this.tone, this.theme, target, (inner, roles) => ({
+			body: this.inner().render(cardInnerWidth(inner)).map((line, index) => cardLine(line.trimEnd(), this.tone, this.theme, inner, roles?.body(index))),
+			bottom: cardBottom(this.tone, this.theme, inner, undefined, roles?.bottom()),
 			afterHeading: true,
-		}));
+		}), { sweep: this.sweep, split: this.sweep ? { state: this.state, part: "tail" } : undefined });
 	}
 
 	invalidate(): void {
@@ -714,7 +725,10 @@ export function createQuietToolRenderer(
 			// Same place and wording as the Gentle AI card: the expand key rides the top rule once the call finished.
 			const finished = renderContext.isPartial === false && (renderContext.executionStarted === true || renderContext.isError === true);
 			const hint = finished ? stripAnsi(keyHint("app.tools.expand", renderContext.expanded === true ? "to collapse" : "to expand")) : undefined;
-			return new ToolCardTop(() => formatToolCall(toolName, callArgs, theme), tone, theme, TOOL_GLYPH[toolName], hint, renderContext);
+			// The raw context: argument identity tells a streaming row from a replay.
+			const sweep = liveCardSweep(context, renderContext.isPartial !== false && renderContext.isError !== true, Date.now());
+			scheduleCardSweep(context, sweep !== undefined);
+			return new ToolCardTop(() => formatToolCall(toolName, callArgs, theme), tone, theme, TOOL_GLYPH[toolName], hint, renderContext, sweep);
 		},
 		/** Builds the card component for this render pass; collapsed cards delegate to the wrapped-line cache keyed by the tool result object. */
 		renderResult(result, options, theme, context) {
@@ -734,7 +748,9 @@ export function createQuietToolRenderer(
 				return renderGentleAiResult(safeResult, { expanded: options.expanded, isPartial: options.isPartial, isError }, theme, renderContext ? withElapsedTiming(renderContext as GentleAiRenderContext) : undefined);
 			}
 			const resultTone = toolTone(options.isPartial === true, isError);
-			const carded = (component: () => Component): Component => new ToolCardBody(component, resultTone, theme);
+			const sweep = options.isPartial === true && !isError ? liveCardSweep(renderContext, true, Date.now()) : undefined;
+			scheduleCardSweep(renderContext, sweep !== undefined);
+			const carded = (component: () => Component): Component => new ToolCardBody(component, resultTone, theme, sweep, renderContext?.state);
 			if (options.isPartial) {
 				if (options.expanded) return carded(() => new Text(`${theme.fg("warning", partialLabel(toolName, text))}\n${theme.fg("muted", text)}`, 0, 0));
 				const visible = lastOutputLines(text, PREVIEW_LINE_LIMIT);

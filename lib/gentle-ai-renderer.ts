@@ -1,9 +1,9 @@
 import { keyHint, type AgentToolResult } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { type GentleAiTimingLookup } from "./gentle-ai-elapsed-store.ts";
-import { CARD_TONE, cardBodyRows, cardBottom, cardInnerWidth, cardLine, cardTop, floatRows, floatRowsSweepRoles, type Card, type CardTheme, type CardTone } from "./shell-card.ts";
-import { formatElapsed, SWEEP_CELLS_PER_TICK, SWEEP_ROLE } from "./agents-widget.ts";
-import { ANIMATION_POLICY, resolveAnimationPolicy } from "./animation-policy.ts";
+import { CARD_TONE, cardBodyRows, cardBottom, cardInnerWidth, cardLine, cardTop, floatRows, type Card, type CardTheme, type CardTone } from "./shell-card.ts";
+import { formatElapsed } from "./agents-widget.ts";
+import { cardSweepAt, CARD_SWEEP_TICK_MS, sweepAnimationsEnabled } from "./card-sweep.ts";
 import { sanitizeTerminalText, stripAnsi } from "./terminal-theme.ts";
 
 // Gentle AI tool cards: every call into the gentle-ai binary and every
@@ -58,18 +58,7 @@ export interface GentleAiRenderContext {
 	sweep?: boolean;
 }
 
-// The Agents wink rate: the sweep advances one tick per interval.
-const SWEEP_TICK_MS = 160;
 const ELAPSED_TICK_MS = 1000;
-const POLICY_CACHE_MS = 1000;
-let policyCache: { at: number; quality: boolean } | undefined;
-
-function qualityAnimations(now: number): boolean {
-	if (policyCache === undefined || now - policyCache.at >= POLICY_CACHE_MS || now < policyCache.at) {
-		policyCache = { at: now, quality: resolveAnimationPolicy().policy === ANIMATION_POLICY.QUALITY };
-	}
-	return policyCache.quality;
-}
 
 const LIFECYCLE_STATUS = {
 	PREPARING: "preparing",
@@ -152,14 +141,10 @@ export class GentleAiCallCard {
 		// The command detail and the lens rows belong to the heading; the result
 		// below owns the body. A running card sweeps its frame.
 		const detail = [...(this.detail ? [this.detail] : []), ...this.rows];
-		const height = detail.length + (this.open ? 2 : 1);
-		return floatRows(this.card.tone, this.theme, width, (inner) => {
-			const roleFor = this.sweep ? floatRowsSweepRoles(this.sweep, width, inner, height) : undefined;
-			return {
-				head: [cardTop(this.card, this.theme, inner, this.hint, roleFor?.(0)), ...detail.map((text, index) => cardLine(this.theme.fg(DETAIL_ROLE, text), this.card.tone, this.theme, inner, roleFor?.(index + 1)))],
-				bottom: this.open ? cardBottom(this.card.tone, this.theme, inner, this.elapsed || undefined, roleFor?.(height - 1)) : undefined,
-			};
-		});
+		return floatRows(this.card.tone, this.theme, width, (inner, roles) => ({
+			head: [cardTop(this.card, this.theme, inner, this.hint, roles?.head(0)), ...detail.map((text, index) => cardLine(this.theme.fg(DETAIL_ROLE, text), this.card.tone, this.theme, inner, roles?.head(index + 1)))],
+			bottom: this.open ? cardBottom(this.card.tone, this.theme, inner, this.elapsed || undefined, roles?.bottom()) : undefined,
+		}), { sweep: this.sweep });
 	}
 
 	invalidate(): void {}
@@ -376,8 +361,8 @@ export function renderGentleAiLifecycleCall(
 	const liveStreaming = status === LIFECYCLE_STATUS.PREPARING && state?.argsStreaming === true;
 	const sweeping = (status === LIFECYCLE_STATUS.RUNNING || status === LIFECYCLE_STATUS.PREPARING)
 		&& (liveExecution || liveStreaming)
-		&& (context?.sweep ?? qualityAnimations(now));
-	const sweep = sweeping ? { position: Math.floor(now / SWEEP_TICK_MS) * SWEEP_CELLS_PER_TICK, role: SWEEP_ROLE.WORKING } : undefined;
+		&& (context?.sweep ?? sweepAnimationsEnabled(now));
+	const sweep = sweeping ? cardSweepAt(now) : undefined;
 	component.update(status, operationPath, theme, detail ? sanitizeTerminalText(detail) : undefined, hint, elapsed, rows.map(sanitizeTerminalText), sweep);
 	// While the call runs, wake the row once a second so the live duration ticks.
 	// At most one pending timer per row: frequent renders must not stack
@@ -388,7 +373,7 @@ export function renderGentleAiLifecycleCall(
 			state.pendingTimer = setTimeout(() => {
 				state.pendingTimer = undefined;
 				context?.invalidate?.();
-			}, sweeping ? SWEEP_TICK_MS : ELAPSED_TICK_MS);
+			}, sweeping ? CARD_SWEEP_TICK_MS : ELAPSED_TICK_MS);
 			state.pendingTimer.unref?.();
 		} else {
 			state.pendingTimer = undefined;

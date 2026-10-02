@@ -360,7 +360,7 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 			...[...(group.value ? [value(group.value)] : []), ...(group.pairs ?? []).map(([key, text]) => `${label(key)} ${value(text)}`), ...group.lines]
 				.flatMap((line) => wrapTextWithAnsi(line, innerWidth - inset).map((part) => " ".repeat(inset) + part)),
 		]);
-		return renderCard({ title: "Status", body, tone: CARD_TONE.INFO, glyph: SHELL_GLYPHS.status }, theme, width, { expanded: true, panel: true });
+		return renderCard({ title: "Status", body, tone: CARD_TONE.INFO, glyph: SHELL_GLYPHS.status }, theme, width, { expanded: true, panel: true, frame: false });
 	}
 	// The float style owns the outer chrome: its accent bar and padding rows
 	// hold the same boxed, centred title and double-ruled group box neon draws
@@ -370,7 +370,7 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 		return floatRows(CARD_TONE.INFO, theme, width, (inner) => ({
 			body: [cardBottom(CARD_TONE.INFO, theme, inner), ...box.map((row) => cardLine(row, CARD_TONE.INFO, theme, inner))],
 			bottom: cardBottom(CARD_TONE.INFO, theme, inner),
-		}));
+		}), { frame: false });
 	}
 	return renderStatusPanel(groups, theme, width, presentation);
 }
@@ -661,7 +661,7 @@ function floatHeaderPaint(theme: ShellBarTheme, width: number, content: (width: 
 	const [row] = floatRows(CARD_TONE.INFO, theme, width, (inner) => {
 		floated = inner !== width;
 		return floated ? { body: [` ${fitHeaderContent(content(inner - 2), inner - 2)} `] } : {};
-	});
+	}, { frame: false });
 	if (!floated || row === undefined) return undefined;
 	const inner = row.slice(1, -1);
 	return { inner, open: inner.slice(0, inner.indexOf(" ")) };

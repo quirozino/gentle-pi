@@ -48,18 +48,17 @@ function withBackground<T extends object>(theme: T): T & { bg(color: string, tex
 	return { ...theme, bg: (_color: string, text: string) => `${BG_OPEN}${text}${BG_CLOSE}` };
 }
 
-/** Float panel rows: a painted panel inside transparent one-column margins, between padding rows that keep the accent bar. */
+/** Float panel rows: a painted panel inside transparent one-column margins, framed by the configured frame (single in tests). */
 function assertFloatRows(lines: readonly string[], width: number): void {
 	for (const line of lines) {
 		assert.equal(visibleWidth(line), width, `"${stripAnsi(line)}" is not ${width} wide`);
 		assert.ok(line.startsWith(` ${BG_OPEN}`) && line.endsWith(`${BG_CLOSE} `), `painted inside the margins: ${JSON.stringify(line)}`);
 	}
-	const padding = ` ▎${" ".repeat(width - 3)} `;
-	assert.equal(stripAnsi(lines[0]!), padding, "a padding row with the accent bar sits above the header");
-	assert.equal(stripAnsi(lines.at(-1)!), padding, "a padding row with the accent bar replaces the bottom rule");
+	assert.equal(stripAnsi(lines[0]!), ` ╭${"─".repeat(width - 4)}╮ `, "the top rule sits above the header row");
+	assert.equal(stripAnsi(lines.at(-1)!), ` ╰${"─".repeat(width - 4)}╯ `, "the bottom rule closes the panel");
 }
 
-/** The text of a body row, without the neon side rails or the float accent bar. */
+/** The text of a body row, without the side rails or the frameless float accent bar. */
 function bodyText(row: string): string {
 	return stripAnsi(row).replace(/^ ?[│▎] /u, "").replace(/ ?│? ?$/u, "").trimEnd();
 }
@@ -345,16 +344,16 @@ test("renderTodoCard in the float style keeps its clickable control on the heade
 		setCardStyle(CARD_STYLE.NEON);
 		assert.equal(float.length, neon.length + 2, "the top padding and separator rows add two rows");
 		const action = options.collapsed ? "▸ Expand" : "▾ Collapse";
-		const hint = options.collapseKey ? `ctrl\\+shift\\+t {3}` : "";
-		assert.match(stripAnsi(float[1]!), new RegExp(`^ ▎ ❀ Todos ${action}  1 of 3 +${hint}$`), "row 1 is the clickable header");
-		assert.match(stripAnsi(float[2]!), /^ ▎ +$/, "a blank separator row follows the header");
+		const hint = options.collapseKey ? `ctrl\\+shift\\+t` : "";
+		assert.match(stripAnsi(float[1]!), new RegExp(`^ │ ❀ Todos ${action}  1 of 3 +${hint} │ $`), "row 1 is the clickable header");
+		assert.match(stripAnsi(float[2]!), /^ │ +│ $/, "a blank separator row follows the header");
 		assertFloatRows(float, 60);
 		assert.deepEqual(float.slice(3, -1).map(bodyText), neon.slice(1, -1).map(bodyText));
 	}
 	useCardStyle(t, CARD_STYLE.FLOAT);
 	const tagged = withBackground({ ...plainTheme, fg: (color: string, text: string) => `<${color}>${text}</${color}>` });
 	const [, header] = renderTodoCard(seeded(), tagged, 120, { collapsed: false, staleTurns: 0, hovered: true });
-	assert.match(stripAnsi(header!), /^ <border>▎<\/border> <accent>❀ Todos <[a-zA-Z]+>▾ Collapse<\/[a-zA-Z]+><\/accent>  <muted>1 of 3<\/muted> +$/, "the hovered control keeps its own role and case");
+	assert.match(stripAnsi(header!), /^ <border>│<\/border> <accent>❀ Todos <[a-zA-Z]+>▾ Collapse<\/[a-zA-Z]+><\/accent>  <muted>1 of 3<\/muted> +<border> │<\/border> $/, "the hovered control keeps its own role and case");
 });
 
 test("float Todos keeps the configured shortcut visible at rail width without repeating the action", (t) => {
@@ -377,5 +376,5 @@ test("a done todo wraps to the float body so the strikethrough never re-wraps", 
 	const state = applyTodo(emptyTodo(), { action: "write", tasks: [{ title: "word ".repeat(20).trim(), status: "done" }] }, 1).state;
 	const lines = renderTodoCard(state, withBackground(plainTheme), 40, { collapsed: false, staleTurns: 0 });
 	assertFloatRows(lines, 40);
-	for (const row of lines.slice(3, -1)) assert.match(stripAnsi(row), /^ ▎ [✓ ] ~[^~]+~ +$/u, "each physical row closes its own strikethrough");
+	for (const row of lines.slice(3, -1)) assert.match(stripAnsi(row), /^ │ [✓ ] ~[^~]+~ +│ $/u, "each physical row closes its own strikethrough");
 });

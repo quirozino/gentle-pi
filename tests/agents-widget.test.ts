@@ -33,18 +33,17 @@ function withBackground<T extends object>(theme: T): T & { bg(color: string, tex
 	return { ...theme, bg: (_color: string, text: string) => `${BG_OPEN}${text}${BG_CLOSE}` };
 }
 
-/** Float panel rows: a painted panel inside transparent one-column margins, between padding rows that keep the accent bar. */
+/** Float panel rows: a painted panel inside transparent one-column margins, framed by the configured frame (single in tests). */
 function assertFloatRows(lines: readonly string[], width: number): void {
 	for (const line of lines) {
 		assert.equal(visibleWidth(line), width, `"${stripAnsi(line)}" is not ${width} wide`);
 		assert.ok(line.startsWith(` ${BG_OPEN}`) && line.endsWith(`${BG_CLOSE} `), `painted inside the margins: ${JSON.stringify(line)}`);
 	}
-	const padding = ` ▎${" ".repeat(width - 3)} `;
-	assert.equal(stripAnsi(lines[0]!), padding, "a padding row with the accent bar sits above the header");
-	assert.equal(stripAnsi(lines.at(-1)!), padding, "a padding row with the accent bar replaces the bottom rule");
+	assert.equal(stripAnsi(lines[0]!), ` ╭${"─".repeat(width - 4)}╮ `, "the top rule sits above the header row");
+	assert.equal(stripAnsi(lines.at(-1)!), ` ╰${"─".repeat(width - 4)}╯ `, "the bottom rule closes the panel");
 }
 
-/** The text of a body row, without the neon side rails or the float accent bar. */
+/** The text of a body row, without the side rails or the frameless float accent bar. */
 function bodyText(row: string): string {
 	return stripAnsi(row).replace(/^ ?[│▎] /u, "").replace(/ ?│? ?$/u, "").trimEnd();
 }
@@ -457,9 +456,9 @@ test("renderAgentsCard in the float style spends its padding and separator rows 
 	assert.equal(neon.length, 6, "neon: frame plus four rows");
 	assert.equal(float.length, neon.length, "float: padding, header, separator, two rows, padding");
 	assert.match(float[1]!, /6 active · 1 done/, "the title still counts every shown task");
-	assert.match(float[2]!, /^ ▎ +$/, "a blank separator row follows the header");
+	assert.match(float[2]!, /^ │ +│ $/, "a blank separator row follows the header");
 	assert.match(float[3]!, /◐  sdd-explore  job 0/);
-	assert.match(float[4]!, /^ ▎ … 6 more · alt\+a to view +$/, "two more tasks fold into the overflow row");
+	assert.match(float[4]!, /^ │ … 6 more · alt\+a to view +│ $/, "two more tasks fold into the overflow row");
 	for (const maxRows of [3, 4, 5, 7, 8, 9]) {
 		const capped = renderAgentsCard(tasks, theme, 80, 5000, { collapsed: false, maxRows });
 		assert.ok(capped.length <= maxRows + 2, `maxRows ${maxRows}: ${capped.length} rows exceed the neon cap`);
@@ -487,9 +486,9 @@ test("the minimum widget budget fits an overflow-only float body without changin
 		const rows = renderAgentsCard(tasks, theme, 80, 5000, options);
 		assert.equal(rows.length, maxRows + 2, `${count} tasks must fit five total float rows`);
 		assertFloatRows(rows, 80);
-		assert.match(stripAnsi(rows[2]!), /^ ▎ +$/, "separator stays intact");
+		assert.match(stripAnsi(rows[2]!), /^ │ +│ $/, "separator stays intact");
 		if (count === 1) assert.match(stripAnsi(rows[3]!), /job 0/, "a single task fits directly");
-		else assert.match(stripAnsi(rows[3]!), new RegExp(`^ ▎ … ${count} more · alt\\+a to view +$`), "the only body row truthfully counts every hidden task");
+		else assert.match(stripAnsi(rows[3]!), new RegExp(`^ │ … ${count} more · alt\\+a to view +│ $`), "the only body row truthfully counts every hidden task");
 		assert.equal(renderAgentsCard(tasks, theme, 80, 5000, { ...options, collapsed: true }).length, maxRows + 2, "collapsed cards keep one task and fit");
 	}
 });
@@ -503,8 +502,8 @@ test("float row budgets still prioritize a question when a task and overflow bot
 	];
 	const rows = renderAgentsCard(tasks, withBackground(plainTheme), 80, 5000, { collapsed: false, maxRows: 4, viewKey: "alt+a" });
 	assert.equal(rows.length, 6);
-	assert.match(stripAnsi(rows[3]!), /^ ▎ \?  sdd-explore  asked: Delete\?/);
-	assert.match(stripAnsi(rows[4]!), /^ ▎ … 2 more · alt\+a to view +$/);
+	assert.match(stripAnsi(rows[3]!), /^ │ \?  sdd-explore  asked: Delete\?/);
+	assert.match(stripAnsi(rows[4]!), /^ │ … 2 more · alt\+a to view +│ $/);
 });
 
 test("renderAgentsCard formats subagent cost with formatCost (three decimals below $1, two at or above $1)", () => {
@@ -529,20 +528,20 @@ test("renderAgentsCard in the float style is a float panel two rows taller than 
 		const float = renderAgentsCard(tasks, theme, 84, 85_000, options);
 		setCardStyle(CARD_STYLE.NEON);
 		assert.equal(float.length, neon.length + 2, "the top padding and separator rows add two rows");
-		assert.match(stripAnsi(float[1]!), /^ ▎ ❀ Agents  1 active · 1 done +\S.*\S {3}$/, "header on row 1, hint right-aligned");
-		assert.match(stripAnsi(float[2]!), /^ ▎ +$/, "a blank separator row follows the header");
+		assert.match(stripAnsi(float[1]!), /^ │ ❀ Agents  1 active · 1 done +\S.*\S │ $/, "header on row 1, hint right-aligned");
+		assert.match(stripAnsi(float[2]!), /^ │ +│ $/, "a blank separator row follows the header");
 		assertFloatRows(float, 84);
 		for (const [index, row] of float.slice(3, -1).entries()) {
-			assert.match(stripAnsi(row), /^ ▎ \S/u);
+			assert.match(stripAnsi(row), /^ │ \S/u);
 			if (bodyText(row).startsWith("…")) continue;
 			// Task columns fit the float body, so the right-aligned time is never clipped.
 			const tail = bodyText(neon[index + 1]!).split(" ").at(-1)!;
 			assert.ok(bodyText(row).endsWith(tail), `"${stripAnsi(row)}" keeps "${tail}"`);
-			assert.match(stripAnsi(row), /\S {3}$/u, "the time ends where the float body ends");
+			assert.match(stripAnsi(row), /\S │ $/u, "the time ends where the float body ends");
 		}
 	}
 	useCardStyle(t, CARD_STYLE.FLOAT);
 	const tagged = withBackground({ fg: (color: string, text: string) => `<${color}>${text}</${color}>` });
 	const [, header] = renderAgentsCard([task({ status: TASK_STATUS.WAITING })], tagged, 120, 5000, { collapsed: true, collapseKey: "ctrl+a" });
-	assert.match(stripAnsi(header!), /^ <warning>▎<\/warning> <warning>❀ Agents<\/warning>  <muted>1 waiting<\/muted> +<muted>ctrl\+a expand<\/muted> {3}$/);
+	assert.match(stripAnsi(header!), /^ <warning>│<\/warning> <warning>❀ Agents<\/warning>  <muted>1 waiting<\/muted> +<muted>ctrl\+a expand<\/muted><warning> │<\/warning> $/);
 });
