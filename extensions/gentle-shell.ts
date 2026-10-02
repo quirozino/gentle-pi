@@ -1,4 +1,4 @@
-import { CustomEditor, InteractiveMode, keyHint, type ExtensionAPI, type ExtensionContext, type KeybindingsManager } from "@earendil-works/pi-coding-agent";
+import { CustomEditor, InteractiveMode, keyHint, UserMessageComponent, type ExtensionAPI, type ExtensionContext, type KeybindingsManager } from "@earendil-works/pi-coding-agent";
 import { Editor, decodeKittyPrintable, isKeyRelease, matchesKey, parseKey, truncateToWidth, visibleWidth, type EditorTheme, type TUI } from "@earendil-works/pi-tui";
 import { execFile, spawnSync } from "node:child_process";
 import { realpathSync, statSync } from "node:fs";
@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { profilesFilePath, profileRoleEntries, readProfileOrchestrator, readProfilesFileResult, summarizeProfile } from "../lib/agent-profiles.ts";
 import { resolveProfilePin } from "../lib/agent-profile-pin.ts";
 import { installStartupListingMargin } from "../lib/startup-listing-margin.ts";
+import { installUserMessageFrame, setUserMessageFrameTheme } from "../lib/user-message-frame.ts";
 import * as os from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { buildShellHeaderModel, renderShellBar, renderShellBelowInputFloat, renderShellBottomOnlyBar, renderShellHeaderChrome, renderShellSidebarBar, shellBarEnabled, shellEnabled, shellHeaderUsageHit, statusTitleText, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
@@ -1775,6 +1776,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	if (!shellEnabled(env)) return;
 	// Align pi core's startup listing with pi's other transcript text (1-column margin).
 	installStartupListingMargin(InteractiveMode);
+	// Frame sent user messages in themes that ask for it (lib/user-message-frame.ts).
+	installUserMessageFrame(UserMessageComponent);
 	const profileReader = createActiveProfileReader(env);
 	const deps: ShellDeps = {
 		...defaultShellDeps,
@@ -2320,6 +2323,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		applyChanges(ctx, tracker.model);
 	};
 	pi.on("session_start", async (_event, ctx) => {
+		setUserMessageFrameTheme(ctx.hasUI && isInteractiveMode(ctx.mode) ? () => ctx.ui.theme : () => undefined);
 		shellChrome.begin();
 		// Backstop: a throw before setFooter must never hold statuses back forever.
 		try { await startShellSession(ctx); } finally { shellChrome.ready(); }

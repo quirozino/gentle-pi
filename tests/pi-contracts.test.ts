@@ -64,6 +64,7 @@ const DRIFTS: Record<string, { file: PiSourceFile; from: string; to: string }> =
 	"layout-node-protocol": { file: "layout-node.js", from: "Symbol.for(\"@earendil-works/pi-tui/layout-node\")", to: "Symbol(\"layout\")" },
 	"scroll-view-content-width": { file: "scroll-view.js", from: "this.scrollbar === \"always\"", to: "this.scrollbar !== \"hidden\"" },
 	"selection-internals": { file: "tui-alt-screen.js", from: "getSelectionColumns(line, row, selection,", to: "selectionColumns(line, row, selection," },
+	"user-message-component": { file: "user-message.js", from: "lines[0] = OSC133_ZONE_START + lines[0];", to: "lines.unshift(OSC133_ZONE_START);" },
 	"chat-viewport-dock": { file: "chat-viewport.js", from: "{ component: options.footer, shrink: 1, minSize: 0 },", to: "{ component: options.footer, shrink: 0, minSize: 1 }," },
 };
 
@@ -77,10 +78,7 @@ test("an edited pi source is reported as drifted, never passed", () => {
 		assert.equal(result.status, "drifted", contract.id);
 		assert.ok(result.problems.length > 0, contract.id);
 	}
-	for (const contract of PI_CONTRACTS) {
-		if (contract.id === "user-message-component") continue;
-		assert.ok(DRIFTS[contract.id], `${contract.id} has no drift case`);
-	}
+	for (const contract of PI_CONTRACTS) assert.ok(DRIFTS[contract.id], `${contract.id} has no drift case`);
 });
 
 test("a removed runtime method is drift; an unreadable source is could-not-check", () => {

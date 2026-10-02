@@ -1,0 +1,6 @@
+// Verbatim excerpt captured from the installed pi 1.0.0 (theme.js). Re-capture only after reviewing a drift reported by `npm run check:pi-contracts`.
+// --- lines 103-106 ---
+export class Theme {
+    name;
+    sourcePath;
+    sourceInfo;

@@ -29,8 +29,8 @@ it stale.
 - `railColumns` and a new `framed()` read live state.
 - Non-framed layouts unchanged.
 
-Out of scope (cannot edit): below-editor widgets painted at column 0 (pi-sysmon),
-`~/.pi/agent/extensions/user-message-frame.ts`. The pi core startup listing is aligned
+Out of scope (cannot edit): below-editor widgets painted at column 0 (pi-sysmon).
+The user-message frame moved into gentle-pi in T9. The pi core startup listing is aligned
 from gentle-pi in T5 via a prototype patch. pi's transcript scrollbar stays at 1 column
 from the right frame (left as is).
 
@@ -90,6 +90,16 @@ Delegated writer (2+ non-trivial files).
   on missing input); (c) `npm run check:pi-contracts` checks the `pi` on PATH (bundle virtual
   modules + dist sources): passed / drifted / could-not-check, exit 1 only on drift.
   Route: inline (bounded writer; new lib + script + wiring in 4 patches).
+- [x] T9 User-message frame versioned: `lib/user-message-frame.ts` (patch v4) replaces the
+  untracked `~/.pi/agent/extensions/user-message-frame.ts` (v3). Installed from
+  `extensions/gentle-shell.ts` on pi's `UserMessageComponent`; theme getter set in
+  session_start; gated on `USER_MESSAGE_FRAME_THEMES` (Matrix-Green). It adopts the legacy
+  `__matrixUserFrameOriginal` and claims `__matrixUserFrameVersion = "3"`, so the old file in
+  the same process can neither wrap it nor be wrapped; a v1 wrap without an original is left
+  alone. New contract `user-message-component` (fixtures `user-message.js.txt`, `theme.js.txt`).
+  Old file moved to the session scratchpad backup (`user-extensions-backup/user-message-frame.ts.bak`).
+  Route: inline (bounded writer). RED not observed: behavior migrated from existing code, so
+  tests were written against the ported implementation (exception recorded).
 
 ## Acceptance criteria
 - Framed: top gap 1 row, bottom gap 1 row, header bar/rule left/right gap 1, rail card right gap 1.

@@ -20,6 +20,7 @@ export type PiSourceFile =
 	| "chat-viewport.js"
 	| "assistant-message.js"
 	| "user-message.js"
+	| "theme.js"
 	| "layout-node.js"
 	| "scroll-view.js"
 	| "tui-alt-screen.js";
@@ -30,6 +31,7 @@ export const PI_SOURCE_PATHS: Record<PiSourceFile, { pkg: "pi-coding-agent" | "p
 	"chat-viewport.js": { pkg: "pi-coding-agent", path: "dist/modes/interactive/chat-viewport.js" },
 	"assistant-message.js": { pkg: "pi-coding-agent", path: "dist/modes/interactive/components/assistant-message.js" },
 	"user-message.js": { pkg: "pi-coding-agent", path: "dist/modes/interactive/components/user-message.js" },
+	"theme.js": { pkg: "pi-coding-agent", path: "dist/modes/interactive/theme/theme.js" },
 	"layout-node.js": { pkg: "pi-tui", path: "dist/layout-node.js" },
 	"scroll-view.js": { pkg: "pi-tui", path: "dist/components/scroll-view.js" },
 	"tui-alt-screen.js": { pkg: "pi-tui", path: "dist/tui-alt-screen.js" },
@@ -201,6 +203,26 @@ export const PI_CONTRACTS: PiContract[] = [
 			expectIncludes(problems, viewport, "{ component: options.footer, shrink: 1, minSize: 0 },\n    ]);", "chat-viewport dock (footer last)");
 			expectIncludes(problems, viewport, "{ component: dock, basis: \"auto\", grow: 0, shrink: 1, minSize: 1 },\n        ]),", "chat-viewport root (dock last, minSize 1)");
 			expectIncludes(problems, src(inputs, "tui-alt-screen.js"), "    mode = \"fullscreen\";", "TuiAltScreen.mode");
+			return problems;
+		},
+	},
+	{
+		id: "user-message-component",
+		summary: "UserMessageComponent (exported) renders padded Markdown wrapped in OSC 133 markers; Theme exposes its name",
+		guards: ["lib/user-message-frame.ts", "extensions/gentle-shell.ts", "tests/user-message-frame.test.ts"],
+		sources: ["user-message.js", "theme.js"],
+		check(inputs) {
+			const problems: string[] = [];
+			const proto = prototypeOf(inputs.codingAgent, "UserMessageComponent", "pi-coding-agent", problems);
+			if (proto) expectFunction(problems, proto, "render", "UserMessageComponent.prototype");
+			const message = src(inputs, "user-message.js");
+			expectIncludes(problems, message, "export class UserMessageComponent extends Container {", "UserMessageComponent");
+			expectIncludes(problems, message, "outputPad = 1,", "UserMessageComponent constructor");
+			const render = methodBody(message, "render(width) {");
+			expectIncludes(problems, render, "const lines = super.render(width);", "UserMessageComponent.render");
+			expectIncludes(problems, render, "lines[0] = OSC133_ZONE_START + lines[0];", "UserMessageComponent.render");
+			expectIncludes(problems, message, "const OSC133_ZONE_START = \"\\x1b]133;A\\x07\";", "UserMessageComponent OSC 133 markers");
+			expectIncludes(problems, src(inputs, "theme.js"), "export class Theme {\n    name;", "Theme.name");
 			return problems;
 		},
 	},
