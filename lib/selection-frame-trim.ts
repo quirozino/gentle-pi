@@ -47,11 +47,13 @@ interface Cell {
 /**
  * Narrows `range` on `line` (an ANSI-styled string, columns are terminal cells) past
  * leading frame glyphs (with the spaces before each and one padding space after
- * it) and a trailing run of frame glyphs and spaces. Only frame glyphs trigger a
+ * it) and a trailing run of frame glyphs and spaces. `windowFramePad` extra
+ * spaces also go after a glyph at column 0: the full-window frame's own padding
+ * column (pass it only for screen lines of a framed window). Only frame glyphs trigger a
  * trim, so content indentation inside a card and plain lines keep pi-tui's range. A range made only of frame and spaces collapses to
  * an empty one (`end <= start`).
  */
-export function trimFrameRange(line: string, range: ColumnRange): ColumnRange {
+export function trimFrameRange(line: string, range: ColumnRange, windowFramePad = 0): ColumnRange {
 	if (range.end <= range.start) return range;
 	const glyphs = frameGlyphs();
 	const text = stripTerminalSequences(sliceByColumn(line, range.start, range.end - range.start, true));
@@ -72,8 +74,9 @@ export function trimFrameRange(line: string, range: ColumnRange): ColumnRange {
 		let next = first;
 		while (next < cells.length && cells[next]!.space) next++;
 		if (next === cells.length || !cells[next]!.frame) break;
+		const outer = range.start + cells[next]!.offset === 0;
 		next++;
-		if (next < cells.length && cells[next]!.space) next++;
+		for (let pad = 1 + (outer ? windowFramePad : 0); pad > 0 && next < cells.length && cells[next]!.space; pad--) next++;
 		first = next;
 		leadFrame = true;
 	}
@@ -94,6 +97,7 @@ export function trimFrameRange(line: string, range: ColumnRange): ColumnRange {
 type GetSelectionColumns = (line: string, row: number, selection: unknown, minColumn?: number, maxColumn?: number) => ColumnRange;
 
 interface SelectionHost {
+	terminal?: { columns?: number };
 	getSelectionColumns?: GetSelectionColumns;
 	applySelection?: unknown;
 	getActiveSelectionText?: unknown;
@@ -103,11 +107,17 @@ const WRAPPED = Symbol.for("gentle-pi.selection-frame-trim");
 
 /**
  * Wraps the TUI instance's `getSelectionColumns` so highlight and copy both skip
- * frames, and returns a disposer restoring the original. Feature-detected: it
+ * frames, and returns a disposer restoring the original. `windowFramePad` reports
+ * the full-window frame's padding columns (0 when unframed); it applies only to
+ * lines as wide as the terminal, i.e. composed screen rows, never scroll content. Feature-detected: it
  * touches nothing unless pi-tui exposes the selection internals it expects, and a
  * second install on an already wrapped instance is a no-op.
  */
-export function installSelectionFrameTrim(tui: unknown): () => void {
+export interface SelectionFrameTrimOptions {
+	windowFramePad?: () => number;
+}
+
+export function installSelectionFrameTrim(tui: unknown, options: SelectionFrameTrimOptions = {}): () => void {
 	const host = tui as SelectionHost | undefined;
 	const original = host?.getSelectionColumns;
 	if (!host || typeof original !== "function" || original.length < 3) return () => {};
@@ -117,7 +127,9 @@ export function installSelectionFrameTrim(tui: unknown): () => void {
 	const wrapped = function (this: unknown, ...args: Parameters<GetSelectionColumns>): ColumnRange {
 		const range = original.apply(this, args);
 		try {
-			return trimFrameRange(args[0], range);
+			const columns = host.terminal?.columns;
+			const pad = options.windowFramePad && typeof columns === "number" && visibleWidth(args[0]) === columns ? options.windowFramePad() : 0;
+			return trimFrameRange(args[0], range, Number.isInteger(pad) && pad > 0 ? pad : 0);
 		} catch {
 			return range;
 		}

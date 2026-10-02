@@ -8,12 +8,14 @@ import { SHELL_GLYPHS } from "./shell-glyphs.ts";
 // configured frame (`╔═╗║╚═╝` with glyphs.frame=double) on all four sides of
 // Pi's screen, one cell in from the terminal edge. It is a layout wrapper, not
 // a repaint: the whole native layout (transcript, editor, rail, header) is
-// placed one column and two rows in, inside a vstack/hstack ring of border
+// placed two columns and two rows in, inside a vstack/hstack ring of border
 // leaves. The ring keeps one blank row under the top rule and one above the
-// bottom rule, so the topmost and lowest elements keep the same one-cell gap
-// the layout keeps on the sides (WINDOW_FRAME_GAP); horizontally the gap
-// belongs to each element, because some (Pi's transcript text, float cards,
-// the prompt) already bring their own one-column margin. pi-tui resolves mouse targets, selection ranges, the scrollbar
+// bottom rule (WINDOW_FRAME_GAP), and one blank column inside each side edge
+// (WINDOW_FRAME_PAD_X). Every element also brings its own one-column margin
+// (Pi's transcript text, float cards, the prompt, the framed header), so each
+// sits one row and two columns from the frame line. Terminal cells are about
+// twice as tall as they are wide (e.g. 11x24 px), so two columns read as the
+// same distance as one row. pi-tui resolves mouse targets, selection ranges, the scrollbar
 // column and the hardware cursor from layout rects and the composed screen,
 // so all of them follow the offset with no coordinate translation of ours.
 // Overlays, flashes and the scroll-to-end hint are composited by pi-tui over
@@ -24,10 +26,14 @@ const FRAME_ROLE = "border";
 /** Below this the frame would eat too much of a tiny terminal; it steps aside. */
 export const WINDOW_FRAME_MIN_COLUMNS = 20;
 export const WINDOW_FRAME_MIN_ROWS = 8;
-/** Columns the frame takes from the layout (one per side). */
-export const WINDOW_FRAME_INSET = 2;
-/** Empty cells every framed element keeps between the frame line and its visible edge. */
+/** Blank rows inside the top and bottom rules; also each element's own side margin. */
 export const WINDOW_FRAME_GAP = 1;
+/** Blank columns the frame keeps inside each side edge, on top of each element's margin. */
+export const WINDOW_FRAME_PAD_X = 1;
+/** Columns the frame takes from the layout: one edge plus its padding per side. */
+export const WINDOW_FRAME_INSET = 2 * (1 + WINDOW_FRAME_PAD_X);
+/** Rows the top and bottom rules take from the side edges. */
+const WINDOW_FRAME_RULE_ROWS = 2;
 const ENV_KEY = "GENTLE_PI_WINDOW_FRAME";
 
 export interface WindowFrameTheme {
@@ -271,11 +277,16 @@ export function createWindowFrame(theme: WindowFrameTheme, rows: () => number): 
 	const top: Component = { render: (width) => rule(glyphs().topLeft, glyphs().topRight)(width), invalidate() {} };
 	const bottom: Component = { render: (width) => rule(glyphs().bottomLeft, glyphs().bottomRight)(width), invalidate() {} };
 	const side = (): Component => ({
-		render: () => Array.from({ length: Math.max(0, rows() - WINDOW_FRAME_INSET) }, () => paint(glyphs().vertical)),
+		render: () => Array.from({ length: Math.max(0, rows() - WINDOW_FRAME_RULE_ROWS) }, () => paint(glyphs().vertical)),
 		invalidate() {},
 	});
 	const left = side();
 	const right = side();
+	// Blank columns inside the side edges, painted with the window background
+	// like the spacer rows.
+	const sidePad = (): Component => ({ render: () => Array.from({ length: Math.max(0, rows() - WINDOW_FRAME_RULE_ROWS) }, () => ""), invalidate() {} });
+	const leftPad = sidePad();
+	const rightPad = sidePad();
 	let current: LayoutNodeLike = { type: "vstack" };
 	const inner: LayoutHost = { render: () => [], invalidate() {}, [NODE]: () => current };
 	// Blank rows inside the side edges: the ║ columns run past them.
@@ -296,7 +307,9 @@ export function createWindowFrame(theme: WindowFrameTheme, rows: () => number): 
 		invalidate() {},
 		[NODE]: () => ({ type: "hstack", gap: 0, align: "stretch", entries: [
 			{ component: left, basis: 1, grow: 0, shrink: 0, minSize: 1 },
+			{ component: leftPad, basis: WINDOW_FRAME_PAD_X, grow: 0, shrink: 0, minSize: WINDOW_FRAME_PAD_X },
 			{ component: padded, basis: 0, grow: 1, shrink: 1, minSize: 1 },
+			{ component: rightPad, basis: WINDOW_FRAME_PAD_X, grow: 0, shrink: 0, minSize: WINDOW_FRAME_PAD_X },
 			{ component: right, basis: 1, grow: 0, shrink: 0, minSize: 1 },
 		] }),
 	};

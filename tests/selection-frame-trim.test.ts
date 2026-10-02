@@ -152,3 +152,36 @@ test("a second install never double-wraps", () => {
 	first();
 	assert.equal(tui.getSelectionColumns, original);
 });
+
+test("the window frame's padding column is trimmed with the frame glyph, on screen-wide lines only", () => {
+	// Outer frame `║`, its padding column, the element's own margin, then text.
+	const line = "║  text  ║";
+	assert.equal(cells(line, trimFrameRange(line, full(line), 1)), "text");
+	assert.equal(trimFrameRange(line, full(line), 1).start, 3);
+	// Without the padding only one space goes; the rest is content indentation.
+	assert.equal(trimFrameRange(line, full(line)).start, 2);
+	// Only a glyph at column 0 is the window frame; an inner card keeps one space.
+	const nested = "║  ║  indented ║  ║";
+	assert.equal(cells(nested, trimFrameRange(nested, full(nested), 1)), " indented");
+	// A range that starts past column 0 never treats its first glyph as the window frame.
+	const card = "║  ║  x ║  ║";
+	assert.equal(cells(card, trimFrameRange(card, { start: 3, end: visibleWidth(card) }, 1)), " x");
+});
+
+test("installSelectionFrameTrim applies the window padding only to lines as wide as the terminal", () => {
+	const calls: Array<{ start: number; end: number }> = [];
+	let pad = 1;
+	const tui = {
+		terminal: { columns: 10 },
+		getSelectionColumns(line: string, _row: number, _selection: unknown) { const range = full(line); calls.push(range); return range; },
+		applySelection() {},
+		getActiveSelectionText() {},
+	};
+	const dispose = installSelectionFrameTrim(tui, { windowFramePad: () => pad });
+	try {
+		assert.equal(tui.getSelectionColumns("║  text  ║", 0, {}).start, 3, "screen line: frame and padding trimmed");
+		assert.equal(tui.getSelectionColumns("║  text ║", 0, {}).start, 2, "narrower content line: no window padding");
+		pad = 0;
+		assert.equal(tui.getSelectionColumns("║  text  ║", 0, {}).start, 2, "unframed: one padding space only");
+	} finally { dispose(); }
+});

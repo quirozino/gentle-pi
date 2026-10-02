@@ -127,8 +127,9 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 	// section with no digest (or a throwing one) falls back to the shared
 	// revision counter, exactly like the whole-rail memo already did.
 	const sectionCache = new Map<string, SectionCacheEntry>();
-	// The full-window frame wraps whatever layout this pass returns, one cell
-	// in on every side; every width decision below reads the framed width.
+	// The full-window frame wraps whatever layout this pass returns (edge plus
+	// padding column per side, one blank row top and bottom); every width
+	// decision below reads the framed width.
 	const ring = createWindowFrame(theme, () => tui.terminal.rows);
 	const framed = () => !stopped && !failed && host.mode === "fullscreen" && options.windowFrame?.() === true && windowFrameFits(tui.terminal.columns, tui.terminal.rows);
 	const layoutColumns = () => tui.terminal.columns - (framed() ? WINDOW_FRAME_INSET : 0);
@@ -144,8 +145,8 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 	const headerOwnsStatus = () => !stopped && !failed && headerLines.length > 0 && headerPlacement() === "top" &&
 		narrowStatusOwner({ mode: host.mode, columns: layoutColumns(), statusPlacement: placement(), headerPlacement: headerPlacement() }) === STATUS_OWNER.HEADER;
 	state.headerOwnsStatus = headerOwnsStatus;
-	// The frame's right edge sits outside the rail, one more column from the
-	// editor. Read live: the frame turns on and off with the setting and with
+	// The frame's right edge and its padding column sit outside the rail, two
+	// more columns from the editor. Read live: the frame turns on and off with the setting and with
 	// terminal size, and the state outlives this install.
 	Object.defineProperty(state, "railColumns", {
 		configurable: true,
@@ -187,7 +188,8 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 		},
 	};
 	// Framed: the header is rendered `width - 2 * gap` wide and padded by the gap
-	// on both sides, so its painted bar and rule keep one column from each edge.
+	// on both sides; with the frame's own padding column its painted bar and
+	// rule keep two columns from each edge, like every other framed element.
 	const frameHeader = (lines: readonly string[], width: number): string[] => {
 		if (!framed()) {
 			headerOffset = 0;

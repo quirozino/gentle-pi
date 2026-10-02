@@ -11,7 +11,7 @@ import { createChatViewport } from "../node_modules/@earendil-works/pi-coding-ag
 process.env.GENTLE_PI_GLYPHS_FRAME = "double";
 const { installSidebar } = await import("../lib/shell-sidebar-layout.ts");
 const { sidebarHeader, sidebarPart, sidebarState } = await import("../lib/shell-sidebar.ts");
-const { backgroundSgr, resolveWindowFrame, WINDOW_FRAME_MIN_COLUMNS } = await import("../lib/window-frame.ts");
+const { backgroundSgr, resolveWindowFrame, WINDOW_FRAME_MIN_COLUMNS, WINDOW_FRAME_PAD_X } = await import("../lib/window-frame.ts");
 const { cellBackgrounds } = await import("./support/cell-backgrounds.ts");
 const { installSelectionFrameTrim } = await import("../lib/selection-frame-trim.ts");
 
@@ -86,7 +86,7 @@ async function harness(columns: number, rows: number, options: HarnessOptions): 
 		const frame = options.frame;
 		const unsidebar = installSidebar(tui, paint, undefined, undefined, undefined, { windowFrame: () => typeof frame === "function" ? frame() : frame, windowBackground: () => options.background });
 		// gentle-shell installs the selection trim next to the rail, in every mode.
-		const untrim = installSelectionFrameTrim(tui);
+		const untrim = installSelectionFrameTrim(tui, { windowFramePad: () => sidebarState(tui).framed?.() ? WINDOW_FRAME_PAD_X : 0 });
 		uninstall = () => { untrim(); unsidebar(); };
 	}
 	tui.start();
@@ -135,16 +135,16 @@ test("resolveWindowFrame reads shell.json windowFrame, the env switch wins, and 
 	assert.equal(resolveWindowFrame({ env: { NODE_TEST_CONTEXT: "child" } }), false, "the test runner never reads a developer's shell.json");
 });
 
-test("the frame closes all four sides of a narrow fullscreen screen, and content sits one cell in", async () => {
+test("the frame closes all four sides of a narrow fullscreen screen, and content sits one row and two columns in", async () => {
 	const h = await harness(60, 16, { frame: true });
 	try {
 		const screen = h.screen();
 		assertWindowFrame(screen, 60, 16);
 		const text = screen.map(strip);
 		assert.equal(text[1], `║${" ".repeat(58)}║`, "one blank row under the top rule");
-		assert.equal(text[2], `║ HEADER 56${" ".repeat(48)}║`, "the header sits one column in and one column short of the right edge");
-		assert.ok(text.some((row) => row.startsWith("║╭") && row.endsWith("╮║")), "the editor fits inside the side edges");
-		assert.match(text[13] ?? "", /^║╰─+╯║$/, "the editor's bottom border sits above the bottom spacer");
+		assert.equal(text[2], `║  HEADER 54${" ".repeat(47)}║`, "the header sits two columns in and two columns short of the right edge");
+		assert.ok(text.some((row) => row.startsWith("║ ╭") && row.endsWith("╮ ║")), "the editor fits inside the side edges and their padding column");
+		assert.match(text[13] ?? "", /^║ ╰─+╯ ║$/, "the editor's bottom border sits above the bottom spacer");
 		assert.equal(text[14], `║${" ".repeat(58)}║`, "one blank row above the bottom rule");
 	} finally { h.dispose(); }
 });
@@ -156,9 +156,9 @@ test("the frame wraps the rail layout: the rail and transcript stay inside the e
 		assertWindowFrame(screen, 160, 24);
 		const text = screen.map(strip);
 		assert.ok(text.some((row) => /Status card\s*║$/.test(row) || /Status card/.test(row)), "the rail is painted");
-		assert.equal(sidebarState(h.tui).ownsHost?.(), true, "158 framed columns still hold the rail");
-		assert.equal(sidebarState(h.tui).layoutColumns?.(), 158);
-		assert.equal(sidebarState(h.tui).railColumns, 54, "overlays keep clear of the rail and the frame edge");
+		assert.equal(sidebarState(h.tui).ownsHost?.(), true, "156 framed columns still hold the rail");
+		assert.equal(sidebarState(h.tui).layoutColumns?.(), 156, "borders and padding columns come off the layout");
+		assert.equal(sidebarState(h.tui).railColumns, 55, "overlays keep clear of the rail, the padding column and the frame edge");
 	} finally { h.dispose(); }
 });
 
@@ -166,7 +166,7 @@ test("mouse clicks reach the component under the pointer with local coordinates"
 	const h = await harness(60, 16, { frame: true });
 	try {
 		const text = h.screen().map(strip);
-		const editorTop = text.findIndex((row) => row.startsWith("║╭"));
+		const editorTop = text.findIndex((row) => row.startsWith("║ ╭"));
 		assert.ok(editorTop > 0);
 		// SGR mouse: 1-based column/row. Column 5 (screen x 4) on the editor's prompt row.
 		h.input(`\x1b[<0;5;${editorTop + 2}M`);
@@ -174,15 +174,19 @@ test("mouse clicks reach the component under the pointer with local coordinates"
 		await new Promise((resolve) => setTimeout(resolve, 10));
 		assert.ok(h.clicks.length > 0, "the editor received the click");
 		const click = h.clicks[0]!;
-		assert.equal(click.x, 3, "x is local to the editor box, which starts one column in");
+		assert.equal(click.x, 2, "x is local to the editor box, which starts two columns in");
 		assert.equal(click.y, 1, "y is local to the editor box");
-		assert.equal(click.width, 58, "the editor box is two columns narrower than the terminal");
+		assert.equal(click.width, 56, "the editor box is four columns narrower than the terminal");
 		// A click on the frame itself reaches nothing.
 		h.clicks.length = 0;
 		h.input("\x1b[<0;1;5M");
 		h.input("\x1b[<0;1;5m");
 		await new Promise((resolve) => setTimeout(resolve, 10));
 		assert.equal(h.clicks.length, 0, "the left edge is inert");
+		h.input("\x1b[<0;2;5M");
+		h.input("\x1b[<0;2;5m");
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		assert.equal(h.clicks.length, 0, "the padding column is inert");
 	} finally { h.dispose(); }
 });
 
@@ -190,7 +194,7 @@ test("a drag selection across the frame copies transcript text without frame gly
 	const h = await harness(60, 16, { frame: true });
 	try {
 		const text = h.screen().map(strip);
-		const row = text.findIndex((line) => line.startsWith("║transcript"));
+		const row = text.findIndex((line) => line.startsWith("║ transcript"));
 		assert.ok(row > 0);
 		// Press on the left frame edge, drag past the right edge one row down.
 		h.input(`\x1b[<0;1;${row + 1}M`);
@@ -199,6 +203,7 @@ test("a drag selection across the frame copies transcript text without frame gly
 		h.input(`\x1b[<0;60;${row + 2}m`);
 		assert.match(selected, /transcript/, `selected ${JSON.stringify(selected)}`);
 		assert.doesNotMatch(selected, /[║═╔╗╚╝]/u, "no frame glyph is selected or copied");
+		assert.match(selected, /^transcript/u, "the frame's padding column is not copied either");
 	} finally { h.dispose(); }
 });
 
@@ -206,11 +211,11 @@ test("the hardware cursor lands on the marker inside the frame", async () => {
 	const h = await harness(60, 16, { frame: true });
 	try {
 		const text = h.screen().map(strip);
-		const promptRow = text.findIndex((row) => row.startsWith("║│ prompt"));
+		const promptRow = text.findIndex((row) => row.startsWith("║ │ prompt"));
 		const moves = h.writes.join("").match(/\x1b\[(\d+);(\d+)H(?![\s\S]*\x1b\[\d+;\d+H)/u);
 		assert.ok(moves, "a cursor position was written");
 		assert.equal(Number(moves[1]), promptRow + 1, "cursor row (1-based) is the prompt row");
-		assert.equal(Number(moves[2]), "║│ prompt".length + 1, "cursor column follows the one-column frame offset");
+		assert.equal(Number(moves[2]), "║ │ prompt".length + 1, "cursor column follows the frame and padding offset");
 	} finally { h.dispose(); }
 });
 
@@ -291,18 +296,18 @@ test("explicit panel backgrounds stay, and the cursor, clicks and selection stil
 	const h = await harness(60, 16, { frame: true, background: WINDOW_BG, theme: panelTheme });
 	try {
 		const text = h.screen().map(strip);
-		const promptRow = text.findIndex((row) => row.startsWith("║│ prompt"));
+		const promptRow = text.findIndex((row) => row.startsWith("║ │ prompt"));
 		const moves = h.writes.join("").match(/\x1b\[(\d+);(\d+)H(?![\s\S]*\x1b\[\d+;\d+H)/u);
 		assert.ok(moves);
 		assert.equal(Number(moves[1]), promptRow + 1, "cursor row unchanged");
-		assert.equal(Number(moves[2]), "║│ prompt".length + 1, "cursor column unchanged");
-		const editorTop = text.findIndex((row) => row.startsWith("║╭"));
+		assert.equal(Number(moves[2]), "║ │ prompt".length + 1, "cursor column unchanged");
+		const editorTop = text.findIndex((row) => row.startsWith("║ ╭"));
 		h.input(`\x1b[<0;5;${editorTop + 2}M`);
 		h.input(`\x1b[<0;5;${editorTop + 2}m`);
 		await new Promise((resolve) => setTimeout(resolve, 10));
-		assert.equal(h.clicks[0]?.x, 3, "mouse coordinates unchanged");
-		const row = text.findIndex((line) => line.startsWith("║transcript"));
-		h.input(`\x1b[<0;2;${row + 1}M`);
+		assert.equal(h.clicks[0]?.x, 2, "mouse coordinates unchanged");
+		const row = text.findIndex((line) => line.startsWith("║ transcript"));
+		h.input(`\x1b[<0;3;${row + 1}M`);
 		h.input(`\x1b[<32;12;${row + 1}M`);
 		h.tui.requestRender(true);
 		await new Promise((resolve) => setTimeout(resolve, 20));
@@ -341,8 +346,10 @@ test("the background follows resize and stops when uninstalled or unset", async 
 	assert.equal(Object.prototype.hasOwnProperty.call(off.tui, "compositeFlashes"), false, "uninstall restores the renderer");
 });
 
-// The uniform inset: inside the frame every element keeps exactly one empty
-// cell between the frame line and its own outer visible edge. The header paints
+// The uniform inset: inside the frame every element keeps one empty row above
+// and below and two empty columns left and right (terminal cells are about
+// twice as tall as wide, so two columns read like one row): the frame's own
+// padding column plus the element's one-column margin. The header paints
 // edge to edge (like the float header bar and its rule), and the Status card
 // mimics a float card: a transparent one-column margin on both sides.
 const BG_THEME = { ...theme, bg: (_color: string, text: string) => `\x1b[48;5;22m${text}\x1b[49m` };
@@ -359,21 +366,21 @@ function assertUniformInset(screen: readonly string[], columns: number, rows: nu
 	assertWindowFrame(screen, columns, rows);
 	const text = screen.map(strip).map((row) => row.padEnd(columns));
 	assert.equal(text[1], blankInner(columns), `${columns}: one blank row under the top rule`);
-	const headerWidth = columns - 4;
-	assert.equal(text[2], `║ ${"H".repeat(headerWidth)} ║`, `${columns}: the header bar keeps one column from both edges`);
-	assert.equal(text[3], `║ ${"=".repeat(headerWidth)} ║`, `${columns}: the header rule keeps one column from both edges`);
+	const headerWidth = columns - 6;
+	assert.equal(text[2], `║  ${"H".repeat(headerWidth)}  ║`, `${columns}: the header bar keeps two columns from both edges`);
+	assert.equal(text[3], `║  ${"=".repeat(headerWidth)}  ║`, `${columns}: the header rule keeps two columns from both edges`);
 	assert.equal(text[rows - 2], blankInner(columns), `${columns}: one blank row above the bottom rule`);
 	assert.notEqual(text[rows - 3], blankInner(columns), `${columns}: exactly one: the dock's last line sits right above it`);
 	if (rail) {
 		const card = text.find((row) => row.includes("S"));
 		assert.ok(card, "the Status card is painted");
-		assert.match(card, /S ║$/u, `${columns}: the Status card's visible edge keeps one column from the right edge: ${JSON.stringify(card)}`);
+		assert.match(card, /S  ║$/u, `${columns}: the Status card's visible edge keeps two columns from the right edge: ${JSON.stringify(card)}`);
 	} else {
 		assert.ok(!text.some((row) => row.includes("S")), `${columns}: no rail`);
 	}
 }
 
-test("framed: every element keeps a one-cell inset on all four sides, with and without the rail", async () => {
+test("framed: every element keeps one row above/below and two columns left/right, with and without the rail", async () => {
 	for (const [columns, rows, rail] of [[160, 24, true], [80, 20, false], [50, 20, false]] as const) {
 		const h = await harness(columns, rows, insetOptions(true));
 		try {
@@ -398,18 +405,20 @@ test("framed: header clicks arrive in the header's own coordinates", async () =>
 	const events: TuiMouseEvent[] = [];
 	const h = await harness(80, 20, insetOptions(true, (event) => events.push(event)));
 	try {
-		// Screen column 3 (1-based) is the header's first cell: frame edge, gap, header.
-		h.input("\x1b[<0;3;3M");
-		h.input("\x1b[<0;3;3m");
+		// Screen column 4 (1-based) is the header's first cell: frame edge, frame padding, gap, header.
+		h.input("\x1b[<0;4;3M");
+		h.input("\x1b[<0;4;3m");
 		await new Promise((resolve) => setTimeout(resolve, 10));
 		assert.ok(events.length > 0, "the header received the click");
 		assert.equal(events[0]!.x, 0, "x is local to the painted header");
 		assert.equal(events[0]!.y, 0, "y is local to the header");
-		assert.equal(events[0]!.width, 76, "the header width excludes the inset");
+		assert.equal(events[0]!.width, 74, "the header width excludes the inset");
 		events.length = 0;
-		// The gap column itself is inert.
-		h.input("\x1b[<0;2;3M");
-		h.input("\x1b[<0;2;3m");
+		// The padding and gap columns are inert.
+		for (const column of [2, 3]) {
+			h.input(`\x1b[<0;${column};3M`);
+			h.input(`\x1b[<0;${column};3m`);
+		}
 		await new Promise((resolve) => setTimeout(resolve, 10));
 		assert.equal(events.length, 0, "the inset gap reaches nothing");
 	} finally { h.dispose(); }
@@ -433,7 +442,7 @@ test("railColumns and framed() read the live frame state, not the install-time o
 		on = true;
 		h.tui.requestRender(true);
 		await new Promise((resolve) => setTimeout(resolve, 20));
-		assert.equal(sidebarState(h.tui).railColumns, 54, "turning the frame on moves overlays clear of its edge");
+		assert.equal(sidebarState(h.tui).railColumns, 55, "turning the frame on moves overlays clear of its edge");
 		assert.equal(sidebarState(h.tui).framed?.(), true);
 		assertUniformInset(h.screen(), 160, 24, true);
 		await h.resize(WINDOW_FRAME_MIN_COLUMNS - 1, 12);
