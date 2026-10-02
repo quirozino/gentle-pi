@@ -29,8 +29,10 @@ it stale.
 - `railColumns` and a new `framed()` read live state.
 - Non-framed layouts unchanged.
 
-Out of scope (cannot edit): pi core startup listing and below-editor widgets
-painted at column 0 (pi-sysmon), `~/.pi/agent/extensions/user-message-frame.ts`.
+Out of scope (cannot edit): below-editor widgets painted at column 0 (pi-sysmon),
+`~/.pi/agent/extensions/user-message-frame.ts`. The pi core startup listing is aligned
+from gentle-pi in T5 via a prototype patch. pi's transcript scrollbar stays at 1 column
+from the right frame (left as is).
 
 ## Route
 Delegated writer (2+ non-trivial files).
@@ -47,6 +49,27 @@ Delegated writer (2+ non-trivial files).
   the header's own inset stays 1. Selection trim drops the padding column after
   a column-0 frame glyph on terminal-wide screen lines only. Route: inline
   (parent-delegated bounded writer; 4 source files, mechanical geometry).
+
+- [x] T5 Startup listing margin: pi core builds the `[Skills]`/`[Prompts]`/`[Extensions]`
+  (and conflict/issue) sections in `InteractiveMode.showLoadedResources()` as Text with
+  paddingX 0 (`interactive-mode.js:1337`, `:1428`), while `showStatus()` uses paddingX 1
+  (`interactive-mode.js:3063`), framed or not. `lib/startup-listing-margin.ts` wraps
+  `showLoadedResources` (versioned, pristine kept under `__gentleStartupListingMarginOriginal`)
+  and pads zero-padded sections to 1 column (left and wrap width). Installed from
+  `extensions/gentle-shell.ts`. Route: inline (parent-delegated bounded writer; one new
+  lib + one-line wiring). Commit `4a8c5e164`.
+- [x] T6 pi logo flash on start and `/reload`: `InteractiveMode.init()` adds `BuiltInHeader`
+  and requests a render (`interactive-mode.js:754-765`) before `bindExtensions`
+  (`:1468`); `resetExtensionUI()` restores it on reload (`:1870`); the banner's
+  `setHeader()` only lands in session_start after an await plus a 50ms timer
+  (`extensions/startup-banner.ts`). Extension factories run before InteractiveMode is
+  constructed (`main.js:697` runtime vs `:777` mode), so `lib/builtin-header-hold.ts`
+  patches the prototype (versioned): while armed and no custom header is set, the
+  headerContainer renders nothing. The banner arms in its factory, settles by installing
+  its header or releasing when it declines (no UI, CLI subcommand, suppressed); explicit
+  `setHeader(undefined)` releases; 10s safety deadline. `quietStartup: true` was rejected:
+  it also hides the startup listing and removes pi's header fallback. Route: inline
+  (parent-delegated bounded writer). Commit `68e0d87c6`.
 
 ## Acceptance criteria
 - Framed: top gap 1 row, bottom gap 1 row, header bar/rule left/right gap 1, rail card right gap 1.
@@ -95,6 +118,21 @@ user-message-frame.ts's left `║`.
 | Chat text (pi notices) L | 2 | 2 | 2 |
 | pi core startup listing L | 1 (was 0) | 1 | 1 |
 | pi transcript scrollbar R | 1 (was 0) | 1 | 1 |
+
+## T5 evidence
+- RED: module missing; GREEN: `tests/startup-listing-margin.test.ts` 5 pass.
+- Typecheck no regressions; `npm test` 4702 pass / 1 fail (pre-existing "grouped Status").
+- Live tmux (isolated server): left gap from `║` of `[Skills]`, wrapped item lines,
+  `[Extensions]` and "Skill registry refreshed…" = 2 at 160, 80 and 50 columns (was 1).
+
+## T6 evidence
+- Before (isolated tmux, 160x50, ~50ms captures): 22 consecutive frames (~1.1s) showed
+  pi's `▀▀█ v1.0.0` logo + key hints, then it stayed inside the framed chrome until the
+  banner header landed.
+- RED: module missing; GREEN: `tests/builtin-header-hold.test.ts` 8 pass; focused banner
+  suites 30 pass. Typecheck no regressions; `npm test` 4710 pass / 1 fail (pre-existing).
+- After: startup 100 frames, 0 with the logo; `/reload` 80 + 200 frames, 0 with the logo;
+  DDATA wordmark header present after reload.
 
 ## Next step
 User review; push/PR are user decisions.
