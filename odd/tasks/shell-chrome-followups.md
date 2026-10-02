@@ -51,6 +51,13 @@ and surface missing state, under the custom Matrix-Green theme.
   HTML loop (reveal, pause, scanner band, hold, hide, rest) inside its one
   title row: same 3 rows and width, legible, roles only, `quality` policy
   only, one pending redraw, none while the rail is not shown.
+- T15 (2026-10-02): window background. herdr shows Pi's default-background
+  cells as gray `#343743` and OSC 11 never leaves the pane, but explicit
+  truecolor backgrounds render; paint the configured `windowBackground`
+  (`#rrggbb`, Matrix-Green `bg` `#030904`) on every fullscreen cell left at
+  the terminal default, framed or not, without touching explicit
+  backgrounds, cursor, mouse, selection, widths or resize. Fix review
+  advisory R3-window-frame-env-injection (invalid env falls through) too.
 
 Done outside the repo (config): `-builtin:codemode` added to
 ~/.pi/agent/settings.json `extensions` (same remedy upstream applies to the
@@ -345,6 +352,64 @@ Baseline: 1 known failure ("grouped Status preserves structured fields").
   Cards" pins `performance` policy for its byte comparisons.
   Live: tmux 200x55, 40 samples over ~5 s show reveal (`(o`, `(o_o) St`),
   full title, hide (`      Status`) and blank rest frames.
+- [x] T15 window background (+ review advisory R3-window-frame-env-injection).
+  Route: inline (writer subagent executing directly; 3 source files, one
+  helper module and tests, the design was settled by the pi-tui read below).
+  Investigation (pi-tui 1.0 dist): the layout tree cannot do it, because
+  `paintBox` composites leaves onto rows (fast path stores unpadded lines)
+  and every cell a leaf leaves or resets stays at the terminal default.
+  `TuiAltScreen.doRender` composes layout -> search -> scroll-to-end ->
+  overlays -> selection -> `compositeFlashes` -> cursor extraction ->
+  `applyLineResets` -> width clamp; `compositeFlashes` is only called there.
+  Design: `lib/window-frame.ts` gains `parseHexColor` (strict `#rrggbb`),
+  `resolveWindowBackground` (env `GENTLE_PI_WINDOW_BACKGROUND` off|#rrggbb
+  wins, else shell.json `windowBackground`, else off; set-but-invalid env
+  is off), `backgroundSgr`, and `fillDefaultBackground` /
+  `fillWindowBackground`: one linear `indexOf("\x1b")` scan per row, no
+  regex; the row opens with `48;2;r;g;b`, any SGR whose net background
+  effect is default (`0`, empty, `49`, combined params) is followed by the
+  SGR again, explicit backgrounds (`40-47`, `100-107`, `48;5`, `48;2`,
+  colon `48:`) are left as is, `38`/`48`/`58` colour arguments are skipped
+  (so `38;2;0;0;0` is not a reset), OSC/APC/DCS (cursor marker, OSC 8)
+  pass through, image rows are untouched, and rows are padded with
+  `\x1b[0m` + SGR + spaces only up to the width (never past it). Missing
+  rows up to the terminal height are filled. `installSidebar` wraps that
+  instance's `compositeFlashes` (after overlays and selection, before cursor
+  extraction) whenever `windowBackground` is passed, gated on fullscreen and
+  not stopped, and restores it on uninstall; so it works with and without
+  the frame. gentle-shell resolves it per session start next to the frame.
+  Advisory fix: `resolveWindowFrame` env `GENTLE_PI_WINDOW_FRAME` now fails
+  closed (off) on a set, non-blank, unrecognised value instead of falling
+  through to shell.json; blank defers to shell.json.
+  Known limits: regular (non-fullscreen) mode is unchanged; a renderer
+  without `compositeFlashes` gets no fill; text under reverse video
+  (selection, prompt cursor block) shows the configured colour as its
+  foreground, by design of `7m`.
+  Config (outside repo): `"windowBackground": "#030904"` added to
+  ~/.pi/gentle-ai/shell.json (backup: scratchpad
+  `shell.json.bak-before-windowBackground`).
+  Tests: new tests/window-background.test.ts (strict hex; env/config
+  precedence and fail-closed env for both settings; plain rows filled from
+  col 0 to width; six reset spellings re-assert; `48;2`/`48;5`/`44` cells
+  untouched; colour args and colon forms; ASCII/CJK/emoji/ZWJ widths; over
+  wide rows not padded; markers, OSC 8 and Kitty rows); tests/window-frame
+  (framed screen fully filled including rules; unframed and rail layouts
+  filled; truecolor and 256 panels keep their cells, CJK/emoji row at 60;
+  cursor, click coordinates and the `7m` selection unchanged under the
+  fill; resize 44x12 and below the frame minimum; inert hook without the
+  setting, restored on uninstall). Helper tests/support/cell-backgrounds.ts
+  replays SGR per cell.
+  Commit: `be61fb2b3`.
+  Checks: `node --experimental-strip-types --test tests/window-background.test.ts`:
+  10 pass; `... tests/window-frame.test.ts`: 13 pass; `CI=true pnpm run
+  typecheck`: 188 recorded, no regressions (10 pairs improved);
+  `pnpm test`: 4725 tests, 1 failure (baseline "grouped Status"),
+  provider-contract PASS, runtime-harness PASS (no TTY flakes).
+  Live: tmux 160x45 `pi --no-session` (frame on, Matrix-Green):
+  `capture-pane -e` replayed per cell (tmux carries SGR across rows): 45/45
+  rows start on `48;2;3;9;4`, 45/45 rows have no default-background cell,
+  0 default cells; 5043 cells `3;9;4`, 2157 cells panel `10;31;18`
+  (= 7200 = 160x45).
 
 ## Progress / evidence
 - Commits: `e43016c30` (T1 + this document), `ec10f4ad4` (T2),
@@ -420,5 +485,6 @@ Baseline: 1 known failure ("grouped Status preserves structured fields").
   static rail columns (shell-sidebar-layout.ts:142).
 
 ## Next step
-User restarts pi (or `/reload`) to see T7–T14; RDD review of the work-unit
-commits (T8–T14) is the parent's call.
+User restarts pi (or `/reload`) to see T7–T15 (T15: the herdr pane should
+show `#030904` instead of gray); RDD review of the work-unit commits
+(T8–T15) is the parent's call.
