@@ -395,6 +395,19 @@ Baseline: 1 known failure ("grouped Status preserves structured fields").
   no regressions; `pnpm test` 4669 tests, 1 failure (baseline "grouped
   Status"), provider-contract PASS, runtime-harness PASS.
 
+- T8–T14 commits: `2f6820e61` (T8), `329ac7543` + `84df0ec10` (T9, test
+  typing fix), `b45969e85` (T10), `669458995` (T11), `6d2c790ce` (T12),
+  `2a0c5d604` (T13), `fa5220fa7` (T14).
+- T8–T14 final checks: `CI=true pnpm run typecheck`: 188 recorded, no
+  regressions (10 pairs improved, baseline not shrunk); `pnpm test`: 4711
+  tests, 1 failure (baseline "grouped Status"), provider-contract PASS,
+  runtime-harness PASS (the 4 gentle-shell-bin TTY flakes did not recur).
+- Live tmux (200x55, fullscreen, Matrix-Green, windowFrame on): window frame
+  on four sides, framed Status with nested boxes, `═` header rule, title
+  animation frames. Startup shows an `[Extension issues]` block: the npm
+  pi-mcp-adapter package registers `/mcp`, so Pi skips its built-in `mcp`
+  (environment, not this branch).
+
 ## Next step
-User restarts pi (or `/reload`) to see framed float cards (T7); RDD review of
-the work-unit commits is the parent's call.
+User restarts pi (or `/reload`) to see T7–T14; RDD review of the work-unit
+commits (T8–T14) is the parent's call.
