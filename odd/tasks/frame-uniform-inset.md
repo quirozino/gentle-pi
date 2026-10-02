@@ -100,6 +100,10 @@ Delegated writer (2+ non-trivial files).
   Old file moved to the session scratchpad backup (`user-extensions-backup/user-message-frame.ts.bak`).
   Route: inline (bounded writer). RED not observed: behavior migrated from existing code, so
   tests were written against the ported implementation (exception recorded).
+- [x] T10 Upstream-merge guard: section below, and the same list in `docs/gentle-shell.md`
+  (Fullscreen layout). pi-sysmon: the line-mode padding test is in `test/extension.test.ts`
+  (run by `npm test`); listed as a fork-owned change in `ddata/README.md` (`ee91c6e`;
+  `check-upstream.sh` computes fork files from git, no hardcoded list). Route: inline.
 
 ## Acceptance criteria
 - Framed: top gap 1 row, bottom gap 1 row, header bar/rule left/right gap 1, rail card right gap 1.
@@ -175,3 +179,32 @@ user-message-frame.ts's left `║`.
 
 ## Next step
 User review; push/PR are user decisions.
+
+## Upstream-merge guard
+Run after a pi upgrade (`@earendil-works/pi-coding-agent`, `pi-tui`), an upstream gentle-shell
+merge, or `gentle-ai sync/upgrade`:
+- `npm run check:pi-contracts`: live pi vs `lib/pi-contracts.ts` (exit 1 only on drift).
+- `node --experimental-strip-types --test tests/pi-contracts.test.ts tests/startup-listing-margin.test.ts
+  tests/builtin-header-hold.test.ts tests/window-frame.test.ts tests/shell-sidebar-layout.test.ts
+  tests/selection-frame-trim.test.ts tests/user-message-frame.test.ts tests/startup-banner.test.ts
+  tests/gentle-shell.test.ts`
+- Files to preserve in a merge: `lib/pi-contracts.ts`, `lib/startup-listing-margin.ts`,
+  `lib/builtin-header-hold.ts`, `lib/user-message-frame.ts`, `lib/window-frame.ts`,
+  `lib/shell-sidebar-layout.ts`, `lib/selection-frame-trim.ts`, their wiring in
+  `extensions/gentle-shell.ts` / `extensions/startup-banner.ts`, `tests/fixtures/pi-contracts/`,
+  `scripts/check-pi-contracts.mjs`.
+- pi-sysmon upstream merge: `npm test` in `~/src/pi-sysmon-ddata` must still run
+  "line mode: 1 column of padding on each side…".
+
+## T8-T10 evidence
+- T8 `235e7f4c8`: `tests/pi-contracts.test.ts` 7 pass; `npm run check:pi-contracts` 6 passed;
+  `PI_CODING_AGENT_DIR=/nonexistent` lists every contract as could-not-check, exit 0; a copied pi with
+  the listing `0, 0)` edited reports `drifted startup-listing-padding`, exit 1. Focused suite 375/376
+  (pre-existing "grouped Status"); typecheck no regressions.
+- T9 `e304ebe83`: `tests/user-message-frame.test.ts` 8 pass; check 7 passed. Live, isolated tmux
+  (160x50, synthetic session resumed, no model message): with the legacy file still loaded, one
+  frame (no double wrap); after moving it out and restarting, the frame comes from gentle-pi, 2 columns
+  from the left `║`, 1 column before the scrollbar. Startup and `/reload` show the logo in 0 of 40 and
+  0 of 60 frames. `[Skills]` sits 2 columns in. Top and bottom gaps are 1 row; the rail card sits 2 columns
+  from the right frame.
+- T10: pi-sysmon `ee91c6e`; the line-mode padding test passes. `npm test` 4732 pass / 1 fail (pre-existing "grouped Status"); provider-contract and runtime-harness PASS.
