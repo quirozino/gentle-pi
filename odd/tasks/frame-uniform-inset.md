@@ -71,6 +71,16 @@ Delegated writer (2+ non-trivial files).
   it also hides the startup listing and removes pi's header fallback. Route: inline
   (parent-delegated bounded writer). Commit `68e0d87c6`.
 
+- [x] T7 Review follow-ups for `753050694..05624f8d6` (4 non-blocking findings):
+  header hold no longer reads pi's private `customHeader`; it tracks installation through
+  its own `setExtensionHeader`/`resetExtensionUI` wrappers (patch v2, instances rehooked
+  from the stored original render), so a renamed field cannot blank the header. Banner
+  release paths (no UI, CLI subcommand, terminal too small) and the /reload re-armed 10s
+  deadline are tested. `railColumns` stays a live getter; a setter turns a plain
+  assignment (older build) into a data property instead of a strict-mode TypeError, and
+  the next install restores the getter. Route: inline (parent-delegated bounded writer).
+  Commits `f8df9967d`, `557c0a4ec`.
+
 ## Acceptance criteria
 - Framed: top gap 1 row, bottom gap 1 row, header bar/rule left/right gap 1, rail card right gap 1.
 - Unframed geometry byte-identical to before.
@@ -133,6 +143,15 @@ user-message-frame.ts's left `║`.
   suites 30 pass. Typecheck no regressions; `npm test` 4710 pass / 1 fail (pre-existing).
 - After: startup 100 frames, 0 with the logo; `/reload` 80 + 200 frames, 0 with the logo;
   DDATA wordmark header present after reload.
+
+## T7 evidence
+- RED: renamed-field FakeMode rendered `''` after install and after /reload reinstall;
+  `railColumns = 53` threw `TypeError: Cannot set property railColumns ... only a getter`.
+  Mutation (dropping the too-small release) failed the new banner test.
+- GREEN: focused suites 97 pass / 1 fail (pre-existing "grouped Status preserves
+  structured fields..."); typecheck no regressions; `npm test` 4717 pass / 1 fail (same).
+- Live (isolated tmux, 160x50, ~50ms captures): startup 120 frames, 0 with the logo,
+  DDATA wordmark present; `/reload` 200 frames, 0 with the logo, wordmark back after.
 
 ## Next step
 User review; push/PR are user decisions.
