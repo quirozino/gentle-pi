@@ -7,7 +7,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import startup, { isPiCliSubcommandInvocation, readGitBranch } from "../extensions/startup-banner.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { Container, Text, visibleWidth } from "@earendil-works/pi-tui";
+import { builtInHeaderHoldArmed, installBuiltInHeaderHold, resetBuiltInHeaderHoldForTests } from "../lib/builtin-header-hold.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 
 test("startup artwork spells Gentle Shell with aligned animation spans", () => {
@@ -402,4 +403,63 @@ test("launcher-injected extension directories do not suppress the startup banner
 	for (const sub of ["install", "remove", "uninstall", "update", "list", "config", "auth"]) {
 		assert.equal(isPiCliSubcommandInvocation(["node", "pi", sub, "npm:x"]), true, sub);
 	}
+});
+
+// When the banner declines to draw, it must release the built-in header hold
+// so pi's own header paints instead of a blank header row.
+async function runDecliningStart(
+	t: import("node:test").TestContext,
+	options: { hasUI: boolean; argv: string[]; rows: number; columns: number },
+) {
+	resetBuiltInHeaderHoldForTests();
+	t.after(() => resetBuiltInHeaderHoldForTests());
+	t.mock.method(fs, "readFile", async () => JSON.stringify({ showRose: true, showTextLogo: true, color: "pink" }));
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	const argv = process.argv;
+	process.argv = options.argv;
+	t.after(() => { process.argv = argv; });
+	for (const [key, value] of [["rows", options.rows], ["columns", options.columns]] as const) {
+		const descriptor = Object.getOwnPropertyDescriptor(process.stdout, key);
+		Object.defineProperty(process.stdout, key, { configurable: true, writable: true, value });
+		t.after(() => descriptor ? Object.defineProperty(process.stdout, key, descriptor) : Reflect.deleteProperty(process.stdout, key));
+	}
+	// A stand-in for pi's InteractiveMode, hooked by the same hold.
+	const Mode = class {
+		headerContainer = new Container();
+		ui = { requestRender() {} };
+		async init() { this.headerContainer.addChild(new Text("PI-LOGO", 0, 0)); }
+		setExtensionHeader() {}
+		resetExtensionUI() {}
+	};
+	installBuiltInHeaderHold(Mode);
+	let start: Function;
+	startup({ on: (name: string, fn: Function) => {
+		if (name === "session_start") start = fn;
+	}, registerCommand() {}, getCommands: () => [], getAllTools: () => [] } as unknown as ExtensionAPI);
+	assert.equal(builtInHeaderHoldArmed(), true, "loading the banner holds pi's header");
+	const mode = new Mode();
+	await mode.init();
+	assert.deepEqual(mode.headerContainer.render(40), [], "pi's header is held before session_start");
+	let headerInstalled = false;
+	await start!({}, {
+		hasUI: options.hasUI,
+		cwd: "/fixture",
+		ui: { setHeader: () => { headerInstalled = true; }, setStatus() {}, notify() {} },
+	});
+	assert.equal(headerInstalled, false, "the banner declined to draw");
+	assert.equal(builtInHeaderHoldArmed(), false, "the hold is released");
+	assert.match(mode.headerContainer.render(40).join("\n"), /PI-LOGO/, "pi's header can render");
+}
+
+test("no UI: the banner releases the header hold", async (t) => {
+	await runDecliningStart(t, { hasUI: false, argv: ["node"], rows: 40, columns: 160 });
+});
+
+test("CLI subcommand: the banner releases the header hold", async (t) => {
+	await runDecliningStart(t, { hasUI: true, argv: ["node", "pi", "update"], rows: 40, columns: 160 });
+});
+
+test("terminal too small: the banner releases the header hold", async (t) => {
+	await runDecliningStart(t, { hasUI: true, argv: ["node"], rows: 10, columns: 30 });
 });

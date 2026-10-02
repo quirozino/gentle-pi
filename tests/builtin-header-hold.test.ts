@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { Container, Spacer, Text } from "@earendil-works/pi-tui";
 import {
 	armBuiltInHeaderHold,
+	builtInHeaderHoldArmed,
 	BUILTIN_HEADER_HOLD_VERSION,
 	BUILTIN_HEADER_HOLD_VERSION_FLAG,
 	installBuiltInHeaderHold,
@@ -133,4 +134,72 @@ test("patch is idempotent and versioned", () => {
 	assert.equal(Mode.prototype.init, init);
 	assert.equal((Mode.prototype as unknown as Record<string, unknown>)[BUILTIN_HEADER_HOLD_VERSION_FLAG], BUILTIN_HEADER_HOLD_VERSION);
 	assert.doesNotThrow(() => installBuiltInHeaderHold(undefined));
+});
+
+// pi core keeps the installed header in a private field; a rename must not
+// leave the hold reading a field that no longer exists and painting nothing.
+class RenamedFieldMode {
+	headerContainer = new Container();
+	builtInHeader: Text | undefined;
+	extensionHeader: Text | undefined;
+	ui = { requestRender: () => {} };
+	async init(): Promise<void> {
+		this.builtInHeader = new Text("PI-LOGO", 0, 0);
+		this.headerContainer.addChild(this.builtInHeader);
+	}
+	setExtensionHeader(factory?: () => Text): void {
+		const current = this.extensionHeader ?? this.builtInHeader!;
+		const index = this.headerContainer.children.indexOf(current);
+		this.extensionHeader = factory ? factory() : undefined;
+		this.headerContainer.children[index] = this.extensionHeader ?? this.builtInHeader!;
+	}
+	resetExtensionUI(): void {
+		this.setExtensionHeader(undefined);
+	}
+}
+
+test("an installed header renders even when pi's private header field is renamed", async () => {
+	resetBuiltInHeaderHoldForTests();
+	const Mode = class extends RenamedFieldMode {};
+	installBuiltInHeaderHold(Mode);
+	armBuiltInHeaderHold();
+	const mode = new Mode();
+	await mode.init();
+	assert.deepEqual(mode.headerContainer.render(40), [], "the logo stays held before the header lands");
+	mode.setExtensionHeader(() => new Text("GENTLE", 0, 0));
+	assert.match(mode.headerContainer.render(40).join("\n"), /GENTLE/);
+});
+
+test("reload with a renamed header field still holds the logo and re-installs", async () => {
+	resetBuiltInHeaderHoldForTests();
+	const Mode = class extends RenamedFieldMode {};
+	installBuiltInHeaderHold(Mode);
+	armBuiltInHeaderHold();
+	const mode = new Mode();
+	await mode.init();
+	mode.setExtensionHeader(() => new Text("GENTLE", 0, 0));
+	mode.resetExtensionUI();
+	assert.deepEqual(mode.headerContainer.render(40), []);
+	mode.setExtensionHeader(() => new Text("GENTLE2", 0, 0));
+	assert.match(mode.headerContainer.render(40).join("\n"), /GENTLE2/);
+});
+
+test("reload re-arms the safety deadline, which restores pi's header if no banner reinstalls", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const Mode = setup();
+	armBuiltInHeaderHold({ deadlineMs: 1000 });
+	const mode = new Mode();
+	await mode.init();
+	mode.setExtensionHeader(() => new Text("GENTLE", 0, 0));
+	t.mock.timers.tick(5000);
+	mode.resetExtensionUI();
+	assert.deepEqual(mode.headerContainer.render(40), [], "held right after /reload");
+	assert.equal(builtInHeaderHoldArmed(), true);
+	t.mock.timers.tick(999);
+	assert.deepEqual(mode.headerContainer.render(40), [], "still held just before the deadline");
+	const before = mode.renders;
+	t.mock.timers.tick(1);
+	assert.equal(builtInHeaderHoldArmed(), false);
+	assert.match(text(mode), /PI-LOGO/);
+	assert.ok(mode.renders > before, "the release requests a render");
 });
