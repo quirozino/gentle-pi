@@ -4,7 +4,7 @@ import type { ShellBarTheme } from "./shell-bar.ts";
 import { CARD_STYLE, cardStyle, type CardStyle } from "./shell-card.ts";
 import { renderSidebarBanner } from "./shell-sidebar-banner.ts";
 import type { Density, HeaderPlacement, StatusPlacement } from "./visual-customization-policy.ts";
-import { createWindowFrame, WINDOW_FRAME_INSET, windowFrameFits } from "./window-frame.ts";
+import { createWindowFrame, fillWindowBackground, WINDOW_FRAME_INSET, windowFrameFits } from "./window-frame.ts";
 
 export const SIDEBAR_BREAKPOINT = 140;
 const RAIL_WIDTH = 50;
@@ -80,6 +80,8 @@ export interface SidebarOptions {
 	bannerTick?: () => number | undefined;
 	/** Draw the full-window frame around the fullscreen layout (shell.json `windowFrame`). */
 	windowFrame?: () => boolean;
+	/** SGR painted on every default-background cell of the fullscreen screen (shell.json `windowBackground`); undefined is off. */
+	windowBackground?: () => string | undefined;
 }
 
 export const STATUS_OWNER = { HEADER: "header", BOTTOM: "bottom" } as const;
@@ -409,6 +411,36 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			state.active = false;
 		}
 	};
+	// The window background cannot come from the layout tree: pi-tui composes
+	// boxes onto rows and leaves every uncovered cell, and every cell a leaf
+	// resets, at the terminal default. The last composition stage of the
+	// alt-screen frame (compositeFlashes, after overlays and selection, before
+	// cursor extraction and line resets) is the one place that sees the final
+	// row, so it is wrapped on this instance and the fill runs there, framed or
+	// not. A renderer without that stage (regular mode) is left alone.
+	const painter = tui as unknown as { compositeFlashes?: (screen: string[], width: number, height: number) => string[] };
+	const compose = painter.compositeFlashes;
+	if (options.windowBackground && typeof compose === "function") {
+		const hadOwn = Object.prototype.hasOwnProperty.call(painter, "compositeFlashes");
+		const background = options.windowBackground;
+		const wrapped = function (this: unknown, screen: string[], width: number, height: number): string[] {
+			const composed = compose.call(this, screen, width, height);
+			if (stopped || host.mode !== "fullscreen") return composed;
+			let sgr: string | undefined;
+			try {
+				sgr = background();
+			} catch {
+				sgr = undefined;
+			}
+			return sgr ? fillWindowBackground(composed, width, height, sgr) : composed;
+		};
+		painter.compositeFlashes = wrapped;
+		cleanups.push(() => {
+			if (painter.compositeFlashes !== wrapped) return;
+			if (hadOwn) painter.compositeFlashes = compose;
+			else Reflect.deleteProperty(painter, "compositeFlashes");
+		});
+	}
 	attach();
 	// Pi replaces renderers without a session event. Rebind only that transition;
 	// resize and scroll remain owned by Pi's native layout/render loop.

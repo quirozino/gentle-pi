@@ -11,7 +11,8 @@ import { createChatViewport } from "../node_modules/@earendil-works/pi-coding-ag
 process.env.GENTLE_PI_GLYPHS_FRAME = "double";
 const { installSidebar } = await import("../lib/shell-sidebar-layout.ts");
 const { sidebarHeader, sidebarPart, sidebarState } = await import("../lib/shell-sidebar.ts");
-const { resolveWindowFrame, WINDOW_FRAME_MIN_COLUMNS } = await import("../lib/window-frame.ts");
+const { backgroundSgr, resolveWindowFrame, WINDOW_FRAME_MIN_COLUMNS } = await import("../lib/window-frame.ts");
+const { cellBackgrounds } = await import("./support/cell-backgrounds.ts");
 const { installSelectionFrameTrim } = await import("../lib/selection-frame-trim.ts");
 
 const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
@@ -30,7 +31,7 @@ interface Harness {
 	dispose(): void;
 }
 
-async function harness(columns: number, rows: number, options: { frame: boolean; sidebar?: boolean; theme?: typeof theme }): Promise<Harness> {
+async function harness(columns: number, rows: number, options: { frame: boolean; sidebar?: boolean; theme?: typeof theme; background?: string; transcript?: string[] }): Promise<Harness> {
 	let size = { columns, rows };
 	let onInput: ((data: string) => void) | undefined;
 	let onResize: (() => void) | undefined;
@@ -54,7 +55,7 @@ async function harness(columns: number, rows: number, options: { frame: boolean;
 	above.addChild(new Spacer(1));
 	const footer = new Container();
 	const viewport = createChatViewport({
-		document: lines(Array.from({ length: 30 }, (_, i) => `transcript ${i + 1}`)),
+		document: lines(options.transcript ?? Array.from({ length: 30 }, (_, i) => `transcript ${i + 1}`)),
 		pendingMessages: new Container(), status: new Container(), widgetsAbove: above,
 		editor, widgetsBelow: new Container(), footer, scrollbar: "auto",
 	});
@@ -65,7 +66,7 @@ async function harness(columns: number, rows: number, options: { frame: boolean;
 	if (options.sidebar !== false) {
 		footer.addChild(sidebarPart(tui, "footer", lines(["BOTTOM BAR"]), { render: () => ["Status card"], invalidate() {} }));
 		sidebarHeader(tui, { render: (width: number) => [`HEADER ${width}`], invalidate() {} });
-		const unsidebar = installSidebar(tui, paint, undefined, undefined, undefined, { windowFrame: () => options.frame });
+		const unsidebar = installSidebar(tui, paint, undefined, undefined, undefined, { windowFrame: () => options.frame, windowBackground: () => options.background });
 		// gentle-shell installs the selection trim next to the rail, in every mode.
 		const untrim = installSelectionFrameTrim(tui);
 		uninstall = () => { untrim(); unsidebar(); };
@@ -112,7 +113,7 @@ test("resolveWindowFrame reads shell.json windowFrame, the env switch wins, and 
 	assert.equal(resolveWindowFrame({ env: {}, readConfig: () => [] }), false);
 	assert.equal(resolveWindowFrame({ env: { GENTLE_PI_WINDOW_FRAME: "off" }, readConfig: () => ({ windowFrame: true }) }), false);
 	assert.equal(resolveWindowFrame({ env: { GENTLE_PI_WINDOW_FRAME: "on" }, readConfig: () => ({}) }), true);
-	assert.equal(resolveWindowFrame({ env: { GENTLE_PI_WINDOW_FRAME: "maybe" }, readConfig: () => ({ windowFrame: true }) }), true, "an invalid env value falls through");
+	assert.equal(resolveWindowFrame({ env: { GENTLE_PI_WINDOW_FRAME: "maybe" }, readConfig: () => ({ windowFrame: true }) }), false, "an invalid env value fails closed");
 	assert.equal(resolveWindowFrame({ env: { NODE_TEST_CONTEXT: "child" } }), false, "the test runner never reads a developer's shell.json");
 });
 
@@ -227,4 +228,95 @@ test("the frame paints only the border role", async () => {
 		assert.match(screen[3]!, new RegExp(`${border}║.*${border}║`, "u"), "both side edges paint the border role");
 		assert.doesNotMatch(screen.join("\n"), /#[0-9a-f]{6}/iu, "roles only");
 	} finally { h.dispose(); }
+});
+
+// The window background (shell.json `windowBackground`) runs on the composed
+// alt-screen frame, so it is asserted on what pi-tui actually wrote.
+const WINDOW_BG = backgroundSgr({ r: 3, g: 9, b: 4 });
+const OURS = "2;3;9;4";
+
+function assertFilled(screen: readonly string[], columns: number, rows: number): void {
+	assert.equal(screen.length, rows);
+	for (const [index, row] of screen.entries()) {
+		assert.ok(row.startsWith(WINDOW_BG), `row ${index} opens with the background`);
+		const cells = cellBackgrounds(row);
+		assert.equal(cells.length, columns, `row ${index} covers ${columns} columns`);
+		assert.ok(cells.every((cell) => cell !== "default"), `row ${index} has no default-background cell: ${JSON.stringify(row)}`);
+	}
+}
+
+test("the window background fills every cell of a framed screen, glyphs and margins included", async () => {
+	const h = await harness(60, 16, { frame: true, background: WINDOW_BG });
+	try {
+		const screen = h.screen();
+		assertWindowFrame(screen, 60, 16);
+		assertFilled(screen, 60, 16);
+		assert.ok(cellBackgrounds(screen[0]!).every((cell) => cell === OURS), "the top rule sits on the background");
+	} finally { h.dispose(); }
+});
+
+test("the window background works without the frame and on the rail layout", async () => {
+	for (const [columns, rows] of [[60, 16], [160, 24]] as const) {
+		const h = await harness(columns, rows, { frame: false, background: WINDOW_BG });
+		try {
+			assertFilled(h.screen(), columns, rows);
+			assert.ok(!h.screen().map(strip).some((row) => row.startsWith("║")), "no frame without the frame setting");
+		} finally { h.dispose(); }
+	}
+});
+
+test("explicit panel backgrounds stay, and the cursor, clicks and selection still work under the background", async () => {
+	const panel = "\x1b[48;2;10;31;18m";
+	const panelTheme = { fg: (color: string, text: string) => color === "border" ? text : `${panel}${text}\x1b[49m`, bold: (text: string) => text };
+	const h = await harness(60, 16, { frame: true, background: WINDOW_BG, theme: panelTheme });
+	try {
+		const text = h.screen().map(strip);
+		const promptRow = text.findIndex((row) => row.startsWith("║│ prompt"));
+		const moves = h.writes.join("").match(/\x1b\[(\d+);(\d+)H(?![\s\S]*\x1b\[\d+;\d+H)/u);
+		assert.ok(moves);
+		assert.equal(Number(moves[1]), promptRow + 1, "cursor row unchanged");
+		assert.equal(Number(moves[2]), "║│ prompt".length + 1, "cursor column unchanged");
+		const editorTop = text.findIndex((row) => row.startsWith("║╭"));
+		h.input(`\x1b[<0;5;${editorTop + 2}M`);
+		h.input(`\x1b[<0;5;${editorTop + 2}m`);
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		assert.equal(h.clicks[0]?.x, 3, "mouse coordinates unchanged");
+		const row = text.findIndex((line) => line.startsWith("║transcript"));
+		h.input(`\x1b[<0;2;${row + 1}M`);
+		h.input(`\x1b[<32;12;${row + 1}M`);
+		h.tui.requestRender(true);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		const selected = h.screen()[row]!;
+		h.input(`\x1b[<0;12;${row + 1}m`);
+		assert.match(selected, /\x1b\[7m/u, "the selection highlight still shows");
+		assertFilled(h.screen(), 60, 16);
+	} finally { h.dispose(); }
+	// Panel cells (truecolor and 256-colour) keep their own background next to filled cells.
+	const p = await harness(60, 16, { frame: false, background: WINDOW_BG, transcript: [`plain ${panel}PANEL\x1b[0m tail`, "\x1b[48;5;22mCARD\x1b[49m 日本 🚀"] });
+	try {
+		const panelRow = p.screen().find((row) => strip(row).startsWith("plain PANEL"))!;
+		const cells = cellBackgrounds(panelRow);
+		assert.deepEqual(cells.slice(0, 12), [...Array(6).fill(OURS), ...Array(5).fill("2;10;31;18"), OURS]);
+		assert.equal(cells.length, 60);
+		const cardRow = p.screen().find((row) => strip(row).startsWith("CARD"))!;
+		const card = cellBackgrounds(cardRow);
+		assert.deepEqual(card.slice(0, 5), [...Array(4).fill("5;22"), OURS]);
+		assert.equal(card.length, 60, "CJK and emoji widths keep the row at the screen width");
+	} finally { p.dispose(); }
+});
+
+test("the background follows resize and stops when uninstalled or unset", async () => {
+	const h = await harness(60, 16, { frame: true, background: WINDOW_BG });
+	try {
+		await h.resize(44, 12);
+		assertFilled(h.screen(), 44, 12);
+		await h.resize(WINDOW_FRAME_MIN_COLUMNS - 1, 12);
+		assertFilled(h.screen(), WINDOW_FRAME_MIN_COLUMNS - 1, 12);
+	} finally { h.dispose(); }
+	const off = await harness(60, 16, { frame: true });
+	try {
+		assert.ok(!off.screen().some((row) => row.includes(WINDOW_BG)), "no background without the setting");
+		assert.equal(Object.prototype.hasOwnProperty.call(off.tui, "compositeFlashes"), true, "the hook is installed but inert");
+	} finally { off.dispose(); }
+	assert.equal(Object.prototype.hasOwnProperty.call(off.tui, "compositeFlashes"), false, "uninstall restores the renderer");
 });

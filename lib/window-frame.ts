@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Component } from "@earendil-works/pi-tui";
+import { visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { gentlePiConfigHome } from "./agent-home.ts";
 import { SHELL_GLYPHS } from "./shell-glyphs.ts";
 
@@ -34,23 +34,19 @@ export interface WindowFrameOptions {
 	readConfig?: () => unknown;
 }
 
-function parseSwitch(value: string | undefined): boolean | undefined {
-	if (value === undefined) return undefined;
+// Env overrides are validated strictly: an unset or blank variable defers to
+// shell.json, a recognised value wins, and anything else (a typo, an injected
+// payload) fails closed to off instead of silently falling through.
+type EnvSwitch = { set: false } | { set: true; value: boolean };
+
+function parseSwitch(value: string | undefined): EnvSwitch {
+	if (value === undefined || value.trim() === "") return { set: false };
 	const normalized = value.trim().toLowerCase();
-	if (["1", "true", "on", "yes"].includes(normalized)) return true;
-	if (["0", "false", "off", "no"].includes(normalized)) return false;
-	return undefined;
+	if (normalized === "1" || normalized === "true" || normalized === "on" || normalized === "yes") return { set: true, value: true };
+	return { set: true, value: false };
 }
 
-/**
- * Whether the full-window frame is on: `GENTLE_PI_WINDOW_FRAME` (on/off), else
- * shell.json's top-level `"windowFrame": true|false`, else off. Unreadable or
- * invalid input keeps it off; this never throws.
- */
-export function resolveWindowFrame(options: WindowFrameOptions = {}): boolean {
-	const env = options.env ?? process.env;
-	const fromEnv = parseSwitch(env[ENV_KEY]);
-	if (fromEnv !== undefined) return fromEnv;
+function readShellConfig(options: WindowFrameOptions, env: NodeJS.ProcessEnv): Record<string, unknown> | undefined {
 	const read = options.readConfig ?? (() => {
 		// A developer's own shell.json must not change test frames.
 		if (env.NODE_TEST_CONTEXT !== undefined) return undefined;
@@ -62,11 +58,182 @@ export function resolveWindowFrame(options: WindowFrameOptions = {}): boolean {
 	});
 	try {
 		const config = read();
-		if (!config || typeof config !== "object" || Array.isArray(config)) return false;
-		return (config as Record<string, unknown>).windowFrame === true;
+		if (!config || typeof config !== "object" || Array.isArray(config)) return undefined;
+		return config as Record<string, unknown>;
 	} catch {
-		return false;
+		return undefined;
 	}
+}
+
+/**
+ * Whether the full-window frame is on: `GENTLE_PI_WINDOW_FRAME` (on/off), else
+ * shell.json's top-level `"windowFrame": true|false`, else off. A set env value
+ * that is not a recognised switch turns it off. Unreadable or invalid input
+ * keeps it off; this never throws.
+ */
+export function resolveWindowFrame(options: WindowFrameOptions = {}): boolean {
+	const env = options.env ?? process.env;
+	const fromEnv = parseSwitch(env[ENV_KEY]);
+	if (fromEnv.set) return fromEnv.value;
+	return readShellConfig(options, env)?.windowFrame === true;
+}
+
+// The window background: Pi paints a background only on panels, so every
+// other cell shows the terminal's default background, which a multiplexer may
+// replace with its own (herdr shows a gray pane, and OSC 11 from inside a pane
+// never reaches the outer terminal). An explicit truecolor background on every
+// default-background cell does render, so the fullscreen screen can carry the
+// configured colour itself. The colour is configuration data; this module only
+// parses it.
+const BACKGROUND_ENV_KEY = "GENTLE_PI_WINDOW_BACKGROUND";
+const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
+
+export interface Rgb {
+	r: number;
+	g: number;
+	b: number;
+}
+
+/** Strict `#rrggbb`; anything else is undefined. */
+export function parseHexColor(value: unknown): Rgb | undefined {
+	if (typeof value !== "string" || !HEX_COLOR.test(value)) return undefined;
+	const n = Number.parseInt(value.slice(1), 16);
+	return { r: (n >> 16) & 0xff, g: (n >> 8) & 0xff, b: n & 0xff };
+}
+
+/**
+ * The window background colour: `GENTLE_PI_WINDOW_BACKGROUND` (`off` or
+ * `#rrggbb`), else shell.json's top-level `"windowBackground": "#rrggbb"`, else
+ * off. A set env value that is neither turns it off. Never throws.
+ */
+export function resolveWindowBackground(options: WindowFrameOptions = {}): Rgb | undefined {
+	const env = options.env ?? process.env;
+	const fromEnv = env[BACKGROUND_ENV_KEY];
+	if (fromEnv !== undefined && fromEnv.trim() !== "") return parseHexColor(fromEnv.trim());
+	return parseHexColor(readShellConfig(options, env)?.windowBackground);
+}
+
+/** The SGR that selects this background. */
+export function backgroundSgr(rgb: Rgb): string {
+	return `\x1b[48;2;${rgb.r};${rgb.g};${rgb.b}m`;
+}
+
+const BG_NONE = 0;
+const BG_DEFAULT = 1;
+const BG_EXPLICIT = 2;
+// Reused SGR parameter buffer: one SGR rarely holds more than a dozen params.
+const sgrParams: number[] = [];
+const sgrColon: boolean[] = [];
+
+/**
+ * What the SGR parameters between `start` and `end` (exclusive) leave the
+ * background as: reset to default (`0`, empty, `49`), explicit (`40-47`,
+ * `100-107`, `48;5;n`, `48;2;r;g;b`, `48:...`), or untouched. Colour arguments
+ * of `38`/`48`/`58` are skipped, so a `0` inside `38;2;0;0;0` is not a reset.
+ */
+function sgrBackgroundEffect(line: string, start: number, end: number): number {
+	let count = 0;
+	let value = 0;
+	let colon = false;
+	for (let index = start; index <= end; index++) {
+		const code = index < end ? line.charCodeAt(index) : 0x3b;
+		if (code >= 0x30 && code <= 0x39) {
+			if (!colon) value = value * 10 + (code - 0x30);
+		} else if (code === 0x3a) {
+			colon = true;
+		} else if (code === 0x3b) {
+			sgrParams[count] = value;
+			sgrColon[count] = colon;
+			count++;
+			value = 0;
+			colon = false;
+		} else {
+			return BG_NONE; // private or malformed parameters: leave it alone
+		}
+	}
+	let effect = BG_NONE;
+	for (let index = 0; index < count; index++) {
+		const param = sgrParams[index]!;
+		if (param === 38 || param === 58 || param === 48) {
+			if (param === 48) effect = BG_EXPLICIT;
+			if (sgrColon[index]) continue;
+			const kind = index + 1 < count ? sgrParams[index + 1] : undefined;
+			if (kind === 5) index += 2;
+			else if (kind === 2) index += 4;
+			continue;
+		}
+		if (param === 0 || param === 49) effect = BG_DEFAULT;
+		else if ((param >= 40 && param <= 47) || (param >= 100 && param <= 107)) effect = BG_EXPLICIT;
+	}
+	return effect;
+}
+
+/** Image rows (Kitty, iTerm2) carry their own pixels and are never rewritten. */
+function isImageRow(line: string): boolean {
+	return line.includes("\x1b_G") || line.includes("\x1b]1337;File=");
+}
+
+/**
+ * One composed screen row with every default-background cell on `sgr`: the row
+ * opens with it, it is re-asserted after any SGR that leaves the background at
+ * default, and trailing cells up to `width` are padded with it. Cells under an
+ * explicit background keep theirs. Visible content and width are unchanged
+ * (padding only fills up to `width`); non-SGR escapes pass through. One linear
+ * scan, no regular expressions.
+ */
+export function fillDefaultBackground(line: string, width: number, sgr: string): string {
+	if (isImageRow(line)) return line;
+	let out = sgr;
+	let from = 0;
+	let explicit = false;
+	const length = line.length;
+	let index = line.indexOf("\x1b");
+	while (index !== -1 && index + 1 < length) {
+		const kind = line.charCodeAt(index + 1);
+		if (kind === 0x5b) { // CSI
+			let final = index + 2;
+			while (final < length) {
+				const code = line.charCodeAt(final);
+				if (code >= 0x40 && code <= 0x7e) break;
+				final++;
+			}
+			if (final >= length) break;
+			if (line.charCodeAt(final) === 0x6d) {
+				const effect = sgrBackgroundEffect(line, index + 2, final);
+				if (effect !== BG_NONE) {
+					explicit = effect === BG_EXPLICIT;
+					if (!explicit) {
+						out += line.slice(from, final + 1) + sgr;
+						from = final + 1;
+					}
+				}
+			}
+			index = line.indexOf("\x1b", final + 1);
+		} else if (kind === 0x5d || kind === 0x5f || kind === 0x50) { // OSC, APC, DCS: skip to BEL or ST
+			let cursor = index + 2;
+			while (cursor < length) {
+				const code = line.charCodeAt(cursor);
+				if (code === 0x07) { cursor++; break; }
+				if (code === 0x1b && line.charCodeAt(cursor + 1) === 0x5c) { cursor += 2; break; }
+				cursor++;
+			}
+			index = line.indexOf("\x1b", cursor);
+		} else {
+			index = line.indexOf("\x1b", index + 1);
+		}
+	}
+	out += line.slice(from);
+	const pad = width - visibleWidth(line);
+	if (pad > 0) out += `\x1b[0m${sgr}${" ".repeat(pad)}`;
+	return out;
+}
+
+/** The whole composed screen (`height` rows of `width` cells) on `sgr`. */
+export function fillWindowBackground(screen: readonly string[], width: number, height: number, sgr: string): string[] {
+	const rows = Math.max(screen.length, height);
+	const result = new Array<string>(rows);
+	for (let row = 0; row < rows; row++) result[row] = fillDefaultBackground(screen[row] ?? "", width, sgr);
+	return result;
 }
 
 /** Whether a terminal of this size is large enough to frame. */

@@ -146,7 +146,7 @@ import { UsageView } from "../lib/shell-usage-view.ts";
 import { sidebarHeader, sidebarPart, sidebarState, VISUAL_SETTINGS_CHANGED, type SidebarRail } from "../lib/shell-sidebar.ts";
 import { installSelectionFrameTrim } from "../lib/selection-frame-trim.ts";
 import { installSidebar, invalidateSidebar, narrowStatusOwner, STATUS_OWNER } from "../lib/shell-sidebar-layout.ts";
-import { resolveWindowFrame } from "../lib/window-frame.ts";
+import { backgroundSgr, resolveWindowBackground, resolveWindowFrame } from "../lib/window-frame.ts";
 import { StatusTitleAnimator, statusTitleKey, type StatusTitleFrame } from "../lib/status-title-animation.ts";
 import { SessionChanges, SESSION_CHANGE_EVENT } from "../lib/session-changes.ts";
 import { REVIEW_SIDEBAR_EVENT, isReviewSidebarSnapshot, type ReviewSidebarSnapshot } from "../lib/review-sidebar-state.ts";
@@ -2139,8 +2139,12 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	// The full-window frame (shell.json `windowFrame`), re-read per session so
 	// /reload picks up a change.
 	let windowFrameEnabled = false;
+	// The window background (shell.json `windowBackground`), same lifecycle.
+	let windowBackground: string | undefined;
 	const startShellSession = async (ctx: ExtensionContext): Promise<void> => {
 		windowFrameEnabled = resolveWindowFrame();
+		const background = resolveWindowBackground();
+		windowBackground = background ? backgroundSgr(background) : undefined;
 		closeCustomize?.();
 		if (review) {
 			review = undefined;
@@ -2253,7 +2257,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					return { handled: true, render: true };
 				},
 			});
-			const uninstall = installSidebar(tui, theme, () => visualSettings.statusPlacement, () => visualSettings.headerPlacement, () => visualSettings.density, { bannerTick: () => (gaugeAnimationEnabled() ? gaugeTick.value : undefined), windowFrame: () => windowFrameEnabled });
+			const uninstall = installSidebar(tui, theme, () => visualSettings.statusPlacement, () => visualSettings.headerPlacement, () => visualSettings.density, { bannerTick: () => (gaugeAnimationEnabled() ? gaugeTick.value : undefined), windowFrame: () => windowFrameEnabled, windowBackground: () => windowBackground });
 			// Independent of the rail: chat selections in a narrow terminal (no sidebar) also skip card frames.
 			const untrim = installSelectionFrameTrim(tui);
 			// The public widget slot follows the editor even when the rail is absent.
