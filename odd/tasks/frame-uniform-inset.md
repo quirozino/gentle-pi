@@ -36,9 +36,9 @@ painted at column 0 (pi-sysmon), `~/.pi/agent/extensions/user-message-frame.ts`.
 Delegated writer (2+ non-trivial files).
 
 ## Checklist
-- [ ] T1 RED: geometry tests for 1-cell inset at 160 (rail) and 80/50 (no rail), resize, unframed unchanged.
-- [ ] T2 GREEN: ring spacers, header inset, rail right padding, footer row, live railColumns.
-- [ ] T3 Verification: focused tests, typecheck, full suite vs base, live tmux measurement.
+- [x] T1 RED: geometry tests for 1-cell inset at 160 (rail) and 80/50 (no rail), resize, unframed unchanged.
+- [x] T2 GREEN: ring spacers, header inset, rail right padding, footer row, live railColumns.
+- [x] T3 Verification: focused tests, typecheck, full suite vs base, live tmux measurement.
 
 ## Acceptance criteria
 - Framed: top gap 1 row, bottom gap 1 row, header bar/rule left/right gap 1, rail card right gap 1.
@@ -52,3 +52,24 @@ Delegated writer (2+ non-trivial files).
 
 ## Progress
 - Branch `feat/frame-uniform-inset` from `feat/shell-chrome-followups` (f16a84671).
+- T1 RED observed: 5 window-frame tests + framed footer assertion failed on base code.
+- T2 GREEN in `0bd1a5af5` (route: delegated writer).
+- T3 evidence: focused suite 466 pass / 1 fail (pre-existing "grouped Status", also fails on base f16a84671);
+  typecheck no regressions; `npm test` 4695 pass / 1 fail (same pre-existing).
+  Live tmux (160/80/50): top 1, bottom 1, header bar/rule L1 R1, rail card R1, prompt L1 R1.
+
+## After (live)
+| Element | Wide (rail) | Narrow 80/50 |
+| --- | --- | --- |
+| Top (above header) | 1 | 1 |
+| Header bar / rule left, right | 1, 1 | 1, 1 |
+| Status rail card right | 1 | n/a |
+| Prompt left, right | 1, rail side | 1, 1 |
+| Bottom | 1 | 1 |
+
+Still at 0 (outside the allowed surface): pi core startup listing text, pi's
+transcript scrollbar column, pi-sysmon below-editor widget, and
+user-message-frame.ts's left `║`.
+
+## Next step
+User review; push/PR are user decisions.
