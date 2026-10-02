@@ -677,8 +677,13 @@ function floatHeaderPaint(theme: ShellBarTheme, width: number, content: (width: 
 // leaves half an unpainted row under the tab, and a painted one overshoots it.
 // `▔` hugs the top of its cell, so the line touches the tab's background
 // exactly. The edge stays transparent beneath the painted bottom padding.
+//
+// A double frame (glyphs.frame=double) wins in both styles: the rule becomes
+// the frame's own `═`, so the header closes like every other double-framed
+// surface; the half-cell gap under the float tab is the accepted price.
 export function renderShellHeaderRule(theme: ShellBarTheme, width: number): string {
 	const targetWidth = Math.max(0, Math.floor(width));
+	if (SHELL_GLYPHS.frameStyle === "double") return theme.fg(HEADER_RULE_ROLE, SHELL_GLYPHS.frame.horizontal.repeat(targetWidth));
 	if (floatHeaderPaint(theme, targetWidth, () => "") !== undefined) return theme.fg(HEADER_RULE_ROLE, HEADER_EDGE_CHAR.repeat(targetWidth));
 	return theme.fg(HEADER_RULE_ROLE, HEADER_RULE_CHAR.repeat(targetWidth));
 }

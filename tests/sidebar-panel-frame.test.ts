@@ -11,7 +11,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 // its own process.
 process.env.GENTLE_PI_GLYPHS_FRAME = "double";
 const { CARD_STYLE, setCardStyle } = await import("../lib/shell-card.ts");
-const { renderShellSidebarBar } = await import("../lib/shell-bar.ts");
+const { buildShellHeaderModel, renderShellHeaderChrome, renderShellHeaderRule, renderShellSidebarBar } = await import("../lib/shell-bar.ts");
 const { renderTodoCard, TODO_STATUS } = await import("../lib/shell-todo.ts");
 const { trimFrameRange } = await import("../lib/selection-frame-trim.ts");
 const { stripAnsi } = await import("../lib/terminal-theme.ts");
@@ -103,6 +103,17 @@ test("mouse selection skips the outer and nested frame glyphs of the Status pane
 	assert.match(selected, /Branch/);
 	const top = trimFrameRange(rows[0]!, { start: 0, end: 60 });
 	assert.ok(top.end <= top.start, "the outer top rule selects nothing");
+});
+
+test("the header bar rule follows the double frame", () => {
+	assert.equal(renderShellHeaderRule(theme, 12), "═".repeat(12), "float style");
+	assert.equal(renderShellHeaderRule({ fg: theme.fg }, 12), "═".repeat(12), "outlined style (no background)");
+	assert.equal(renderShellHeaderRule(tagged, 4), "<border>════</border>", "the rule keeps the border role");
+	assert.equal(renderShellHeaderRule(theme, 0), "");
+	const chrome = renderShellHeaderChrome(buildShellHeaderModel(model()), theme, 60, "alt+u");
+	assert.equal(chrome.rows.length, 4, "padding, content, padding, rule");
+	assert.equal(plain(chrome.rows[3]!), "═".repeat(60), "the rule under the header is double and full width");
+	for (const row of chrome.rows) assert.equal(visibleWidth(row), 60);
 });
 
 test("the neon style keeps its outlined Status panel", () => {

@@ -42,6 +42,11 @@ and surface missing state, under the custom Matrix-Green theme.
 - T12 (2026-10-02): investigate a full-window double frame in fullscreen
   tuiMode (inside the herdr pane); implement behind `windowFrame` in
   shell.json only if mouse, selection, cursor, scroll and resize stay correct.
+- T13 (2026-10-02): colour semantics across every card and panel: yellow
+  (`warning`) only for warnings; green for working/running/pending; red
+  (`error`) for failures, problems and error/abort stops; done keeps its
+  finished look. Remap running/pending tones off `warning`, keep the sweep
+  visible against the new frame role.
 
 Done outside the repo (config): `-builtin:codemode` added to
 ~/.pi/agent/settings.json `extensions` (same remedy upstream applies to the
@@ -189,7 +194,12 @@ Baseline: 1 known failure ("grouped Status preserves structured fields").
   Todos and rail Todos framed with the header on row 1, selection trim skips
   outer and nested frames, neon unchanged); shell-bar float Status test moved
   to the framed shape.
-- [ ] T9 double rule under the header bar.
+- [x] T9 double rule under the header bar. Route: inline (1 file).
+  `renderShellHeaderRule` (lib/shell-bar.ts) draws
+  `SHELL_GLYPHS.frame.horizontal` (`═`) in both styles when
+  `frameStyle === "double"`; single keeps `▔` (float) / `─` (outlined), so
+  single-frame users see no change. Border role. Tests:
+  sidebar-panel-frame (float, outlined, role, header chrome row 3 is `═` x60).
 - [x] T10 no flower in the Subscriptions modal. Route: inline (2 mechanical
   files: lib/shell-usage-view.ts title constants, lib/shell-usage.ts active
   mark removed; the active provider still comes first). Docs example updated.
@@ -199,6 +209,7 @@ Baseline: 1 known failure ("grouped Status preserves structured fields").
   gentle-shell 252/252.
 - [ ] T11 abandoned-stream sweep stops.
 - [ ] T12 full-window frame investigation.
+- [ ] T13 running/pending cards green, failures red, warnings only yellow.
 
 ## Progress / evidence
 - Commits: `e43016c30` (T1 + this document), `ec10f4ad4` (T2),
