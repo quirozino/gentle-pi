@@ -4774,6 +4774,72 @@ test("issue #1162: task-mode subagent_run includes question directly in waiting 
 	await fire("session_shutdown", ctx);
 });
 
+// A child blocked on an unanswered parent query is not working: both the
+// Agents widget and its own tool card read "waiting" until the reply lands.
+test("a task with an unanswered query renders as waiting for reply in the widget and its tool card", async () => {
+	const { pi, tools, fire } = fakePi();
+	const harness = deps();
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx, widget } = fakeContext();
+	await fire("session_start", ctx);
+
+	await fire("agent_start", ctx);
+	const pending = tools.get("subagent_run")!.execute("foreground", { agent: "explore", task: "Ask question directly" }, undefined, undefined, ctx);
+	await tick();
+	harness.children[0].message({ id: "q1", kind: "query", message: "Which directory should I inspect?" });
+	const yielded = await pending;
+	const id = (yielded.details as { gentleAgents: { taskId: string } }).gentleAgents.taskId;
+
+	assert.match(widget()![0], /^╭─ ❀ Agents · 1 waiting ─+╮$/);
+	assert.match(widget()![1], /^│ \?  explore  waiting for your reply /);
+	const card = tools.get("subagent_run")!.renderCall({ agent: "explore" }, plainTheme, { toolCallId: "foreground" }).render(72).map(stripAnsi);
+	assert.match(card[0]!, /Agents · 1 waiting/);
+	assert.match(card[1]!, /\?  explore  waiting for your reply /);
+
+	const replied = await tools.get("subagent_reply")!.execute("r1", { task_id: id, request_id: "q1", message: "lib/" }, undefined, undefined, ctx);
+	assert.match(replied.content[0].text, /accepted/);
+	assert.match(widget()![0], /Agents · 1 active/, "the answered task is working again");
+	assert.match(widget()![1], /◐  explore  Ask question directly/);
+
+	await fire("session_shutdown", ctx);
+});
+
+// When the turn ends on a task's own tool card, that card already sits at the
+// bottom of the timeline; the widget must not stack an identical row on it.
+test("the widget omits a task whose tool call result is the last timeline entry", async () => {
+	const { pi, tools, fire } = fakePi();
+	const harness = deps();
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx, widget } = fakeContext();
+	let leaf: unknown;
+	(ctx.sessionManager as unknown as { getLeafEntry: () => unknown }).getLeafEntry = () => leaf;
+	await fire("session_start", ctx);
+
+	await fire("agent_start", ctx);
+	const pending = tools.get("subagent_run")!.execute("foreground", { agent: "explore", task: "Ask question directly" }, undefined, undefined, ctx);
+	await tick();
+	harness.children[0].message({ id: "q1", kind: "query", message: "Which directory should I inspect?" });
+	await pending;
+
+	leaf = { type: "message", id: "e2", parentId: "e1", message: { role: "toolResult", toolCallId: "foreground", content: [] } };
+	assert.deepEqual(widget(), [], "the only row is already drawn by the trailing tool card");
+
+	await tools.get("subagent_run")!.execute("bg", { agent: "explore", task: "Background map", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	const withBackground = widget()!;
+	assert.match(withBackground[0]!, /Agents · 1 active/, "only the remaining row is counted");
+	assert.ok(withBackground.every((line) => !/Ask question directly|waiting for your reply/.test(line)), "the trailing task stays omitted");
+	assert.ok(withBackground.some((line) => /explore  Background map/.test(line)));
+
+	leaf = { type: "message", id: "e3", parentId: "e2", message: { role: "user", content: "lib/" } };
+	assert.ok(widget()!.some((line) => /\?  explore  waiting for your reply/.test(line)), "once anything follows the result, the widget shows the task again");
+
+	leaf = { type: "message", id: "e4", parentId: "e3", message: { role: "toolResult", toolCallId: "unrelated-call", content: [] } };
+	assert.ok(widget()!.some((line) => /waiting for your reply/.test(line)), "another call's trailing result does not hide this task");
+
+	await fire("session_shutdown", ctx);
+});
+
 
 // gentle-shell#1587: children do not load the gentle-pi package in the
 // isolated Gentle Shell home, so every child receives the child-context

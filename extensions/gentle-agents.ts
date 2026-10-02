@@ -476,6 +476,37 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		tasks: store.list(activeSessionId()),
 	}));
 	const visibleTasks = (): TaskRecord[] => store.list(activeSessionId());
+	// Parent queries a child is blocked on, by task, mirrored from the runner's
+	// onQuery/onQuerySettled hooks (its own map is private). A child waiting
+	// for the user's reply is not working, so every card draws it as WAITING --
+	// the same status, glyph and role an ask dialog already uses.
+	const awaitingReply = new Map<string, Set<string>>();
+	const settleAwaitingReply = (taskId: string, requestId?: string): void => {
+		const pending = awaitingReply.get(taskId);
+		if (!pending) return;
+		if (requestId !== undefined) pending.delete(requestId);
+		if (requestId === undefined || pending.size === 0) awaitingReply.delete(taskId);
+	};
+	const replyView = (task: TaskRecord): TaskRecord =>
+		awaitingReply.has(task.id) && task.status === TASK_STATUS.RUNNING ? { ...task, status: TASK_STATUS.WAITING, lastStep: "waiting for your reply" } : task;
+	// Tasks whose own tool card ends the timeline: the leaf entry, and any
+	// sibling results right before it, are results of calls that launched them.
+	// That card already shows the row at the bottom, so the widget skips it
+	// until anything else is appended after the result.
+	const trailingCardTaskIds = (): Set<string> => {
+		const ids = new Set<string>();
+		let entry = sessions?.getLeafEntry?.();
+		while (entry?.type === "message" && entry.message.role === "toolResult") {
+			const taskId = callTaskIds.get(entry.message.toolCallId);
+			if (taskId !== undefined) ids.add(taskId);
+			entry = entry.parentId === null ? undefined : sessions?.getEntry?.(entry.parentId);
+		}
+		return ids;
+	};
+	const widgetTaskList = (): TaskRecord[] => {
+		const trailing = trailingCardTaskIds();
+		return visibleTasks().filter((task) => !trailing.has(task.id)).map(replyView);
+	};
 	type SessionTransport = { generation: number; sessionId: string; sessionManager: ExtensionContext["sessionManager"]; client: SessionTransportClient; listener: SessionTransportListener; registry: SessionTransportRegistry; close(): Promise<void> };
 	let transportGeneration = 0;
 	let activeSessionTransport: SessionTransport | undefined;
@@ -603,7 +634,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			// works; a card that only waits, idles or queues steps at the sweep's
 			// own waiting pace. Both decisions read the rows the card shows.
 			const sweeping = sweepEnabled();
-			const working = sweeping && hasWorkingTask(shownTasks(tasks, deps.now(), { activeOnly: true }), deps.now(), AGENTS_IDLE_AFTER_MS);
+			const working = sweeping && hasWorkingTask(shownTasks(tasks.map(replyView), deps.now(), { activeOnly: true }), deps.now(), AGENTS_IDLE_AFTER_MS);
 			const fast = SHELL_GLYPHS.agentsFrames.length > 1 || working;
 			const interval = fast ? AGENTS_WINK_MS : sweeping ? SWEEP_WAITING_STEP_MS : CLOCK_TICK_MS;
 			cancelClock = deps.schedule(() => {
@@ -901,15 +932,20 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			if (task.mode === AGENT_MODE.TASK) yieldedTaskIds.add(task.id);
 			try {
 				messages.enqueueQuery(task, requestId, message, deps.now());
+				awaitingReply.set(task.id, (awaitingReply.get(task.id) ?? new Set()).add(requestId));
+				requestRender();
 				if (activeAgentRuns === 0) flushMessages(true);
 				return true;
 			} catch (error) {
+				settleAwaitingReply(task.id, requestId);
 				messages.expireQuery(task.id, requestId);
 				if (task.mode === AGENT_MODE.TASK && !hadYield) yieldedTaskIds.delete(task.id);
 				throw error;
 			}
 		},
 		onQuerySettled: (taskId, requestId, outcome) => {
+			settleAwaitingReply(taskId, requestId);
+			requestRender();
 			if (outcome === "replied") messages.consumeQuery(taskId, requestId);
 			else messages.expireQuery(taskId, requestId);
 		},
@@ -978,6 +1014,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			} catch { /* Metrics must never interrupt task finalization. */ }
 			try {
 				ownedTaskIds.delete(task.id);
+				settleAwaitingReply(task.id);
 				messages.invalidateTask(task.id);
 				requestRender();
 				persist(task);
@@ -1230,7 +1267,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			return {
 				render(width: number) {
 					if (!agentsVisible) return [];
-					const lines = renderAgentsCard(visibleTasks(), theme, width, deps.now(), {
+					const lines = renderAgentsCard(widgetTaskList(), theme, width, deps.now(), {
 						collapsed,
 						collapseKey,
 						maxRows: widgetRows(tui.terminal?.rows),
@@ -1482,7 +1519,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		// finished one is static.
 		const now = deps.now();
 		const live = !isFinished(task.status);
-		return renderAgentsCard([task], theme, width, now, {
+		return renderAgentsCard([replyView(task)], theme, width, now, {
 			collapsed: false, maxRows: widgetRows(undefined), keepFinished: true, idleAfterMs: AGENTS_IDLE_AFTER_MS,
 			...(live ? { tick: Math.floor(now / AGENTS_WINK_MS), sweep: sweepEnabled() } : {}),
 		});
