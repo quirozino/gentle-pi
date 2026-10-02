@@ -15,6 +15,8 @@
 export const STARTUP_LISTING_MARGIN_VERSION = "1";
 export const STARTUP_LISTING_MARGIN_VERSION_FLAG = "__gentleStartupListingMarginVersion";
 export const STARTUP_LISTING_MARGIN_ORIGINAL = "__gentleStartupListingMarginOriginal";
+import { notePiContractMissing } from "./pi-contracts.ts";
+
 const LISTING_PADDING_X = 1;
 
 type PaddedChild = { paddingX?: unknown; invalidate?: () => void };
@@ -33,7 +35,12 @@ export function padListingChildren(host: ListingHost): void {
 
 export function installStartupListingMargin(modeClass: { prototype: object } | undefined): void {
 	const proto = modeClass?.prototype as (Record<string, unknown> & { showLoadedResources?: unknown }) | undefined;
-	if (!proto || typeof proto.showLoadedResources !== "function") return;
+	if (!proto) return;
+	if (typeof proto.showLoadedResources !== "function") {
+		// Contract gone (pi renamed/removed it): leave pi's listing stock.
+		notePiContractMissing("startup-listing-padding", "InteractiveMode.prototype.showLoadedResources is not a function");
+		return;
+	}
 	if (proto[STARTUP_LISTING_MARGIN_VERSION_FLAG] === STARTUP_LISTING_MARGIN_VERSION) return;
 	const stored = proto[STARTUP_LISTING_MARGIN_ORIGINAL];
 	const original = (typeof stored === "function" ? stored : proto.showLoadedResources) as ListingMethod;

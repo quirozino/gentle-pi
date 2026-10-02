@@ -1,0 +1,5 @@
+// Verbatim excerpt captured from the installed pi 1.0.0 (scroll-view.js). Re-capture only after reviewing a drift reported by `npm run check:pi-contracts`.
+// --- lines 67-69 ---
+    getContentWidth(width) {
+        return this.scrollbar === "always" && width > 1 ? width - 1 : width;
+    }

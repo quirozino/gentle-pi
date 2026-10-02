@@ -1,0 +1,3 @@
+// Verbatim excerpt captured from the installed pi 1.0.0 (assistant-message.js). Re-capture only after reviewing a drift reported by `npm run check:pi-contracts`.
+// --- lines 21-21 ---
+    constructor(message, hideThinkingBlock = false, markdownTheme = getMarkdownTheme(), hiddenThinkingLabel = "Thinking...", outputPad = 1, markdownTransformers = []) {

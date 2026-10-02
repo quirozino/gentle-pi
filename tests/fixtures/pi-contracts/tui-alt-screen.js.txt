@@ -1,0 +1,20 @@
+// Verbatim excerpt captured from the installed pi 1.0.0 (tui-alt-screen.js). Re-capture only after reviewing a drift reported by `npm run check:pi-contracts`.
+// --- lines 37-38 ---
+export class TuiAltScreen extends TuiBase {
+    mode = "fullscreen";
+// --- lines 1181-1195 ---
+    getSelectionColumns(line, row, selection, minColumn = 0, maxColumn = visibleWidth(line)) {
+        const lineWidth = visibleWidth(line);
+        let start = Math.max(0, minColumn);
+        let end = Math.min(lineWidth, maxColumn);
+        if (row === selection.start.row) {
+            start = getGraphemeCellRange(line, selection.start.col)?.start ?? Math.min(selection.start.col, lineWidth);
+        }
+        if (row === selection.end.row) {
+            end = selection.end.boundary
+                ? Math.min(selection.end.col, lineWidth)
+                : (getGraphemeCellRange(line, selection.end.col)?.end ?? Math.min(selection.end.col + 1, lineWidth));
+        }
+        return { start: Math.max(minColumn, start), end: Math.min(maxColumn, end) };
+    }
+    getActiveSelectionText() {

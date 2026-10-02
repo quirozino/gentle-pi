@@ -1,0 +1,7 @@
+// Verbatim excerpt captured from the installed pi 1.0.0 (layout-node.js). Re-capture only after reviewing a drift reported by `npm run check:pi-contracts`.
+// --- lines 1-5 ---
+export const LAYOUT_NODE = Symbol.for("@earendil-works/pi-tui/layout-node");
+export function getLayoutNode(component) {
+    const candidate = component;
+    return typeof candidate[LAYOUT_NODE] === "function" ? candidate[LAYOUT_NODE]() : undefined;
+}

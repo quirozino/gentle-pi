@@ -80,6 +80,16 @@ Delegated writer (2+ non-trivial files).
   assignment (older build) into a data property instead of a strict-mode TypeError, and
   the next install restores the getter. Route: inline (parent-delegated bounded writer).
   Commits `f8df9967d`, `557c0a4ec`.
+- [x] T8 Contract pins for pi internals: `lib/pi-contracts.ts` lists six contracts
+  (startup-listing-padding, builtin-header, layout-node-protocol, scroll-view-content-width,
+  selection-internals, chat-viewport-dock) with the files each guards. (a) fail safe: the
+  listing margin, header hold, selection trim and sidebar/frame installs no-op when the shape
+  is gone and record it once (`notePiContractMissing`, stderr only with `GENTLE_PI_DEBUG`);
+  (b) verbatim excerpts of pi 1.0.0 in `tests/fixtures/pi-contracts/`, read by
+  `tests/pi-contracts.test.ts` (pass on fixtures, drift on an edited excerpt, could-not-check
+  on missing input); (c) `npm run check:pi-contracts` checks the `pi` on PATH (bundle virtual
+  modules + dist sources): passed / drifted / could-not-check, exit 1 only on drift.
+  Route: inline (bounded writer; new lib + script + wiring in 4 patches).
 
 ## Acceptance criteria
 - Framed: top gap 1 row, bottom gap 1 row, header bar/rule left/right gap 1, rail card right gap 1.

@@ -1,4 +1,5 @@
 import { sliceByColumn, stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
+import { notePiContractMissing } from "./pi-contracts.ts";
 import { SHELL_GLYPHS } from "./shell-glyphs.ts";
 
 // Mouse selection in fullscreen pi covers whole cells, so dragging across a card
@@ -120,8 +121,12 @@ export interface SelectionFrameTrimOptions {
 export function installSelectionFrameTrim(tui: unknown, options: SelectionFrameTrimOptions = {}): () => void {
 	const host = tui as SelectionHost | undefined;
 	const original = host?.getSelectionColumns;
-	if (!host || typeof original !== "function" || original.length < 3) return () => {};
-	if (typeof host.applySelection !== "function" || typeof host.getActiveSelectionText !== "function") return () => {};
+	if (!host) return () => {};
+	if (typeof original !== "function" || original.length < 3 || typeof host.applySelection !== "function" || typeof host.getActiveSelectionText !== "function") {
+		// Main-screen TUIs have no selection; on a fullscreen TUI this is drift.
+		if ((host as { mode?: unknown }).mode === "fullscreen") notePiContractMissing("selection-internals", "TuiAltScreen getSelectionColumns/applySelection/getActiveSelectionText missing");
+		return () => {};
+	}
 	if ((original as unknown as Record<symbol, unknown>)[WRAPPED]) return () => {};
 	const hadOwn = Object.prototype.hasOwnProperty.call(host, "getSelectionColumns");
 	const wrapped = function (this: unknown, ...args: Parameters<GetSelectionColumns>): ColumnRange {

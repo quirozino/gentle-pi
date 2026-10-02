@@ -4,6 +4,7 @@ import type { ShellBarTheme } from "./shell-bar.ts";
 import { CARD_STYLE, cardStyle, floatPanelActive, type CardStyle } from "./shell-card.ts";
 import { renderSidebarBanner } from "./shell-sidebar-banner.ts";
 import type { Density, HeaderPlacement, StatusPlacement } from "./visual-customization-policy.ts";
+import { notePiContractMissing } from "./pi-contracts.ts";
 import { createWindowFrame, fillWindowBackground, WINDOW_FRAME_GAP, WINDOW_FRAME_INSET, windowFrameFits } from "./window-frame.ts";
 
 export const SIDEBAR_BREAKPOINT = 140;
@@ -378,7 +379,12 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 		if (host.mode !== "fullscreen") { state.active = false; return; }
 		try {
 			const root = host.layoutRoot;
-			if (!root || typeof root[NODE] !== "function") { state.active = false; return; }
+			if (!root || typeof root[NODE] !== "function") {
+				// Fullscreen without a layout-node root is pi-tui drift: stay stock (no rail, no frame).
+				notePiContractMissing("layout-node-protocol", "fullscreen layoutRoot has no pi-tui layout node");
+				state.active = false;
+				return;
+			}
 			if (roots.has(root)) return;
 			const original = root[NODE]!;
 			const descriptor = Object.getOwnPropertyDescriptor(root, NODE);
@@ -402,7 +408,10 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 				let wrapped = docks.get(dock);
 				if (!wrapped) {
 					const inner = dock[NODE]!();
-					if (inner.type !== "vstack" || !inner.entries?.length) return node;
+					if (inner.type !== "vstack" || !inner.entries?.length) {
+						notePiContractMissing("chat-viewport-dock", "dock layout node is not a non-empty vstack");
+						return node;
+					}
 					const last = inner.entries.length - 1;
 					wrapped = new VStack(inner.entries.map((entry, index) => index === last ? { ...(entry as StackLayoutEntry), minSize: 0 } : entry as StackLayoutEntry), { gap: inner.gap, align: inner.align });
 					docks.set(dock, wrapped);

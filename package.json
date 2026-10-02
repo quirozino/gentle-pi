@@ -42,6 +42,7 @@
 	],
 	"scripts": {
 		"check:antigravity-contract": "node --experimental-strip-types scripts/check-antigravity-usage-contract.mjs",
+		"check:pi-contracts": "node --experimental-strip-types scripts/check-pi-contracts.mjs",
 		"check:provider-contract": "node scripts/check-provider-contract.mjs",
 		"mirror:odd-routing": "node scripts/mirror-odd-routing.mjs",
 		"postinstall": "node scripts/install-gentle-ai.mjs",

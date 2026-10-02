@@ -1,0 +1,268 @@
+// Verbatim excerpt captured from the installed pi 1.0.0 (interactive-mode.js). Re-capture only after reviewing a drift reported by `npm run check:pi-contracts`.
+// --- lines 374-386 ---
+            fullscreenCopyOnSelect: this.settingsManager.getFullscreenCopyOnSelect(),
+            fullscreenWheelScrollLines: this.settingsManager.getFullscreenWheelScrollLines(),
+        });
+        this.ui = createInteractiveTuiReference(() => this.renderer);
+        this.ui.setClearOnShrink(this.settingsManager.getClearOnShrink());
+        this.headerContainer = new Container();
+        this.loadedResourcesContainer = new Container();
+        this.chatContainer = new Container();
+        this.documentContainer = new Container();
+        this.documentContainer.addChild(this.headerContainer);
+        this.documentContainer.addChild(this.loadedResourcesContainer);
+        this.documentContainer.addChild(this.chatContainer);
+        this.pendingMessagesContainer = new Container();
+// --- lines 750-766 ---
+            const onboarding = () => theme.fg("dim", `Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.`);
+            const header = new BuiltInHeader(() => `${withLogo(compactInstructions())}\n${compactOnboarding()}\n\n${onboarding()}`, () => `${withLogo(expandedInstructions())}\n\n${onboarding()}`, this.getStartupExpansionState(), 1, 0);
+            if (showLogo)
+                header.onLogoClick = (column, row) => playPiLogoAnimation(this.renderer, column, row);
+            this.builtInHeader = header;
+            // Setup UI layout
+            this.headerContainer.addChild(new Spacer(1));
+            this.headerContainer.addChild(this.builtInHeader);
+            this.headerContainer.addChild(new Spacer(1));
+        }
+        else {
+            // Minimal header when silenced
+            this.builtInHeader = new Text("", 0, 0);
+            this.headerContainer.addChild(this.builtInHeader);
+        }
+        this.ui.requestRender();
+        // Ensure fd and rg are available after mounting the TUI (downloads if missing, adds to PATH via getBinDir)
+// --- lines 1319-1462 ---
+    showLoadedResources(options) {
+        // Resource rendering is idempotent; chat clears no longer clear this separate container.
+        this.loadedResourcesContainer.clear();
+        const showListing = options?.force || this.shouldShowStartupDetails();
+        const showDiagnostics = showListing || options?.showDiagnosticsWhenQuiet === true;
+        if (!showListing && !showDiagnostics) {
+            return;
+        }
+        const sectionHeader = (name, color = "mdHeading") => theme.fg(color, `[${name}]`);
+        const formatCompactList = (items, options) => {
+            const labels = items.map((item) => item.trim()).filter((item) => item.length > 0);
+            if (options?.sort !== false) {
+                labels.sort((a, b) => a.localeCompare(b));
+            }
+            return theme.fg("dim", `  ${labels.join(", ")}`);
+        };
+        // Bodies are built on demand so the listing follows theme changes.
+        const addLoadedSection = (name, collapsedBody, expandedBody = collapsedBody, color = "mdHeading") => {
+            const section = new ExpandableText(() => `${sectionHeader(name, color)}\n${collapsedBody()}`, () => `${sectionHeader(name, color)}\n${expandedBody()}`, this.getStartupExpansionState(), 0, 0);
+            this.loadedResourcesContainer.addChild(section);
+            this.loadedResourcesContainer.addChild(new Spacer(1));
+        };
+        const skillsResult = this.session.resourceLoader.getSkills();
+        const promptsResult = this.session.resourceLoader.getPrompts();
+        const themesResult = this.session.resourceLoader.getThemes();
+        const extensions = options?.extensions ??
+            this.session.resourceLoader
+                .getExtensions()
+                .extensions.filter((extension) => !extension.hidden)
+                .map((extension) => ({
+                path: extension.path,
+                sourceInfo: extension.sourceInfo,
+            }));
+        const sourceInfos = new Map();
+        for (const extension of extensions) {
+            if (extension.sourceInfo) {
+                sourceInfos.set(extension.path, extension.sourceInfo);
+            }
+        }
+        for (const skill of skillsResult.skills) {
+            if (skill.sourceInfo) {
+                sourceInfos.set(skill.filePath, skill.sourceInfo);
+            }
+        }
+        for (const prompt of promptsResult.prompts) {
+            if (prompt.sourceInfo) {
+                sourceInfos.set(prompt.filePath, prompt.sourceInfo);
+            }
+        }
+        for (const loadedTheme of themesResult.themes) {
+            if (loadedTheme.sourcePath && loadedTheme.sourceInfo) {
+                sourceInfos.set(loadedTheme.sourcePath, loadedTheme.sourceInfo);
+            }
+        }
+        if (showListing) {
+            const systemPromptSource = this.session.resourceLoader.getSystemPromptSource();
+            const contextFiles = [
+                ...(systemPromptSource ? [systemPromptSource] : []),
+                ...this.session.resourceLoader.getAppendSystemPromptSources(),
+                ...this.session.resourceLoader.getAgentsFiles().agentsFiles,
+            ];
+            if (contextFiles.length > 0) {
+                this.loadedResourcesContainer.addChild(new Spacer(1));
+                const contextList = () => contextFiles.map((f) => theme.fg("dim", `  ${this.formatDisplayPath(f.path)}`)).join("\n");
+                const contextCompactList = () => formatCompactList(contextFiles.map((contextFile) => this.formatContextPath(contextFile.path)), { sort: false });
+                addLoadedSection("Context", contextCompactList, contextList);
+            }
+            const skills = skillsResult.skills;
+            if (skills.length > 0) {
+                const groups = this.buildScopeGroups(skills.map((skill) => ({ path: skill.filePath, sourceInfo: skill.sourceInfo })));
+                const skillList = () => this.formatScopeGroups(groups, {
+                    formatPath: (item) => this.formatDisplayPath(item.path),
+                    formatPackagePath: (item) => this.getShortPath(item.path, item.sourceInfo),
+                });
+                const skillCompactList = () => formatCompactList(skills.map((skill) => skill.name));
+                addLoadedSection("Skills", skillCompactList, skillList);
+            }
+            const templates = this.session.promptTemplates;
+            if (templates.length > 0) {
+                const groups = this.buildScopeGroups(templates.map((template) => ({ path: template.filePath, sourceInfo: template.sourceInfo })));
+                const templateByPath = new Map(templates.map((t) => [t.filePath, t]));
+                const templateList = () => this.formatScopeGroups(groups, {
+                    formatPath: (item) => {
+                        const template = templateByPath.get(item.path);
+                        return template ? `/${template.name}` : this.formatDisplayPath(item.path);
+                    },
+                    formatPackagePath: (item) => {
+                        const template = templateByPath.get(item.path);
+                        return template ? `/${template.name}` : this.formatDisplayPath(item.path);
+                    },
+                });
+                const promptCompactList = () => formatCompactList(templates.map((template) => `/${template.name}`));
+                addLoadedSection("Prompts", promptCompactList, templateList);
+            }
+            if (extensions.length > 0) {
+                const groups = this.buildScopeGroups(extensions);
+                const extList = () => this.formatScopeGroups(groups, {
+                    formatPath: (item) => this.formatExtensionDisplayPath(item.path),
+                    formatPackagePath: (item) => this.formatExtensionDisplayPath(this.getShortPath(item.path, item.sourceInfo)),
+                });
+                const extensionLabels = this.getCompactExtensionLabels(extensions);
+                const extensionCompactList = () => formatCompactList(extensionLabels);
+                addLoadedSection("Extensions", extensionCompactList, extList, "mdHeading");
+            }
+        }
+        if (showDiagnostics) {
+            const skillDiagnostics = skillsResult.diagnostics;
+            if (skillDiagnostics.length > 0) {
+                const warningLines = () => this.formatDiagnostics(skillDiagnostics, sourceInfos);
+                this.loadedResourcesContainer.addChild(new ThemedText(() => `${theme.fg("warning", "[Skill conflicts]")}\n${warningLines()}`, 0, 0));
+                this.loadedResourcesContainer.addChild(new Spacer(1));
+            }
+            const promptDiagnostics = promptsResult.diagnostics;
+            if (promptDiagnostics.length > 0) {
+                const warningLines = () => this.formatDiagnostics(promptDiagnostics, sourceInfos);
+                this.loadedResourcesContainer.addChild(new ThemedText(() => `${theme.fg("warning", "[Prompt conflicts]")}\n${warningLines()}`, 0, 0));
+                this.loadedResourcesContainer.addChild(new Spacer(1));
+            }
+            const extensionDiagnostics = [];
+            const extensionsResult = this.session.resourceLoader.getExtensions();
+            for (const error of extensionsResult.errors) {
+                extensionDiagnostics.push({ type: "error", message: error.error, path: error.path });
+            }
+            for (const warning of extensionsResult.warnings ?? []) {
+                extensionDiagnostics.push({ type: "warning", message: warning.warning, path: warning.path });
+            }
+            const commandDiagnostics = this.session.extensionRunner.getCommandDiagnostics();
+            extensionDiagnostics.push(...commandDiagnostics);
+            extensionDiagnostics.push(...this.getBuiltInCommandConflictDiagnostics(this.session.extensionRunner));
+            const shortcutDiagnostics = this.session.extensionRunner.getShortcutDiagnostics();
+            extensionDiagnostics.push(...shortcutDiagnostics);
+            if (extensionDiagnostics.length > 0) {
+                const warningLines = () => this.formatDiagnostics(extensionDiagnostics, sourceInfos);
+                this.loadedResourcesContainer.addChild(new ThemedText(() => `${theme.fg("warning", "[Extension issues]")}\n${warningLines()}`, 0, 0));
+                this.loadedResourcesContainer.addChild(new Spacer(1));
+            }
+            const themeDiagnostics = themesResult.diagnostics;
+            if (themeDiagnostics.length > 0) {
+                const warningLines = () => this.formatDiagnostics(themeDiagnostics, sourceInfos);
+                this.loadedResourcesContainer.addChild(new ThemedText(() => `${theme.fg("warning", "[Theme conflicts]")}\n${warningLines()}`, 0, 0));
+                this.loadedResourcesContainer.addChild(new Spacer(1));
+            }
+        }
+    }
+// --- lines 1857-1886 ---
+    resetExtensionUI() {
+        if (this.extensionSelector) {
+            this.hideExtensionSelector();
+        }
+        if (this.extensionInput) {
+            this.hideExtensionInput();
+        }
+        if (this.extensionEditor) {
+            this.hideExtensionEditor();
+        }
+        this.ui.hideOverlay();
+        this.clearExtensionTerminalInputListeners();
+        this.setExtensionFooter(undefined);
+        this.setExtensionHeader(undefined);
+        this.clearExtensionWidgets();
+        this.footerDataProvider.clearExtensionStatuses();
+        this.footer.invalidate();
+        this.autocompleteProviderWrappers = [];
+        this.setCustomEditorComponent(undefined);
+        this.setupAutocompleteProvider();
+        this.defaultEditor.onExtensionShortcut = undefined;
+        this.updateTerminalTitle();
+        this.workingMessage = undefined;
+        this.workingVisible = true;
+        this.setWorkingIndicator();
+        if (this.activeStatusIndicator?.kind === "working") {
+            this.activeStatusIndicator.setMessage(`${this.defaultWorkingMessage} (${keyText("app.interrupt")} to interrupt)`);
+        }
+        this.setHiddenThinkingLabel();
+    }
+// --- lines 1938-1975 ---
+    setExtensionHeader(factory) {
+        // Header may not be initialized yet if called during early initialization
+        if (!this.builtInHeader) {
+            return;
+        }
+        // Dispose existing custom header
+        if (this.customHeader?.dispose) {
+            this.customHeader.dispose();
+        }
+        // Find the index of the current header in the header container
+        const currentHeader = this.customHeader || this.builtInHeader;
+        const index = this.headerContainer.children.indexOf(currentHeader);
+        if (factory) {
+            // Create and add custom header
+            this.customHeader = factory(this.ui, theme);
+            if (isExpandable(this.customHeader)) {
+                this.customHeader.setExpanded(this.toolOutputExpanded);
+            }
+            if (index !== -1) {
+                this.headerContainer.children[index] = this.customHeader;
+            }
+            else {
+                // If not found (e.g. builtInHeader was never added), add at the top
+                this.headerContainer.children.unshift(this.customHeader);
+            }
+        }
+        else {
+            // Restore built-in header
+            this.customHeader = undefined;
+            if (isExpandable(this.builtInHeader)) {
+                this.builtInHeader.setExpanded(this.toolOutputExpanded);
+            }
+            if (index !== -1) {
+                this.headerContainer.children[index] = this.builtInHeader;
+            }
+        }
+        this.ui.requestRender();
+    }
+// --- lines 3051-3069 ---
+    showStatus(message) {
+        const children = this.chatContainer.children;
+        const last = children.length > 0 ? children[children.length - 1] : undefined;
+        const secondLast = children.length > 1 ? children[children.length - 2] : undefined;
+        if (last && secondLast && last === this.lastStatusText && secondLast === this.lastStatusSpacer) {
+            this.lastStatusMessage = message;
+            this.lastStatusText.invalidate();
+            this.ui.requestRender();
+            return;
+        }
+        const spacer = new Spacer(1);
+        this.lastStatusMessage = message;
+        const text = new ThemedText(() => theme.fg("dim", this.lastStatusMessage), 1, 0);
+        this.chatContainer.addChild(spacer);
+        this.chatContainer.addChild(text);
+        this.lastStatusSpacer = spacer;
+        this.lastStatusText = text;
+        this.ui.requestRender();
+    }

@@ -20,6 +20,8 @@
 // /reload reloads extensions but NOT pi's classes, so the patch is versioned
 // and its state lives on globalThis, shared by every loaded build.
 
+import { notePiContractMissing } from "./pi-contracts.ts";
+
 export const BUILTIN_HEADER_HOLD_VERSION = "2";
 export const BUILTIN_HEADER_HOLD_VERSION_FLAG = "__gentleBuiltInHeaderHoldVersion";
 const HOOKED_FLAG = "__gentleBuiltInHeaderHoldHooked";
@@ -119,7 +121,11 @@ export function installBuiltInHeaderHold(modeClass: { prototype: object } | unde
 	const proto = modeClass?.prototype as Record<string, unknown> | undefined;
 	if (!proto) return;
 	const { init, setExtensionHeader, resetExtensionUI } = proto as Record<string, unknown>;
-	if (typeof init !== "function" || typeof setExtensionHeader !== "function" || typeof resetExtensionUI !== "function") return;
+	if (typeof init !== "function" || typeof setExtensionHeader !== "function" || typeof resetExtensionUI !== "function") {
+		// Contract gone: never hide pi's header without the hooks that restore it.
+		notePiContractMissing("builtin-header", "InteractiveMode.prototype.init/setExtensionHeader/resetExtensionUI missing");
+		return;
+	}
 	if (proto[BUILTIN_HEADER_HOLD_VERSION_FLAG] === BUILTIN_HEADER_HOLD_VERSION) return;
 	const original = (name: string, current: unknown): Method => {
 		const key = `__gentleBuiltInHeaderHoldOriginal_${name}`;
