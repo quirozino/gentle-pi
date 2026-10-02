@@ -31,7 +31,20 @@ interface Harness {
 	dispose(): void;
 }
 
-async function harness(columns: number, rows: number, options: { frame: boolean; sidebar?: boolean; theme?: typeof theme; background?: string; transcript?: string[] }): Promise<Harness> {
+interface HarnessOptions {
+	frame: boolean | (() => boolean);
+	sidebar?: boolean;
+	theme?: typeof theme;
+	background?: string;
+	transcript?: string[];
+	/** Header rows at the width the layout gives it; defaults to one `HEADER <width>` row. */
+	header?: (width: number) => string[];
+	headerMouse?: (event: TuiMouseEvent) => void;
+	/** Status rail rows at the section width; defaults to `Status card`. */
+	status?: (width: number) => string[];
+}
+
+async function harness(columns: number, rows: number, options: HarnessOptions): Promise<Harness> {
 	let size = { columns, rows };
 	let onInput: ((data: string) => void) | undefined;
 	let onResize: (() => void) | undefined;
@@ -64,9 +77,14 @@ async function harness(columns: number, rows: number, options: { frame: boolean;
 	const paint = options.theme ?? theme;
 	let uninstall = () => {};
 	if (options.sidebar !== false) {
-		footer.addChild(sidebarPart(tui, "footer", lines(["BOTTOM BAR"]), { render: () => ["Status card"], invalidate() {} }));
-		sidebarHeader(tui, { render: (width: number) => [`HEADER ${width}`], invalidate() {} });
-		const unsidebar = installSidebar(tui, paint, undefined, undefined, undefined, { windowFrame: () => options.frame, windowBackground: () => options.background });
+		footer.addChild(sidebarPart(tui, "footer", lines(["BOTTOM BAR"]), { render: options.status ?? (() => ["Status card"]), invalidate() {} }));
+		sidebarHeader(tui, {
+			render: options.header ?? ((width: number) => [`HEADER ${width}`]),
+			invalidate() {},
+			handleMouse: options.headerMouse ? (event: TuiMouseEvent) => { options.headerMouse!(event); return { handled: true }; } : undefined,
+		});
+		const frame = options.frame;
+		const unsidebar = installSidebar(tui, paint, undefined, undefined, undefined, { windowFrame: () => typeof frame === "function" ? frame() : frame, windowBackground: () => options.background });
 		// gentle-shell installs the selection trim next to the rail, in every mode.
 		const untrim = installSelectionFrameTrim(tui);
 		uninstall = () => { untrim(); unsidebar(); };
@@ -123,9 +141,11 @@ test("the frame closes all four sides of a narrow fullscreen screen, and content
 		const screen = h.screen();
 		assertWindowFrame(screen, 60, 16);
 		const text = screen.map(strip);
-		assert.equal(text[1], `║HEADER 58${" ".repeat(49)}║`, "the header gets the framed width");
+		assert.equal(text[1], `║${" ".repeat(58)}║`, "one blank row under the top rule");
+		assert.equal(text[2], `║ HEADER 56${" ".repeat(48)}║`, "the header sits one column in and one column short of the right edge");
 		assert.ok(text.some((row) => row.startsWith("║╭") && row.endsWith("╮║")), "the editor fits inside the side edges");
-		assert.match(text[14] ?? "", /^║╰─+╯║$/, "the editor's bottom border sits on the last framed row");
+		assert.match(text[13] ?? "", /^║╰─+╯║$/, "the editor's bottom border sits above the bottom spacer");
+		assert.equal(text[14], `║${" ".repeat(58)}║`, "one blank row above the bottom rule");
 	} finally { h.dispose(); }
 });
 
@@ -319,4 +339,104 @@ test("the background follows resize and stops when uninstalled or unset", async 
 		assert.equal(Object.prototype.hasOwnProperty.call(off.tui, "compositeFlashes"), true, "the hook is installed but inert");
 	} finally { off.dispose(); }
 	assert.equal(Object.prototype.hasOwnProperty.call(off.tui, "compositeFlashes"), false, "uninstall restores the renderer");
+});
+
+// The uniform inset: inside the frame every element keeps exactly one empty
+// cell between the frame line and its own outer visible edge. The header paints
+// edge to edge (like the float header bar and its rule), and the Status card
+// mimics a float card: a transparent one-column margin on both sides.
+const BG_THEME = { ...theme, bg: (_color: string, text: string) => `\x1b[48;5;22m${text}\x1b[49m` };
+const insetOptions = (frame: boolean | (() => boolean), headerMouse?: (event: TuiMouseEvent) => void): HarnessOptions => ({
+	frame,
+	theme: BG_THEME,
+	header: (width) => ["H".repeat(width), "=".repeat(width)],
+	headerMouse,
+	status: (width) => [` ${"S".repeat(Math.max(0, width - 2))} `],
+});
+const blankInner = (columns: number) => `║${" ".repeat(columns - 2)}║`;
+
+function assertUniformInset(screen: readonly string[], columns: number, rows: number, rail: boolean): void {
+	assertWindowFrame(screen, columns, rows);
+	const text = screen.map(strip).map((row) => row.padEnd(columns));
+	assert.equal(text[1], blankInner(columns), `${columns}: one blank row under the top rule`);
+	const headerWidth = columns - 4;
+	assert.equal(text[2], `║ ${"H".repeat(headerWidth)} ║`, `${columns}: the header bar keeps one column from both edges`);
+	assert.equal(text[3], `║ ${"=".repeat(headerWidth)} ║`, `${columns}: the header rule keeps one column from both edges`);
+	assert.equal(text[rows - 2], blankInner(columns), `${columns}: one blank row above the bottom rule`);
+	assert.notEqual(text[rows - 3], blankInner(columns), `${columns}: exactly one: the dock's last line sits right above it`);
+	if (rail) {
+		const card = text.find((row) => row.includes("S"));
+		assert.ok(card, "the Status card is painted");
+		assert.match(card, /S ║$/u, `${columns}: the Status card's visible edge keeps one column from the right edge: ${JSON.stringify(card)}`);
+	} else {
+		assert.ok(!text.some((row) => row.includes("S")), `${columns}: no rail`);
+	}
+}
+
+test("framed: every element keeps a one-cell inset on all four sides, with and without the rail", async () => {
+	for (const [columns, rows, rail] of [[160, 24, true], [80, 20, false], [50, 20, false]] as const) {
+		const h = await harness(columns, rows, insetOptions(true));
+		try {
+			assertUniformInset(h.screen(), columns, rows, rail);
+		} finally { h.dispose(); }
+	}
+});
+
+test("framed: the inset follows live resizes across the rail breakpoint", async () => {
+	const h = await harness(160, 24, insetOptions(true));
+	try {
+		await h.resize(80, 20);
+		assertUniformInset(h.screen(), 80, 20, false);
+		await h.resize(50, 16);
+		assertUniformInset(h.screen(), 50, 16, false);
+		await h.resize(160, 24);
+		assertUniformInset(h.screen(), 160, 24, true);
+	} finally { h.dispose(); }
+});
+
+test("framed: header clicks arrive in the header's own coordinates", async () => {
+	const events: TuiMouseEvent[] = [];
+	const h = await harness(80, 20, insetOptions(true, (event) => events.push(event)));
+	try {
+		// Screen column 3 (1-based) is the header's first cell: frame edge, gap, header.
+		h.input("\x1b[<0;3;3M");
+		h.input("\x1b[<0;3;3m");
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		assert.ok(events.length > 0, "the header received the click");
+		assert.equal(events[0]!.x, 0, "x is local to the painted header");
+		assert.equal(events[0]!.y, 0, "y is local to the header");
+		assert.equal(events[0]!.width, 76, "the header width excludes the inset");
+		events.length = 0;
+		// The gap column itself is inert.
+		h.input("\x1b[<0;2;3M");
+		h.input("\x1b[<0;2;3m");
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		assert.equal(events.length, 0, "the inset gap reaches nothing");
+	} finally { h.dispose(); }
+});
+
+test("unframed: the inset changes nothing", async () => {
+	const h = await harness(160, 24, insetOptions(false));
+	try {
+		const text = h.screen().map(strip);
+		assert.equal(text[0], "H".repeat(158), "the header keeps the rail's right inset and no left gap");
+		assert.ok(text.some((row) => /S  $/u.test(row.padEnd(160))), "the rail keeps its right padding");
+	} finally { h.dispose(); }
+});
+
+test("railColumns and framed() read the live frame state, not the install-time option", async () => {
+	let on = false;
+	const h = await harness(160, 24, insetOptions(() => on));
+	try {
+		assert.equal(sidebarState(h.tui).railColumns, 53);
+		assert.equal(sidebarState(h.tui).framed?.(), false);
+		on = true;
+		h.tui.requestRender(true);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		assert.equal(sidebarState(h.tui).railColumns, 54, "turning the frame on moves overlays clear of its edge");
+		assert.equal(sidebarState(h.tui).framed?.(), true);
+		assertUniformInset(h.screen(), 160, 24, true);
+		await h.resize(WINDOW_FRAME_MIN_COLUMNS - 1, 12);
+		assert.equal(sidebarState(h.tui).framed?.(), false, "a terminal too small to frame is not framed");
+	} finally { h.dispose(); }
 });

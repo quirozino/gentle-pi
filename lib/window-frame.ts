@@ -8,8 +8,12 @@ import { SHELL_GLYPHS } from "./shell-glyphs.ts";
 // configured frame (`╔═╗║╚═╝` with glyphs.frame=double) on all four sides of
 // Pi's screen, one cell in from the terminal edge. It is a layout wrapper, not
 // a repaint: the whole native layout (transcript, editor, rail, header) is
-// placed one column and one row in, inside a vstack/hstack ring of border
-// leaves. pi-tui resolves mouse targets, selection ranges, the scrollbar
+// placed one column and two rows in, inside a vstack/hstack ring of border
+// leaves. The ring keeps one blank row under the top rule and one above the
+// bottom rule, so the topmost and lowest elements keep the same one-cell gap
+// the layout keeps on the sides (WINDOW_FRAME_GAP); horizontally the gap
+// belongs to each element, because some (Pi's transcript text, float cards,
+// the prompt) already bring their own one-column margin. pi-tui resolves mouse targets, selection ranges, the scrollbar
 // column and the hardware cursor from layout rects and the composed screen,
 // so all of them follow the offset with no coordinate translation of ours.
 // Overlays, flashes and the scroll-to-end hint are composited by pi-tui over
@@ -20,8 +24,10 @@ const FRAME_ROLE = "border";
 /** Below this the frame would eat too much of a tiny terminal; it steps aside. */
 export const WINDOW_FRAME_MIN_COLUMNS = 20;
 export const WINDOW_FRAME_MIN_ROWS = 8;
-/** Columns and rows the frame takes from the layout (one per side). */
+/** Columns the frame takes from the layout (one per side). */
 export const WINDOW_FRAME_INSET = 2;
+/** Empty cells every framed element keeps between the frame line and its visible edge. */
+export const WINDOW_FRAME_GAP = 1;
 const ENV_KEY = "GENTLE_PI_WINDOW_FRAME";
 
 export interface WindowFrameTheme {
@@ -272,12 +278,25 @@ export function createWindowFrame(theme: WindowFrameTheme, rows: () => number): 
 	const right = side();
 	let current: LayoutNodeLike = { type: "vstack" };
 	const inner: LayoutHost = { render: () => [], invalidate() {}, [NODE]: () => current };
+	// Blank rows inside the side edges: the ║ columns run past them.
+	const spacer = (): Component => ({ render: () => Array.from({ length: WINDOW_FRAME_GAP }, () => ""), invalidate() {} });
+	const above = spacer();
+	const below = spacer();
+	const padded: LayoutHost = {
+		render: () => [],
+		invalidate() {},
+		[NODE]: () => ({ type: "vstack", gap: 0, align: "stretch", entries: [
+			{ component: above, basis: WINDOW_FRAME_GAP, grow: 0, shrink: 0, minSize: WINDOW_FRAME_GAP },
+			{ component: inner, basis: 0, grow: 1, shrink: 1, minSize: 1 },
+			{ component: below, basis: WINDOW_FRAME_GAP, grow: 0, shrink: 0, minSize: WINDOW_FRAME_GAP },
+		] }),
+	};
 	const middle: LayoutHost = {
 		render: () => [],
 		invalidate() {},
 		[NODE]: () => ({ type: "hstack", gap: 0, align: "stretch", entries: [
 			{ component: left, basis: 1, grow: 0, shrink: 0, minSize: 1 },
-			{ component: inner, basis: 0, grow: 1, shrink: 1, minSize: 1 },
+			{ component: padded, basis: 0, grow: 1, shrink: 1, minSize: 1 },
 			{ component: right, basis: 1, grow: 0, shrink: 0, minSize: 1 },
 		] }),
 	};

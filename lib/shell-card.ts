@@ -567,6 +567,16 @@ function paintFloat(rows: readonly string[], open: string): string[] {
 }
 
 /**
+ * Whether a panel at this width paints as a float: a tone background inside a
+ * transparent one-column margin on both sides. Layouts that place panels at a
+ * fixed distance from an edge read it, because that margin is already part of
+ * the distance.
+ */
+export function floatPanelActive(theme: CardTheme, width: number, tone: CardTone = CARD_TONE.INFO): boolean {
+	return floatOpener(theme, tone, width) !== "";
+}
+
+/**
  * Content columns of a panel body (Agents, Todos, Status rail) in the active
  * style. Callers that pre-wrap or pre-fit rows use it so a float panel, two
  * columns narrower than the outlined frame, never re-wraps or clips them.

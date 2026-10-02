@@ -1,18 +1,20 @@
 import { ScrollView, VStack, visibleWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { sidebarState, type SidebarRail } from "./shell-sidebar.ts";
 import type { ShellBarTheme } from "./shell-bar.ts";
-import { CARD_STYLE, cardStyle, type CardStyle } from "./shell-card.ts";
+import { CARD_STYLE, cardStyle, floatPanelActive, type CardStyle } from "./shell-card.ts";
 import { renderSidebarBanner } from "./shell-sidebar-banner.ts";
 import type { Density, HeaderPlacement, StatusPlacement } from "./visual-customization-policy.ts";
-import { createWindowFrame, fillWindowBackground, WINDOW_FRAME_INSET, windowFrameFits } from "./window-frame.ts";
+import { createWindowFrame, fillWindowBackground, WINDOW_FRAME_GAP, WINDOW_FRAME_INSET, windowFrameFits } from "./window-frame.ts";
 
 export const SIDEBAR_BREAKPOINT = 140;
 const RAIL_WIDTH = 50;
 const RAIL_PADDING = 1;
-// The rail's ScrollView keeps one column for its scrollbar; with the rail
-// padding that puts the card's right border two columns in from the edge.
-// The header row stops at the same column so its right group lines up with
-// the card instead of touching the terminal edge.
+// Unframed, a rail line is the rail padding around a section, and a float
+// card brings its own one-column transparent margin inside that: its painted
+// edge sits two columns in from the terminal edge. The header row stops at the
+// same column so its right group lines up with the card. (The ScrollView's
+// "auto" scrollbar is transient and reserves no column.) Framed, both keep
+// WINDOW_FRAME_GAP from the frame instead; see `prepare`.
 const HEADER_RIGHT_INSET = RAIL_PADDING + 1;
 const GAP = 3;
 /** Right-edge columns the painting rail takes from the editor column; published as `railColumns`. */
@@ -31,6 +33,7 @@ type SidebarPresentation = { scrollTop: number; output: LayoutNode };
 type PreparedRail = {
 	revision: number;
 	width: number;
+	framed: boolean;
 	mode: string | undefined;
 	headerPlacement: HeaderPlacement;
 	cardStyle: CardStyle;
@@ -130,6 +133,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 	const framed = () => !stopped && !failed && host.mode === "fullscreen" && options.windowFrame?.() === true && windowFrameFits(tui.terminal.columns, tui.terminal.rows);
 	const layoutColumns = () => tui.terminal.columns - (framed() ? WINDOW_FRAME_INSET : 0);
 	state.layoutColumns = layoutColumns;
+	state.framed = framed;
 	state.active = false;
 	// Hidden removes Status everywhere, including regular mode where the rail
 	// never mounts, so it is published independently of the fullscreen layout.
@@ -140,8 +144,14 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 	const headerOwnsStatus = () => !stopped && !failed && headerLines.length > 0 && headerPlacement() === "top" &&
 		narrowStatusOwner({ mode: host.mode, columns: layoutColumns(), statusPlacement: placement(), headerPlacement: headerPlacement() }) === STATUS_OWNER.HEADER;
 	state.headerOwnsStatus = headerOwnsStatus;
-	// The frame's right edge sits outside the rail, one more column from the editor.
-	state.railColumns = SIDEBAR_RAIL_COLUMNS + (options.windowFrame?.() === true ? WINDOW_FRAME_INSET / 2 : 0);
+	// The frame's right edge sits outside the rail, one more column from the
+	// editor. Read live: the frame turns on and off with the setting and with
+	// terminal size, and the state outlives this install.
+	Object.defineProperty(state, "railColumns", {
+		configurable: true,
+		enumerable: true,
+		get: () => SIDEBAR_RAIL_COLUMNS + (framed() ? WINDOW_FRAME_INSET / 2 : 0),
+	});
 	state.ownsHost = () => !stopped && host.mode === "fullscreen" && layoutColumns() >= SIDEBAR_BREAKPOINT && (placement() === "auto" || placement() === "right") && !!host.layoutRoot && roots.has(host.layoutRoot);
 	const rail: Component = {
 		render: () => railLines,
@@ -160,10 +170,34 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 	// finds and calls handleMouse on whatever leaf box is under the pointer
 	// directly, without any wiring of our own. Delegate straight to whatever
 	// the registered "header" part declares.
+	// Framed, the header is rendered narrower and shifted right by the frame
+	// gap (see `prepare`); the part hit-tests its own unshifted geometry.
+	let headerOffset = 0;
+	let headerWidth: number | undefined;
 	const header: Component = {
 		render: () => headerLines,
 		invalidate() {},
-		handleMouse: (event) => state.parts.get("header")?.handleMouse?.(event),
+		handleMouse: (event) => {
+			const part = state.parts.get("header");
+			if (!part?.handleMouse) return undefined;
+			if (headerWidth === undefined) return part.handleMouse(event);
+			const x = event.x - headerOffset;
+			if (x < 0 || x >= headerWidth) return undefined;
+			return part.handleMouse({ ...event, x, width: headerWidth });
+		},
+	};
+	// Framed: the header is rendered `width - 2 * gap` wide and padded by the gap
+	// on both sides, so its painted bar and rule keep one column from each edge.
+	const frameHeader = (lines: readonly string[], width: number): string[] => {
+		if (!framed()) {
+			headerOffset = 0;
+			headerWidth = undefined;
+			return [...lines];
+		}
+		headerOffset = WINDOW_FRAME_GAP;
+		headerWidth = width;
+		const pad = " ".repeat(WINDOW_FRAME_GAP);
+		return lines.map((line) => `${pad}${line}${pad}`);
 	};
 	const scroll = new ScrollView(rail, {
 		follow: "none",
@@ -215,12 +249,14 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			return false;
 		}
 		const railEligible = width >= SIDEBAR_BREAKPOINT && placement() !== "bottom" && placement() !== "hidden";
+		const isFramed = framed();
 		if (!railEligible) {
 			prepared = undefined;
 			try {
 				const headerPart = state.parts.get("header");
+				const headerColumns = Math.max(0, width - (isFramed ? WINDOW_FRAME_GAP * 2 : 0));
 				headerLines = headerPlacement() === "top" && headerPart
-					? [...(headerPart.render(Math.max(0, width)) ?? [])] : [];
+					? frameHeader(headerPart.render(headerColumns) ?? [], headerColumns) : [];
 				if (!headerLines.some((line) => line.trim() !== "")) headerLines = [];
 			} catch {
 				failed = true;
@@ -232,7 +268,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 		const parts = [...state.parts.entries()];
 		const digests = parts.map(([, rail]) => railDigest(rail));
 		const unchanged = prepared?.revision === cache.revision &&
-			prepared.width === width && prepared.mode === host.mode && prepared.headerPlacement === headerPlacement() && prepared.cardStyle === style && prepared.root === root && prepared.theme === theme &&
+			prepared.width === width && prepared.framed === isFramed && prepared.mode === host.mode && prepared.headerPlacement === headerPlacement() && prepared.cardStyle === style && prepared.root === root && prepared.theme === theme &&
 			prepared.parts.length === parts.length && prepared.parts.every(([key, part], index) => parts[index]?.[0] === key && parts[index]?.[1] === part) &&
 			prepared.digests.length === digests.length && prepared.digests.every((digest, index) => digest === digests[index]);
 		if (unchanged) {
@@ -245,9 +281,17 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			// the terminal width (minus the rail's right inset), never the
 			// 50-column rail's content width.
 			const headerPart = state.parts.get("header");
-			const preparedHeaderLines = [...(headerPart?.render(Math.max(0, width - HEADER_RIGHT_INSET)) ?? [])];
+			const headerColumns = Math.max(0, width - (isFramed ? WINDOW_FRAME_GAP * 2 : HEADER_RIGHT_INSET));
+			const preparedHeaderLines = frameHeader(headerPart?.render(headerColumns) ?? [], headerColumns);
 			const headerActive = headerPart !== undefined && preparedHeaderLines.some((line) => line.trim() !== "");
 			const contentWidth = scroll.getContentWidth(RAIL_WIDTH);
+			// Framed, the rail's right padding would leave a float card's painted
+			// edge two columns from the frame (padding plus the card's own
+			// transparent margin), so it goes and the card's margin is the gap.
+			// Outlined cards have no margin and keep the padding.
+			const railRight = isFramed && floatPanelActive(theme, contentWidth - RAIL_PADDING) ? 0 : RAIL_PADDING;
+			const sectionWidth = contentWidth - RAIL_PADDING - railRight;
+			const placeLine = (line: string) => " ".repeat(RAIL_PADDING) + line + " ".repeat(railRight);
 			// v3.1 unified the changes rail into Status; keep upstream's canonical
 			// set and never render the standalone changes part in the rail.
 			// "header" shares state.parts with the rail sections so its
@@ -262,18 +306,18 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			const collectCached = (keys: Array<[string, SidebarRail]>, keepBlank = false) => keys.map(([key, component]) => {
 				const digest = railDigest(component);
 				const existing = sectionCache.get(key);
-				const reusable = existing?.component === component && existing.contentWidth === contentWidth && existing.theme === theme &&
+				const reusable = existing?.component === component && existing.contentWidth === sectionWidth && existing.theme === theme &&
 					(digest !== undefined ? existing.digest === digest : existing.digest === undefined && existing.revision === cache.revision);
 				const lines = reusable ? existing.lines : (() => {
-					const rendered = [...component.render(contentWidth - RAIL_PADDING * 2)];
+					const rendered = [...component.render(sectionWidth)];
 					if (!keepBlank) while (rendered.length && rendered[rendered.length - 1]?.trim() === "") rendered.pop();
 					return rendered;
 				})();
-				sectionCache.set(key, { component, digest, revision: cache.revision, contentWidth, theme, lines });
+				sectionCache.set(key, { component, digest, revision: cache.revision, contentWidth: sectionWidth, theme, lines });
 				return { key, component, lines };
 			}).filter((section) => section.lines.length > 0);
 			const collect = (keys: Array<[string, SidebarRail]>, keepBlank = false) => keys.map(([key, component]) => {
-				const lines = [...component.render(contentWidth - RAIL_PADDING * 2)];
+				const lines = [...component.render(sectionWidth)];
 				if (!keepBlank) while (lines.length && lines[lines.length - 1]?.trim() === "") lines.pop();
 				return { key, component, lines };
 			}).filter((section) => section.lines.length > 0);
@@ -286,7 +330,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 				return component ? [[key, component] as [string, SidebarRail]] : [];
 			}));
 			const bottomSections = collect(parts.filter(([key, part]) => !knownKeys.has(key) && !RAIL_EXCLUDED.has(key) && part.placement !== "top"));
-			const branding = headerActive ? [] : renderSidebarBanner(theme, contentWidth - RAIL_PADDING * 2, options.bannerTick?.());
+			const branding = headerActive ? [] : renderSidebarBanner(theme, sectionWidth, options.bannerTick?.());
 			const hits: RailHit[] = [];
 			railLines = [];
 			// A blank row separates a section from the banner or the previous
@@ -295,14 +339,14 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			const pushSection = (section: { key: string; component: Component; lines: string[] }) => {
 				if (needsGap && density() === "comfortable") railLines.push("");
 				const startY = railLines.length;
-				railLines.push(...section.lines.map((line) => " ".repeat(RAIL_PADDING) + line + " ".repeat(RAIL_PADDING)));
-				if (section.component.handleMouse) hits.push({ key: section.key, component: section.component, startY, height: section.lines.length, width: contentWidth - RAIL_PADDING * 2 });
+				railLines.push(...section.lines.map(placeLine));
+				if (section.component.handleMouse) hits.push({ key: section.key, component: section.component, startY, height: section.lines.length, width: sectionWidth });
 				needsGap = true;
 			};
 			for (const section of topSections) pushSection(section);
 			if (sections.length && branding.length) {
 				if (needsGap && density() === "comfortable") railLines.push("");
-				railLines.push(...branding.map((line) => " ".repeat(RAIL_PADDING) + line + " ".repeat(RAIL_PADDING)));
+				railLines.push(...branding.map(placeLine));
 				needsGap = true;
 			} else if (!needsGap && sections.length && headerActive && density() === "comfortable" && style === CARD_STYLE.NEON) {
 				// Preserve neon's header gap. Float's painted top padding starts
@@ -313,7 +357,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			// Height is owned by the native ScrollView, never by the transcript.
 			const active = railLines.length > 0 && railLines.every((line) => visibleWidth(line) <= contentWidth);
 			headerLines = headerActive && headerPlacement() === "top" ? preparedHeaderLines : [];
-			prepared = { revision: cache.revision, width, mode: host.mode, headerPlacement: headerPlacement(), cardStyle: style, root, theme, parts, digests, contentWidth, active, lines: railLines, hits, headerLines, headerActive: headerLines.length > 0 };
+			prepared = { revision: cache.revision, width, framed: isFramed, mode: host.mode, headerPlacement: headerPlacement(), cardStyle: style, root, theme, parts, digests, contentWidth, active, lines: railLines, hits, headerLines, headerActive: headerLines.length > 0 };
 			state.active = active;
 			return active;
 		} catch {

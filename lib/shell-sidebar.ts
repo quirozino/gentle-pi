@@ -22,6 +22,8 @@ export interface SidebarState {
 	headerOwnsStatus?: () => boolean;
 	/** Columns the fullscreen layout gets: the terminal width minus the full-window frame when it is drawn. */
 	layoutColumns?: () => number;
+	/** True while the full-window frame is drawn (fullscreen, enabled, and the terminal is large enough). */
+	framed?: () => boolean;
 	parts: Map<string, SidebarRail>;
 }
 

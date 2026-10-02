@@ -3404,6 +3404,10 @@ test("T4d unified float footer uses one live owner and restores legacy Changes o
 		state.active = true;
 		state.ownsHost = () => true;
 		assert.deepEqual(footer.render(240), [""], "suppressed float footer leaves an unpainted exterior dock row");
+		const unframed = state.framed;
+		state.framed = () => true;
+		assert.deepEqual(footer.render(240), [], "the window frame owns the bottom gap, so the dock adds none");
+		state.framed = unframed;
 		assert.deepEqual(footer.render(9), [], "narrow fallback does not add spacing");
 		hasBackground = false;
 		assert.deepEqual(footer.render(240), [], "missing background retains the legacy dock");

@@ -2281,8 +2281,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			return { ...part,
 				render(width: number) {
 					const rows = part.render(width);
-					// Preserve a shrinkable exterior dock row, outside prompt/completion geometry.
-					return rows.length === 0 && (tui as TUI & { mode?: string }).mode === "fullscreen"
+					// Preserve a shrinkable exterior dock row, outside prompt/completion
+					// geometry. The window frame keeps its own one-row bottom gap, so
+					// framed the dock adds none.
+					return rows.length === 0 && (tui as TUI & { mode?: string }).mode === "fullscreen" && sidebarState(tui).framed?.() !== true
 						&& resolvePromptLayout(width, cardStyle(), theme.bg?.bind(theme)).background ? [""] : rows;
 				},
 				dispose() { titleAnimator.dispose(); untrim(); ctx.ui.setWidget(HEADER_WIDGET_KEY, undefined); disposeHeader(); uninstall(); part.dispose(); if (sidebarTui === tui) { sidebarTui = undefined; groupedChangesOwner = () => false; } } };
