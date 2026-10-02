@@ -228,7 +228,46 @@ Baseline: 1 known failure ("grouped Status preserves structured fields").
   gentle-ai-renderer "an abandoned preparing stream goes still and stops
   waking itself" (pending timer cleared past the window, static frame, new
   delta revives).
-- [ ] T12 full-window frame investigation.
+- [x] T12 full-window frame, implemented (feasible without fragile hacks).
+  Route: inline (writer subagent executing directly; new module + 3 small
+  integrations). Investigation (pi-tui 1.0 dist): fullscreen renders a
+  layout tree (`renderLayoutFrame`, layout.js) from `tui.layoutRoot`'s
+  layout node; mouse dispatch hit-tests layout box rects and hands local
+  coordinates (`x: screenX - box.rect.x`, tui-alt-screen.js
+  dispatchMouseToLayout), selection and the scrollbar read box rects/clips,
+  and the hardware cursor comes from CURSOR_MARKER in the composed screen
+  (extractCursorPosition). So a layout wrapper shifts everything
+  consistently; no pi-core coordinate is owned outside the layout. Pi core
+  only reads `terminal.columns/rows` for /debug and the tree selector.
+  Design: `lib/window-frame.ts` (`resolveWindowFrame`: env
+  `GENTLE_PI_WINDOW_FRAME` on/off wins, else shell.json top-level
+  `"windowFrame": true`, else off; never reads shell.json under the test
+  runner; `createWindowFrame`: vstack[top rule, hstack[`║`, layout, `║`],
+  bottom rule], border role, stable leaf identities; steps aside below
+  20x8). `installSidebar` (the existing fullscreen root wrapper, same
+  experimental `[NODE]` hook the rail uses) wraps every fullscreen layout it
+  returns, and all its width decisions read `layoutColumns()` (terminal
+  width minus 2 when framed): rail breakpoint, header width, narrow status
+  owner, rail mouse guard; it publishes `layoutColumns` and `railColumns`
+  +1 for overlays. gentle-shell resolves the setting per session start and
+  its narrow status owner reads `layoutColumns`. Known limits: overlays,
+  copy flashes and the scroll-to-end hint are composited by pi-tui over the
+  whole terminal and may cover the frame while shown; a failed sidebar
+  install falls back to the native layout without the frame.
+  Config (outside repo): `"windowFrame": true` added to
+  ~/.pi/gentle-ai/shell.json (backup: scratchpad
+  `shell.json.bak-before-windowFrame`).
+  Tests: new tests/window-frame.test.ts through pi-tui's real TuiAltScreen
+  and Pi's chat viewport (resolution precedence; four sides closed at 60x16
+  with the header at 58 cols and the editor inside; rail layout at 160x24
+  with ownsHost, layoutColumns 158, railColumns 54; SGR click reaches the
+  editor with local x=3/y=1/width 58 and the edge is inert; a drag from the
+  left edge copies transcript text without frame glyphs with the selection
+  trim installed; cursor written at the marker's framed position; resize
+  44x12 and back, below 20 cols no frame; unchanged without the setting;
+  border role only).
+  Live: tmux 200x55 `pi --no-session` in fullscreen shows the double frame
+  on all four sides with header, transcript, rail and prompt inside.
 - [x] T13 running/pending cards green, failures red, warnings only yellow.
   Route: inline (writer subagent executing directly; the parent delegated
   this unit). `lib/shell-card.ts`: new `CARD_TONE.RUNNING` (frame and title

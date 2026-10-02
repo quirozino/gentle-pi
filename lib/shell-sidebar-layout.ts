@@ -4,6 +4,7 @@ import type { ShellBarTheme } from "./shell-bar.ts";
 import { CARD_STYLE, cardStyle, type CardStyle } from "./shell-card.ts";
 import { renderSidebarBanner } from "./shell-sidebar-banner.ts";
 import type { Density, HeaderPlacement, StatusPlacement } from "./visual-customization-policy.ts";
+import { createWindowFrame, WINDOW_FRAME_INSET, windowFrameFits } from "./window-frame.ts";
 
 export const SIDEBAR_BREAKPOINT = 140;
 const RAIL_WIDTH = 50;
@@ -77,6 +78,8 @@ function railDigest(rail: SidebarRail): string | undefined {
 export interface SidebarOptions {
 	/** Animation frame for the banner; absent leaves it still. */
 	bannerTick?: () => number | undefined;
+	/** Draw the full-window frame around the fullscreen layout (shell.json `windowFrame`). */
+	windowFrame?: () => boolean;
 }
 
 export const STATUS_OWNER = { HEADER: "header", BOTTOM: "bottom" } as const;
@@ -119,6 +122,12 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 	// section with no digest (or a throwing one) falls back to the shared
 	// revision counter, exactly like the whole-rail memo already did.
 	const sectionCache = new Map<string, SectionCacheEntry>();
+	// The full-window frame wraps whatever layout this pass returns, one cell
+	// in on every side; every width decision below reads the framed width.
+	const ring = createWindowFrame(theme, () => tui.terminal.rows);
+	const framed = () => !stopped && !failed && host.mode === "fullscreen" && options.windowFrame?.() === true && windowFrameFits(tui.terminal.columns, tui.terminal.rows);
+	const layoutColumns = () => tui.terminal.columns - (framed() ? WINDOW_FRAME_INSET : 0);
+	state.layoutColumns = layoutColumns;
 	state.active = false;
 	// Hidden removes Status everywhere, including regular mode where the rail
 	// never mounts, so it is published independently of the fullscreen layout.
@@ -127,10 +136,11 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 	// from the last layout pass (a blank or failed header never swallows the
 	// bottom bar); the geometry is read live so a resize applies before the next pass.
 	const headerOwnsStatus = () => !stopped && !failed && headerLines.length > 0 && headerPlacement() === "top" &&
-		narrowStatusOwner({ mode: host.mode, columns: tui.terminal.columns, statusPlacement: placement(), headerPlacement: headerPlacement() }) === STATUS_OWNER.HEADER;
+		narrowStatusOwner({ mode: host.mode, columns: layoutColumns(), statusPlacement: placement(), headerPlacement: headerPlacement() }) === STATUS_OWNER.HEADER;
 	state.headerOwnsStatus = headerOwnsStatus;
-	state.railColumns = SIDEBAR_RAIL_COLUMNS;
-	state.ownsHost = () => !stopped && host.mode === "fullscreen" && tui.terminal.columns >= SIDEBAR_BREAKPOINT && (placement() === "auto" || placement() === "right") && !!host.layoutRoot && roots.has(host.layoutRoot);
+	// The frame's right edge sits outside the rail, one more column from the editor.
+	state.railColumns = SIDEBAR_RAIL_COLUMNS + (options.windowFrame?.() === true ? WINDOW_FRAME_INSET / 2 : 0);
+	state.ownsHost = () => !stopped && host.mode === "fullscreen" && layoutColumns() >= SIDEBAR_BREAKPOINT && (placement() === "auto" || placement() === "right") && !!host.layoutRoot && roots.has(host.layoutRoot);
 	const rail: Component = {
 		render: () => railLines,
 		invalidate() {
@@ -168,7 +178,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 	const dispatchPartMouse = (event: TuiMouseEvent) => {
 		const current = prepared;
 		if (!current || stopped || failed || !current.active || current.revision !== cache.revision ||
-			host.mode !== "fullscreen" || tui.terminal.columns !== current.width || host.layoutRoot !== current.root ||
+			host.mode !== "fullscreen" || layoutColumns() !== current.width || host.layoutRoot !== current.root ||
 			scroll.getContentWidth(event.width) !== current.contentWidth || event.x < RAIL_PADDING ||
 			event.x >= current.contentWidth || event.y < 0 || event.y >= event.height) return undefined;
 		const contentY = scroll.scrollTop + event.y;
@@ -364,7 +374,11 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 				] }),
 			};
 			const replacement = () => {
-				if (!prepare(tui.terminal.columns, root)) {
+				const node = layout();
+				return framed() ? ring.wrap(node) as LayoutNode : node;
+			};
+			const layout = (): LayoutNode => {
+				if (!prepare(layoutColumns(), root)) {
 					if (failed || stopped || host.mode !== "fullscreen") return original.call(root);
 					if (!headerLines.length) return nativeLayout();
 					return { type: "vstack", gap: 0, align: "stretch", entries: [

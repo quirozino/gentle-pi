@@ -146,6 +146,7 @@ import { UsageView } from "../lib/shell-usage-view.ts";
 import { sidebarHeader, sidebarPart, sidebarState, VISUAL_SETTINGS_CHANGED, type SidebarRail } from "../lib/shell-sidebar.ts";
 import { installSelectionFrameTrim } from "../lib/selection-frame-trim.ts";
 import { installSidebar, invalidateSidebar, narrowStatusOwner, STATUS_OWNER } from "../lib/shell-sidebar-layout.ts";
+import { resolveWindowFrame } from "../lib/window-frame.ts";
 import { SessionChanges, SESSION_CHANGE_EVENT } from "../lib/session-changes.ts";
 import { REVIEW_SIDEBAR_EVENT, isReviewSidebarSnapshot, type ReviewSidebarSnapshot } from "../lib/review-sidebar-state.ts";
 import { installSessionChangeCapture } from "../lib/session-change-capture.ts";
@@ -2134,7 +2135,11 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	// Statuses published by extensions whose session_start runs before this one
 	// wait for this footer instead of flashing on Pi's native footer line.
 	const shellChrome = serveShellChrome(pi);
+	// The full-window frame (shell.json `windowFrame`), re-read per session so
+	// /reload picks up a change.
+	let windowFrameEnabled = false;
 	const startShellSession = async (ctx: ExtensionContext): Promise<void> => {
+		windowFrameEnabled = resolveWindowFrame();
 		closeCustomize?.();
 		if (review) {
 			review = undefined;
@@ -2188,7 +2193,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			// At narrow fullscreen widths only one status row paints: a top header
 			// suppresses the bottom bar in the layout, and otherwise the bottom bar
 			// takes over the header's data while the below-input header steps aside.
-			const statusOwner = () => narrowStatusOwner({ mode: (tui as TUI & { mode?: string }).mode, columns: tui.terminal?.columns ?? 0, statusPlacement: visualSettings.statusPlacement, headerPlacement: visualSettings.headerPlacement });
+			const statusOwner = () => narrowStatusOwner({ mode: (tui as TUI & { mode?: string }).mode, columns: tui.terminal ? sidebarState(tui).layoutColumns?.() ?? tui.terminal.columns : 0, statusPlacement: visualSettings.statusPlacement, headerPlacement: visualSettings.headerPlacement });
 			const belowFloat = (width: number, statuses: boolean) => (tui as TUI & { mode?: string }).mode === "fullscreen"
 				? renderShellBelowInputFloat({ ...footerModel(), ...(statuses ? {} : { statuses: [] }) }, theme, width, usageShortcutKey, visualSettings, tracker.model)
 				: undefined;
@@ -2230,7 +2235,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					return { handled: true, render: true };
 				},
 			});
-			const uninstall = installSidebar(tui, theme, () => visualSettings.statusPlacement, () => visualSettings.headerPlacement, () => visualSettings.density, { bannerTick: () => (gaugeAnimationEnabled() ? gaugeTick.value : undefined) });
+			const uninstall = installSidebar(tui, theme, () => visualSettings.statusPlacement, () => visualSettings.headerPlacement, () => visualSettings.density, { bannerTick: () => (gaugeAnimationEnabled() ? gaugeTick.value : undefined), windowFrame: () => windowFrameEnabled });
 			// Independent of the rail: chat selections in a narrow terminal (no sidebar) also skip card frames.
 			const untrim = installSelectionFrameTrim(tui);
 			// The public widget slot follows the editor even when the rail is absent.
