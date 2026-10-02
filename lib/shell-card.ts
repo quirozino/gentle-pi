@@ -372,6 +372,12 @@ export interface CardParts {
 	bottom?: string;
 	/** A component above this one already drew the heading. */
 	afterHeading?: boolean;
+	/**
+	 * This component opens a card that has no heading row: the float style
+	 * still draws the opening row above the body (the top rule when framed,
+	 * a padding row when frameless). Used by panels that draw their own title.
+	 */
+	openTop?: boolean;
 }
 
 const FLOAT_MARGIN = 1;
@@ -448,9 +454,9 @@ function splitGeometry(split: CardSplit | undefined, rows: number): { offset: nu
 type FloatSlot = { kind: "top" | "pad" } | { kind: "head" | "body"; index: number } | { kind: "bottom" };
 
 function floatLayout(parts: CardParts, floating: boolean): FloatSlot[] {
-	const { head = [], body = [], bottom, afterHeading = false } = parts;
+	const { head = [], body = [], bottom, afterHeading = false, openTop = false } = parts;
 	const slots: FloatSlot[] = [];
-	if (floating && head.length > 0) slots.push({ kind: "top" });
+	if (floating && (head.length > 0 || openTop)) slots.push({ kind: "top" });
 	head.forEach((_, index) => slots.push({ kind: "head", index }));
 	if (floating && body.length > 0 && (head.length > 0 || afterHeading)) slots.push({ kind: "pad" });
 	body.forEach((_, index) => slots.push({ kind: "body", index }));

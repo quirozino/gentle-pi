@@ -353,24 +353,29 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 			: [label("No status reported")] },
 	];
 	if (innerWidth - STATUS_PANEL_INSET < STATUS_PANEL_MIN_CONTENT) {
-		// Too narrow for nested boxes: the single frame keeps every fact readable.
+		// Too narrow for nested boxes: the single (framed) panel keeps every fact readable.
 		const body = groups.flatMap((group, index) => [
 			...(index && (!presentation || presentation.density === "comfortable") ? [""] : []),
 			...(presentation?.density === "minimal" ? [] : [label(group.title)]),
 			...[...(group.value ? [value(group.value)] : []), ...(group.pairs ?? []).map(([key, text]) => `${label(key)} ${value(text)}`), ...group.lines]
 				.flatMap((line) => wrapTextWithAnsi(line, innerWidth - inset).map((part) => " ".repeat(inset) + part)),
 		]);
-		return renderCard({ title: "Status", body, tone: CARD_TONE.INFO, glyph: SHELL_GLYPHS.status }, theme, width, { expanded: true, panel: true, frame: false });
+		return renderCard({ title: "Status", body, tone: CARD_TONE.INFO, glyph: SHELL_GLYPHS.status }, theme, width, { expanded: true, panel: true });
 	}
-	// The float style owns the outer chrome: its accent bar and padding rows
-	// hold the same boxed, centred title and double-ruled group box neon draws
-	// inside its outer frame. No float panel header: the title box replaces it.
+	// The float style owns the outer chrome: the configured frame on the edge
+	// of its background (like every framed float card) holds the same boxed,
+	// centred title and double-ruled group box neon draws inside its outer
+	// frame. The top rule opens the card and the bottom rule closes it, in the
+	// rows the frameless padding used, so the panel keeps its height. No float
+	// panel header: the title box replaces it. Static: Status has no running
+	// state, so it never sweeps.
 	if (panelHeaderRow(theme, width) === 1) {
 		const box = statusBoxRows(groups, theme, innerWidth, presentation, true);
 		return floatRows(CARD_TONE.INFO, theme, width, (inner) => ({
-			body: [cardBottom(CARD_TONE.INFO, theme, inner), ...box.map((row) => cardLine(row, CARD_TONE.INFO, theme, inner))],
+			openTop: true,
+			body: box.map((row) => cardLine(row, CARD_TONE.INFO, theme, inner)),
 			bottom: cardBottom(CARD_TONE.INFO, theme, inner),
-		}), { frame: false });
+		}));
 	}
 	return renderStatusPanel(groups, theme, width, presentation);
 }

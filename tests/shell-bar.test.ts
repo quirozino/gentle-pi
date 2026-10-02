@@ -66,17 +66,6 @@ function withBackground<T extends object>(theme: T): T & { bg(color: string, tex
 	return { ...theme, bg: (_color: string, text: string) => `${BG_OPEN}${text}${BG_CLOSE}` };
 }
 
-/** Float panel rows: a painted panel inside transparent one-column margins, between padding rows that keep the accent bar. */
-function assertFloatRows(lines: readonly string[], width: number): void {
-	for (const line of lines) {
-		assert.equal(visibleWidth(line), width, `"${stripAnsi(line)}" is not ${width} wide`);
-		assert.ok(line.startsWith(` ${BG_OPEN}`) && line.endsWith(`${BG_CLOSE} `), `painted inside the margins: ${JSON.stringify(line)}`);
-	}
-	const padding = ` ▎${" ".repeat(width - 3)} `;
-	assert.equal(stripAnsi(lines[0]!), padding, "a padding row with the accent bar sits above the header");
-	assert.equal(stripAnsi(lines.at(-1)!), padding, "a padding row with the accent bar replaces the bottom rule");
-}
-
 /** The text of a body row, without the neon side rails or the float accent bar. */
 function bodyText(row: string): string {
 	return stripAnsi(row).replace(/^ ?[│▎] /u, "").replace(/ ?│? ?$/u, "").trimEnd();
@@ -672,14 +661,21 @@ test("a model with no quota source shows what the session spent, or Unknown when
 	assert.match(text, /MiniMax-M2 Unknown/, "nothing spent and nothing reported stays unknown");
 });
 
-test("the sidebar Status card in the float style wraps the boxed title and group box in the float panel chrome", (t) => {
+test("the sidebar Status card in the float style wraps the boxed title and group box in the framed float panel chrome", (t) => {
 	const theme = withBackground(plainTheme);
 	const neon = renderShellSidebarBar(model({ review: { state: "reviewing", scope: "first.ts +2 files" } }), theme, 60);
 	useCardStyle(t, CARD_STYLE.FLOAT);
 	const float = renderShellSidebarBar(model({ review: { state: "reviewing", scope: "first.ts +2 files" } }), theme, 60);
-	// No float panel header: padding, the boxed centred title, the group box, padding.
-	assertFloatRows(float, 60);
-	const inner = float.slice(1, -1).map((row) => stripAnsi(row).slice(3).trimEnd());
+	// No float panel header: the configured frame (single here) on the outer
+	// edge of the background, holding the boxed centred title and the group box.
+	for (const line of float) {
+		assert.equal(visibleWidth(line), 60, `"${stripAnsi(line)}" is not 60 wide`);
+		assert.ok(line.startsWith(` ${BG_OPEN}`) && line.endsWith(`${BG_CLOSE} `), `painted inside the margins: ${JSON.stringify(line)}`);
+	}
+	assert.equal(stripAnsi(float[0]!), ` ╭${"─".repeat(56)}╮ `, "the top rule opens the panel");
+	assert.equal(stripAnsi(float.at(-1)!), ` ╰${"─".repeat(56)}╯ `, "the bottom rule closes it");
+	for (const row of float.slice(1, -1)) assert.match(stripAnsi(row), /^ │ .* │ $/u);
+	const inner = float.slice(1, -1).map((row) => stripAnsi(row).slice(3, -3).trimEnd());
 	assert.match(inner[0]!, /^╔═{52}╗$/);
 	const title = inner[1]!;
 	assert.match(title, /^║ +✿ Status +║$/);

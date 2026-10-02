@@ -171,7 +171,24 @@ Baseline: 1 known failure ("grouped Status preserves structured fields").
   shows the pulse on the top, bottom and left/right edges across ticks and a
   static frame when finished. Not checked: live pi session (needs restart).
 
-- [ ] T8 double outer frame on the sidebar Status and Todos panels.
+- [x] T8 double outer frame on the sidebar Status and Todos panels. Route:
+  inline (writer subagent executing directly; 2 source files).
+  Verified path: the rail Status is `renderShellSidebarBar`
+  (extensions/gentle-shell.ts sidebarPart "footer" rail), the rail Todos is
+  `renderTodoCard` (`panel: true`, extensions/gentle-todo.ts sidebarPart
+  "todo"). Todos was already framed by T7 in code; the user's screenshots
+  (00:41) were taken before a /reload of the T7 commit (00:40:55), so they
+  show the old accent bar. Status: `lib/shell-card.ts` `CardParts.openTop`
+  lets a heading-less component still get the float opening row (top rule
+  when framed, padding row when frameless); the float Status drops
+  `frame: false` and draws top rule + nested title box + group box + bottom
+  rule in the rows the frameless padding used (same height). The narrow
+  fallback (single card) is framed too. Static (no running signal).
+  Tests: new tests/sidebar-panel-frame.test.ts (outer double frame on Status
+  at 46/60/72 and narrow 20, nested boxes one cell in, border role only,
+  Todos and rail Todos framed with the header on row 1, selection trim skips
+  outer and nested frames, neon unchanged); shell-bar float Status test moved
+  to the framed shape.
 - [ ] T9 double rule under the header bar.
 - [x] T10 no flower in the Subscriptions modal. Route: inline (2 mechanical
   files: lib/shell-usage-view.ts title constants, lib/shell-usage.ts active
