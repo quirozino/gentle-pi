@@ -111,7 +111,7 @@ Subscription usage shows in the bar after the cost, and `/gentle:usage` opens a 
 The panel rows a provider reports its windows with:
 
 ```text
-✿ nan · updated just now
+nan · updated just now
   deepseek-v4-flash ▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱  26% · resets in 12d 17h
   glm5.3-flash      ▰▰▱▱▱▱▱▱▱▱▱▱▱▱▱▱  11% · resets in 12d 17h
 ```

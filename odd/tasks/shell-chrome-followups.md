@@ -29,6 +29,19 @@ and surface missing state, under the custom Matrix-Green theme.
   glyphs.frame=double) inside the float background, and sweep a pulse around
   the whole perimeter while a card runs; static once it finishes or with
   animations off. Neon unchanged; selection trim and widths must hold.
+- T8 (2026-10-02): the sidebar Status panel and the Todos panel get the
+  double frame on the outer edge of their float background, like the T7
+  cards (Status keeps its nested title box and group box inside). Sweep only
+  on an existing running signal (none for Status/Todos).
+- T9 (2026-10-02): the rule under the header bar follows the configured
+  frame: `═` with glyphs.frame=double.
+- T10 (2026-10-02): the Subscriptions modal (alt+u) drops the `✿` from its
+  title and from the active provider row, keeping rows aligned.
+- T11 (2026-10-02): review follow-up R3-abandoned-stream-sweep: a card whose
+  stream is abandoned stops sweeping instead of scheduling redraws forever.
+- T12 (2026-10-02): investigate a full-window double frame in fullscreen
+  tuiMode (inside the herdr pane); implement behind `windowFrame` in
+  shell.json only if mouse, selection, cursor, scroll and resize stay correct.
 
 Done outside the repo (config): `-builtin:codemode` added to
 ~/.pi/agent/settings.json `extensions` (same remedy upstream applies to the
@@ -157,6 +170,18 @@ Baseline: 1 known failure ("grouped Status preserves structured fields").
   runtime-harness PASS. Visual: harness render (72 cols, double glyphs)
   shows the pulse on the top, bottom and left/right edges across ticks and a
   static frame when finished. Not checked: live pi session (needs restart).
+
+- [ ] T8 double outer frame on the sidebar Status and Todos panels.
+- [ ] T9 double rule under the header bar.
+- [x] T10 no flower in the Subscriptions modal. Route: inline (2 mechanical
+  files: lib/shell-usage-view.ts title constants, lib/shell-usage.ts active
+  mark removed; the active provider still comes first). Docs example updated.
+  Tests: shell-usage-view (new: no `✿`, title plain, provider rows share one
+  column), shell-usage and gentle-shell expectations without the mark.
+  Checks: shell-usage-view + shell-usage 75/75 (before the new test 74),
+  gentle-shell 252/252.
+- [ ] T11 abandoned-stream sweep stops.
+- [ ] T12 full-window frame investigation.
 
 ## Progress / evidence
 - Commits: `e43016c30` (T1 + this document), `ec10f4ad4` (T2),

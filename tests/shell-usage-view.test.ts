@@ -24,7 +24,7 @@ test("UsageView frames the panel, keeps every line at width, and shows the empty
 	const events: string[] = [];
 	const view = new UsageView(store, { theme: plainTheme, now: () => NOW, active: () => undefined, onRefresh: async () => events.push("refresh"), onClose: () => events.push("close"), requestRender: () => events.push("render") });
 	const empty = view.render(90).map(stripAnsi);
-	assert.match(empty[0], /^╭─ ✿ Subscriptions ─+╮$/);
+	assert.match(empty[0], /^╭─ Subscriptions ─+╮$/);
 	assert.match(empty[1], /No subscription usage yet/);
 	assert.match(empty[empty.length - 2], /r refresh .* esc close/);
 	assert.match(empty[empty.length - 1], /^╰─+╯$/);
@@ -56,7 +56,7 @@ test("UsageView refetches on r and closes on escape or q", async () => {
 	await new Promise((resolve) => setTimeout(resolve, 0));
 	assert.deepEqual(events, ["render", "refresh", "render"]);
 	assert.match(stripAnsi(view.render(90)[2]), /55%/);
-	assert.match(stripAnsi(view.render(90)[1]), /^│ ✿ openai-codex · pro · updated just now/);
+	assert.match(stripAnsi(view.render(90)[1]), /^│ openai-codex · pro · updated just now/);
 	view.handleInput("\x1b");
 	view.handleInput("q");
 	assert.equal(events.filter((event) => event === "close").length, 2);
@@ -80,12 +80,12 @@ test("UsageView starts a refresh at open and repaints when it settles", async ()
 	});
 	view.refresh();
 	assert.deepEqual(events, ["render", "refresh"], "opening the panel dispatches the refresh instead of waiting for it");
-	assert.match(stripAnsi(view.render(90)[0]), /✿ Subscriptions · refreshing…/, "the panel says it is refreshing while the dispatch is in flight");
+	assert.match(stripAnsi(view.render(90)[0]), /Subscriptions · refreshing…/, "the panel says it is refreshing while the dispatch is in flight");
 	store.record(parseCodexUsage(payload(40), NOW));
 	resolveRefresh!();
 	await new Promise((resolve) => setTimeout(resolve, 0));
 	assert.deepEqual(events, ["render", "refresh", "render"], "settling repaints once");
-	assert.match(stripAnsi(view.render(90)[0]), /^╭─ ✿ Subscriptions ─+╮$/, "the title returns once the refresh settles");
+	assert.match(stripAnsi(view.render(90)[0]), /^╭─ Subscriptions ─+╮$/, "the title returns once the refresh settles");
 	assert.match(stripAnsi(view.render(90)[2]), /40%/, "the settled snapshot is drawn");
 });
 
@@ -206,4 +206,23 @@ test("a rejected refresh from a click or key never escapes as an unhandled rejec
 	} finally {
 		process.off("unhandledRejection", onUnhandled);
 	}
+});
+
+test("UsageView draws no flower: the title is plain and every provider row starts in one column", () => {
+	const store = new UsageStore();
+	store.record(parseCodexUsage(payload(38), NOW));
+	const view = new UsageView(store, {
+		theme: plainTheme,
+		now: () => NOW,
+		active: () => ({ provider: "openai-codex" }),
+		scope: () => ({ providers: ["openai-codex", "minimax", "kimi-coding"], failed: new Set(["minimax"]) }),
+		onRefresh: async () => {},
+		onClose: () => {},
+		requestRender: () => {},
+	});
+	const plain = view.render(90).map(stripAnsi);
+	for (const line of plain) assert.doesNotMatch(line, /✿/, `"${line}" draws no flower`);
+	assert.match(plain[0], /^╭─ Subscriptions ─+╮$/);
+	const providers = plain.filter((line) => /^│ (openai-codex|minimax|kimi-coding) ·/.test(line));
+	assert.equal(providers.length, 3, "the active provider aligns with the others");
 });

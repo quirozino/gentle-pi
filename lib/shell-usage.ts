@@ -170,7 +170,6 @@ const PENDING_NOTE: Record<string, string> = {
 	[MINIMAX_PROVIDER]: "no usage yet · r to fetch",
 };
 const UNSUPPORTED_NOTE = "no subscription usage for this provider";
-const ACTIVE_MARK = "✿";
 // What a targeted provider with no snapshot says after a refresh actually ran
 // and answered nothing. Generic on purpose: it names no endpoint, key, or
 // account detail, exactly like the other notes here.
@@ -1009,8 +1008,8 @@ export interface UsagePanelScope {
 	failed: ReadonlySet<string>;
 }
 
-// The active provider comes first, marked with the petal, and explains
-// itself when it has no data yet. Other providers seen this session follow.
+// The active provider comes first, unmarked so every provider row starts in
+// the same column, and explains itself when it has no data yet. Other providers seen this session follow.
 // With a scope, the panel draws exactly the targeted providers in scope order:
 // one with no snapshot explains itself (its latest refresh failed, or its
 // pending note otherwise), one whose latest refresh failed after a good
@@ -1026,18 +1025,17 @@ export function renderUsagePanel(usages: ProviderUsage[], theme: UsageTheme, wid
 	if (rows.length === 0) return [truncateToWidth(USAGE_EMPTY_MESSAGE, width, "…")];
 	const lines: string[] = [];
 	for (const row of rows) {
-		const mark = active?.provider === row.provider ? `${theme.fg(ROLE.LIMIT, ACTIVE_MARK)} ` : "";
 		if (!row.usage) {
 			// A settled refresh that answered nothing is a failure; a provider
 			// whose usage arrives with responses (Anthropic) or that has not
 			// failed keeps its pending note.
 			const note = scope?.failed.has(row.provider) ? USAGE_FETCH_FAILED_NOTE : providerNote(row.provider, registry);
-			lines.push(`${mark}${theme.fg(ROLE.PROVIDER, row.provider)} ${theme.fg(ROLE.SEPARATOR, "·")} ${theme.fg(ROLE.RESET, note)}`);
+			lines.push(`${theme.fg(ROLE.PROVIDER, row.provider)} ${theme.fg(ROLE.SEPARATOR, "·")} ${theme.fg(ROLE.RESET, note)}`);
 			continue;
 		}
 		const usage = row.usage;
 		const plan = usage.plan ? ` ${theme.fg(ROLE.SEPARATOR, "·")} ${theme.fg(ROLE.PLAN, usage.plan)}` : "";
-		lines.push(`${mark}${theme.fg(ROLE.PROVIDER, usage.provider)}${plan} ${theme.fg(ROLE.SEPARATOR, "·")} ${theme.fg(ROLE.RESET, updatedAgo(usage.fetchedAt, now))}`);
+		lines.push(`${theme.fg(ROLE.PROVIDER, usage.provider)}${plan} ${theme.fg(ROLE.SEPARATOR, "·")} ${theme.fg(ROLE.RESET, updatedAgo(usage.fetchedAt, now))}`);
 		// One row per window: the limit name, its meter, its percentage and the reset
 		// that window reports, all on one line. A window without its own label (the
 		// model's allowance) is named by its limit alone, and one without a reset ends

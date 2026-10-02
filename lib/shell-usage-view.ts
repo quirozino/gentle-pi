@@ -22,8 +22,8 @@ export interface UsageViewDeps {
 	requestRender(): void;
 }
 
-const TITLE = "✿ Subscriptions";
-const REFRESHING = "✿ Subscriptions · refreshing…";
+const TITLE = "Subscriptions";
+const REFRESHING = "Subscriptions · refreshing…";
 const FRAME_ROLE = "border";
 const TITLE_ROLE = "customMessageLabel";
 const KEY_ROLE = "accent";

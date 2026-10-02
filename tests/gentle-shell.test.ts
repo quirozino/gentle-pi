@@ -4973,7 +4973,7 @@ test("gentleShell shows the unsupported note for a provider with no built-in or 
 	const opened = commands.get("gentle:usage")!.handler("", ctx);
 	await new Promise((resolve) => setTimeout(resolve, 0));
 	const plain = ui.overlayView!.render(90).map(stripAnsi);
-	assert.match(plain[1], /✿ acme-cloud · no subscription usage for this provider/);
+	assert.match(plain[1], /acme-cloud · no subscription usage for this provider/);
 	ui.closeOverlay?.();
 	await opened;
 });
@@ -5046,7 +5046,7 @@ test("a registered source's rejecting fetch never crashes the shell or poisons t
 	const opened = commands.get("gentle:usage")!.handler("", ctx);
 	await new Promise((resolve) => setTimeout(resolve, 0));
 	const plain = ui.overlayView!.render(90).map(stripAnsi);
-	assert.match(plain[1], /✿ acme-cloud · fetch failed · r to retry/);
+	assert.match(plain[1], /acme-cloud · fetch failed · r to retry/);
 	ui.closeOverlay?.();
 	await opened;
 });
@@ -5097,7 +5097,7 @@ test("gentleShell leaves a generic failure note when a registered source resolve
 	const opened = commands.get("gentle:usage")!.handler("", ctx);
 	await new Promise((resolve) => setTimeout(resolve, 0));
 	const plain = ui.overlayView!.render(90).map(stripAnsi);
-	assert.match(plain[1], /✿ acme-cloud · fetch failed · r to retry/);
+	assert.match(plain[1], /acme-cloud · fetch failed · r to retry/);
 	ui.closeOverlay?.();
 	await opened;
 });
@@ -5165,7 +5165,7 @@ test("gentleShell registers /gentle:usage and opens the subscriptions overlay", 
 	await new Promise((resolve) => setTimeout(resolve, 0));
 	const plain = ui.overlayView!.render(90).map(stripAnsi);
 	assert.match(plain[0], /Subscriptions/);
-	assert.match(plain[1], /✿ openai-codex · pro/);
+	assert.match(plain[1], /openai-codex · pro/);
 	ui.closeOverlay?.();
 	await opened;
 });
@@ -5924,13 +5924,13 @@ test("a valid response-header snapshot clears a prior refresh failure", async (_
 	await settle();
 	const opened = commands.get("gentle:usage")!.handler("", ctx);
 	await settle();
-	assert.ok(openPanelLines(ui).some((line) => line.includes("✿ openai-codex · fetch failed")), "the failed refresh is visible first");
+	assert.ok(openPanelLines(ui).some((line) => line.includes("openai-codex · fetch failed")), "the failed refresh is visible first");
 
 	for (const handler of handlers.get("after_provider_response") ?? []) {
 		handler({ status: 200, headers: { "x-codex-primary-used-percent": "10", "x-codex-primary-window-minutes": "300" } }, ctx);
 	}
 	const lines = openPanelLines(ui);
-	assert.ok(lines.some((line) => line.includes("✿ openai-codex · updated just now")), "the header snapshot is recorded");
+	assert.ok(lines.some((line) => line.includes("openai-codex · updated just now")), "the header snapshot is recorded");
 	assert.ok(lines.some((line) => line.includes("10%")), "the header snapshot's window renders");
 	assert.equal(lines.some((line) => line.includes("fetch failed")), false, "a valid header snapshot clears the failure");
 	ui.closeOverlay?.();
@@ -5986,12 +5986,12 @@ test("an older overlapping refresh cannot mark a provider failed after a newer o
 	await settle();
 	const opened = commands.get("gentle:usage")!.handler("", ctx);
 	await settle();
-	assert.ok(openPanelLines(ui).some((line) => line.includes("✿ openai-codex · pro")), "the newer refresh's snapshot is showing");
+	assert.ok(openPanelLines(ui).some((line) => line.includes("openai-codex · pro")), "the newer refresh's snapshot is showing");
 
 	releaseStaleFailure();
 	await settle();
 	const lines = openPanelLines(ui);
-	assert.ok(lines.some((line) => line.includes("✿ openai-codex")), "the newer refresh's snapshot stands");
+	assert.ok(lines.some((line) => line.includes("openai-codex")), "the newer refresh's snapshot stands");
 	assert.equal(lines.some((line) => line.includes("fetch failed")), false, "the older refresh's late failure must not mark the provider failed");
 	ui.closeOverlay?.();
 	await opened;
