@@ -1,4 +1,4 @@
-import { CustomEditor, keyHint, type ExtensionAPI, type ExtensionContext, type KeybindingsManager } from "@earendil-works/pi-coding-agent";
+import { CustomEditor, InteractiveMode, keyHint, type ExtensionAPI, type ExtensionContext, type KeybindingsManager } from "@earendil-works/pi-coding-agent";
 import { Editor, decodeKittyPrintable, isKeyRelease, matchesKey, parseKey, truncateToWidth, visibleWidth, type EditorTheme, type TUI } from "@earendil-works/pi-tui";
 import { execFile, spawnSync } from "node:child_process";
 import { realpathSync, statSync } from "node:fs";
@@ -6,6 +6,7 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { profilesFilePath, profileRoleEntries, readProfileOrchestrator, readProfilesFileResult, summarizeProfile } from "../lib/agent-profiles.ts";
 import { resolveProfilePin } from "../lib/agent-profile-pin.ts";
+import { installStartupListingMargin } from "../lib/startup-listing-margin.ts";
 import * as os from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { buildShellHeaderModel, renderShellBar, renderShellBelowInputFloat, renderShellBottomOnlyBar, renderShellHeaderChrome, renderShellSidebarBar, shellBarEnabled, shellEnabled, shellHeaderUsageHit, statusTitleText, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
@@ -1772,6 +1773,8 @@ export async function fetchAntigravityUsage(deps: Pick<ShellDeps, "execFile" | "
 export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = process.env, overrides: Partial<ShellDeps> = {}): void {
 	installSessionChangeCapture(pi, env, overrides.resolveWorktree ?? resolveSessionWorktree);
 	if (!shellEnabled(env)) return;
+	// Align pi core's startup listing with pi's other transcript text (1-column margin).
+	installStartupListingMargin(InteractiveMode);
 	const profileReader = createActiveProfileReader(env);
 	const deps: ShellDeps = {
 		...defaultShellDeps,
