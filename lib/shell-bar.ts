@@ -286,7 +286,17 @@ function sidebarUsageLines(usage: ProviderUsage, modelId: string, theme: ShellBa
 
 // Sidebar groups use structured fields, never positional compact-bar segments
 // or inferred meanings from opaque extension status strings.
-export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme, width: number, presentation?: Presentation): string[] {
+export interface SidebarBarOptions {
+	/**
+	 * True while the fullscreen header chrome paints. The header already shows
+	 * cwd, branch, profile and the active usage window (plus model, effort, ctx
+	 * and cost, which the card no longer carries), so the card drops those and
+	 * keeps only what the header does not show. Each field shows once.
+	 */
+	headerVisible?: boolean;
+}
+
+export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme, width: number, presentation?: Presentation, options: SidebarBarOptions = {}): string[] {
 	const value = (text: string) => theme.fg(ROLE.VALUE, theme.bold(text));
 	const label = (text: string) => theme.fg(ROLE.LABEL, text);
 	const changes = model.changes;
@@ -296,7 +306,18 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 	// the same inset without consuming the card's right border.
 	const innerWidth = panelInnerWidth(theme, width);
 	const inset = Math.min(1, innerWidth - 1);
-	const usageLines = model.usage ? sidebarUsageLines(model.usage, model.modelId, theme, innerWidth - inset, model.tick) : [];
+	// Fields the visible header already paints. Visibility settings that hide a
+	// header segment keep it in the card, so it never disappears from both.
+	const headerShows = {
+		location: options.headerVisible === true,
+		profile: options.headerVisible === true && presentation?.visibility.modelDetails !== false,
+		usage: options.headerVisible === true && presentation?.visibility.usageCost !== false,
+	};
+	// The aggregate line is the same windows the header's usage segment shows;
+	// per-allowance rows are finer than the header and stay.
+	const usageLines = model.usage && !(headerShows.usage && !allowanceGroupsSupported(model.usage.limits))
+		? sidebarUsageLines(model.usage, model.modelId, theme, innerWidth - inset, model.tick)
+		: [];
 	// One row per model, worst window, animated bar. A model with no reported
 	// window says so instead of vanishing; a model the provider reports but the
 	// profile does not route to is labelled, so an unexpected model is visible.
@@ -316,15 +337,15 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 				const percent = `${Math.round(row.percent)}%`.padStart(4);
 				return `${name} ${paintGauge(row.percent, theme, SIDEBAR_USAGE_METER_CELLS, model.tick)} ${value(percent)}`;
 			});
-	const groups: StatusGroup[] = [
+	const allGroups: StatusGroup[] = [
 		{
 			title: "Project",
-			value: model.cwd,
+			...(headerShows.location ? {} : { value: model.cwd }),
 			lines: [],
 			pairs: [
-				...(model.branch ? [["Branch", model.branch] as const] : []),
+				...(model.branch && !headerShows.location ? [["Branch", model.branch] as const] : []),
 				...(model.sessionName ? [["Session", model.sessionName] as const] : []),
-				...(model.profile ? [["Profile", sanitizeStatus(model.profile)] as const] : []),
+				...(model.profile && !headerShows.profile ? [["Profile", sanitizeStatus(model.profile)] as const] : []),
 			],
 		},
 		...(presentation?.visibility.changes === false ? [] : [{
@@ -355,6 +376,11 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 			? model.statuses.map((status) => theme.fg(ROLE.STATUS, sanitizeStatus(status)))
 			: [label("No status reported")] },
 	];
+	// A group the header dedupe emptied goes whole: no heading over nothing.
+	// Without the header the card keeps its groups exactly as before.
+	const groups = options.headerVisible === true
+		? allGroups.filter((group) => group.value !== undefined || (group.pairs?.length ?? 0) > 0 || group.lines.length > 0)
+		: allGroups;
 	if (innerWidth - STATUS_PANEL_INSET < STATUS_PANEL_MIN_CONTENT) {
 		// Too narrow for nested boxes: the single (framed) panel keeps every fact readable.
 		const body = groups.flatMap((group, index) => [

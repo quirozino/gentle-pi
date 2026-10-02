@@ -2245,7 +2245,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					titleAnimator.schedule(titleFrame);
 					return JSON.stringify([footerModel(), tracker.model, visualSettings, cardStyle(), statusTitleKey(titleFrame)]);
 				},
-				render: (width) => renderShellSidebarBar({ ...footerModel(), statusTitle: titleFrame }, theme, width, visualSettings),
+				// The rail only paints in fullscreen, where the header chrome (the top
+				// rail row, or the below-input widget) always paints too; the card then
+				// drops what the header shows so each field appears once.
+				render: (width) => renderShellSidebarBar({ ...footerModel(), statusTitle: titleFrame }, theme, width, visualSettings, { headerVisible: (tui as TUI & { mode?: string }).mode === "fullscreen" }),
 				invalidate() {},
 			});
 			// The header row carries everything that ticks every frame (model,
