@@ -294,9 +294,26 @@ export interface SidebarBarOptions {
 	 * keeps only what the header does not show. Each field shows once.
 	 */
 	headerVisible?: boolean;
+	/**
+	 * Rows embedded inside the card's outer frame, directly above the boxed
+	 * title, rendered at the title box's width (each row is fitted to it).
+	 * Empty or absent leaves the card unchanged; the narrow single-panel
+	 * fallback has no title box and never embeds.
+	 */
+	embed?: (width: number) => string[];
+}
+
+/** The rendered Status card plus where its embedded rows sit, when any. */
+export interface ShellSidebarCard {
+	rows: string[];
+	embed?: { x: number; y: number; width: number; height: number };
 }
 
 export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme, width: number, presentation?: Presentation, options: SidebarBarOptions = {}): string[] {
+	return renderShellSidebarCard(model, theme, width, presentation, options).rows;
+}
+
+export function renderShellSidebarCard(model: ShellBarModel, theme: ShellBarTheme, width: number, presentation?: Presentation, options: SidebarBarOptions = {}): ShellSidebarCard {
 	const value = (text: string) => theme.fg(ROLE.VALUE, theme.bold(text));
 	const label = (text: string) => theme.fg(ROLE.LABEL, text);
 	const changes = model.changes;
@@ -389,7 +406,7 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 			...[...(group.value ? [value(group.value)] : []), ...(group.pairs ?? []).map(([key, text]) => `${label(key)} ${value(text)}`), ...group.lines]
 				.flatMap((line) => wrapTextWithAnsi(line, innerWidth - inset).map((part) => " ".repeat(inset) + part)),
 		]);
-		return renderCard({ title: "Status", body, tone: CARD_TONE.INFO, glyph: SHELL_GLYPHS.status }, theme, width, { expanded: true, panel: true });
+		return { rows: renderCard({ title: "Status", body, tone: CARD_TONE.INFO, glyph: SHELL_GLYPHS.status }, theme, width, { expanded: true, panel: true }) };
 	}
 	// The float style owns the outer chrome: the configured frame on the edge
 	// of its background (like every framed float card) holds the same boxed,
@@ -398,15 +415,31 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 	// rows the frameless padding used, so the panel keeps its height. No float
 	// panel header: the title box replaces it. Static: Status has no running
 	// state, so it never sweeps.
+	// Both panel styles are symmetric around the boxes, so the embed slot's
+	// column is half the width the boxes leave; its row is the one below the
+	// outer top rule (the float top rule, or the neon outer frame).
+	const slot = (boxWidth: number, height: number) => height > 0 ? { embed: { x: Math.floor((width - boxWidth) / 2), y: 1, width: boxWidth, height } } : {};
 	if (panelHeaderRow(theme, width) === 1) {
-		const box = statusBoxRows(groups, theme, innerWidth, presentation, true, model.statusTitle);
-		return floatRows(CARD_TONE.INFO, theme, width, (inner) => ({
+		const embedded = embedRows(options.embed, innerWidth);
+		const box = [...embedded, ...statusBoxRows(groups, theme, innerWidth, presentation, true, model.statusTitle)];
+		const rows = floatRows(CARD_TONE.INFO, theme, width, (inner) => ({
 			openTop: true,
 			body: box.map((row) => cardLine(row, CARD_TONE.INFO, theme, inner)),
 			bottom: cardBottom(CARD_TONE.INFO, theme, inner),
 		}));
+		return { rows, ...slot(innerWidth, embedded.length) };
 	}
-	return renderStatusPanel(groups, theme, width, presentation, model.statusTitle);
+	const embedded = embedRows(options.embed, width - 4);
+	return { rows: renderStatusPanel(groups, theme, width, presentation, model.statusTitle, embedded), ...slot(width - 4, embedded.length) };
+}
+
+// Embedded rows fitted to exactly `boxWidth` columns.
+function embedRows(embed: SidebarBarOptions["embed"], boxWidth: number): string[] {
+	if (!embed || boxWidth <= 0) return [];
+	return embed(boxWidth).map((row) => {
+		const clipped = visibleWidth(row) > boxWidth ? truncateToWidth(row, boxWidth, "") : row;
+		return clipped + " ".repeat(Math.max(0, boxWidth - visibleWidth(clipped)));
+	});
 }
 
 interface StatusGroup {
@@ -435,13 +468,13 @@ const STATUS_PANEL_MIN_CONTENT = 12;
 // one inner box whose groups are split by tee rules. Same facts as the plain
 // card; only the layout differs. This is the neon (outlined) rendering; the
 // float style wraps the same group box in its own panel chrome instead.
-function renderStatusPanel(groups: StatusGroup[], theme: ShellBarTheme, width: number, presentation?: Presentation, titleFrame?: StatusTitleFrame): string[] {
+function renderStatusPanel(groups: StatusGroup[], theme: ShellBarTheme, width: number, presentation?: Presentation, titleFrame?: StatusTitleFrame, embedded: readonly string[] = []): string[] {
 	const outer = SHELL_GLYPHS.frame;
 	const frame = (text: string) => theme.fg(STATUS_PANEL_ROLE.FRAME, text);
 	const shell = (row: string) => `${frame(outer.vertical)} ${row} ${frame(outer.vertical)}`;
 	return [
 		frame(outer.topLeft + outer.horizontal.repeat(width - 2) + outer.topRight),
-		...statusBoxRows(groups, theme, width - 4, presentation, true, titleFrame).map(shell),
+		...[...embedded, ...statusBoxRows(groups, theme, width - 4, presentation, true, titleFrame)].map(shell),
 		frame(outer.bottomLeft + outer.horizontal.repeat(width - 2) + outer.bottomRight),
 	];
 }

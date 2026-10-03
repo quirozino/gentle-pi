@@ -24,6 +24,12 @@ export interface SidebarState {
 	layoutColumns?: () => number;
 	/** True while the full-window frame is drawn (fullscreen, enabled, and the terminal is large enough). */
 	framed?: () => boolean;
+	/**
+	 * Capability flag: true while the Status card renders parts with placement
+	 * "status" inside its frame. External extensions read it to choose between
+	 * "status" and their fallback placement; older builds never set it.
+	 */
+	statusEmbed?: boolean;
 	parts: Map<string, SidebarRail>;
 }
 
@@ -40,9 +46,69 @@ export interface SidebarRail extends Component {
 	 * Rail placement for parts outside the built-in set. "top" rows render before
 	 * the branding banner (portraits, identity art); anything else renders after
 	 * the known sections in registration order. Older layouts ignore unknown
-	 * parts, so external extensions degrade invisibly.
+	 * parts, so external extensions degrade invisibly. "status" rows render
+	 * inside the Status card, directly above its boxed title, at the title
+	 * box's width (only while `SidebarState.statusEmbed` is set).
 	 */
-	placement?: "top" | "bottom";
+	placement?: "top" | "bottom" | "status";
+}
+
+/** Where the embedded rows sit inside the rendered Status card. */
+export interface StatusEmbedSlot {
+	x: number;
+	y: number;
+	width: number;
+	height: number;
+}
+
+type RailMouseEvent = Parameters<NonNullable<SidebarRail["handleMouse"]>>[0];
+type RailMouseResult = ReturnType<NonNullable<SidebarRail["handleMouse"]>>;
+
+/**
+ * The parts registered with placement "status", stacked in registration
+ * order. The Status card renders them above its title box; the card's digest
+ * includes theirs, and clicks inside the slot reach the part under the
+ * pointer with part-local coordinates. A failing part paints nothing.
+ */
+export function createStatusEmbed(state: SidebarState) {
+	let spans: Array<{ part: SidebarRail; start: number; height: number; width: number }> = [];
+	const embedded = () => [...state.parts.entries()].filter(([, part]) => part.placement === "status");
+	return {
+		digest(): string {
+			return JSON.stringify(embedded().map(([key, part]) => {
+				try {
+					return [key, part.digest?.() ?? null];
+				} catch {
+					return [key, null];
+				}
+			}));
+		},
+		render(width: number): string[] {
+			const rows: string[] = [];
+			spans = [];
+			for (const [, part] of embedded()) {
+				let lines: string[];
+				try {
+					lines = [...part.render(width)];
+				} catch {
+					lines = [];
+				}
+				if (lines.length === 0) continue;
+				spans.push({ part, start: rows.length, height: lines.length, width });
+				rows.push(...lines);
+			}
+			return rows;
+		},
+		handleMouse(event: RailMouseEvent, slot: StatusEmbedSlot | undefined): RailMouseResult {
+			if (!slot) return undefined;
+			const x = event.x - slot.x;
+			const y = event.y - slot.y;
+			if (x < 0 || x >= slot.width || y < 0 || y >= slot.height) return undefined;
+			const span = spans.find((candidate) => y >= candidate.start && y < candidate.start + candidate.height);
+			if (!span || !span.part.handleMouse) return undefined;
+			return span.part.handleMouse({ ...event, x, y: y - span.start, width: span.width, height: span.height });
+		},
+	};
 }
 export function sidebarState(tui: TUI): SidebarState {
 	const terminal = tui.terminal as unknown as Record<symbol, SidebarState>;

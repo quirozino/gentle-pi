@@ -331,14 +331,15 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 				return { key, component, lines };
 			}).filter((section) => section.lines.length > 0);
 			// Built-in sections keep their canonical order; external parts render
-			// before branding with placement "top", after them otherwise.
+			// before branding with placement "top", after them otherwise. Parts
+			// with placement "status" are painted inside the Status card itself.
 			const topSections = collect(parts.filter(([key, part]) => !knownKeys.has(key) && !RAIL_EXCLUDED.has(key) && part.placement === "top"), true);
 			const sections = collectCached(KNOWN.flatMap((key) => {
 				const component = state.parts.get(key);
 				if (!component) sectionCache.delete(key);
 				return component ? [[key, component] as [string, SidebarRail]] : [];
 			}));
-			const bottomSections = collect(parts.filter(([key, part]) => !knownKeys.has(key) && !RAIL_EXCLUDED.has(key) && part.placement !== "top"));
+			const bottomSections = collect(parts.filter(([key, part]) => !knownKeys.has(key) && !RAIL_EXCLUDED.has(key) && part.placement !== "top" && part.placement !== "status"));
 			const branding = headerActive ? [] : renderSidebarBanner(theme, sectionWidth, options.bannerTick?.());
 			const hits: RailHit[] = [];
 			railLines = [];

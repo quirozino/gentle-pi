@@ -10,7 +10,7 @@ import { installStartupListingMargin } from "../lib/startup-listing-margin.ts";
 import { installUserMessageFrame, setUserMessageFrameTheme } from "../lib/user-message-frame.ts";
 import * as os from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { buildShellHeaderModel, renderShellBar, renderShellBelowInputFloat, renderShellBottomOnlyBar, renderShellHeaderChrome, renderShellSidebarBar, shellBarEnabled, shellEnabled, shellHeaderUsageHit, statusTitleText, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
+import { buildShellHeaderModel, renderShellBar, renderShellBelowInputFloat, renderShellBottomOnlyBar, renderShellHeaderChrome, renderShellSidebarCard, shellBarEnabled, shellEnabled, shellHeaderUsageHit, statusTitleText, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
 import { CHANGE_STATUS, RootBranchLabels, renderChangesWidget, type ChangedFile, type ChangesModel, type GitRunner, type WorktreeChanges } from "../lib/shell-changes.ts";
 import { WorktreeChangesView } from "../lib/shell-changes-view.ts";
 import { SessionWorktreeRegistry, resolveSessionWorktree, worktreeGitEnvironment, type WorktreeResolver, type WorktreeIdentity } from "../lib/session-worktree-registry.ts";
@@ -145,7 +145,7 @@ import {
 	type UsageSource,
 } from "../lib/shell-usage.ts";
 import { UsageView } from "../lib/shell-usage-view.ts";
-import { sidebarHeader, sidebarPart, sidebarState, VISUAL_SETTINGS_CHANGED, type SidebarRail } from "../lib/shell-sidebar.ts";
+import { createStatusEmbed, sidebarHeader, sidebarPart, sidebarState, VISUAL_SETTINGS_CHANGED, type SidebarRail, type StatusEmbedSlot } from "../lib/shell-sidebar.ts";
 import { installSelectionFrameTrim } from "../lib/selection-frame-trim.ts";
 import { installSidebar, invalidateSidebar, narrowStatusOwner, STATUS_OWNER } from "../lib/shell-sidebar-layout.ts";
 import { backgroundSgr, resolveWindowBackground, resolveWindowFrame, WINDOW_FRAME_PAD_X } from "../lib/window-frame.ts";
@@ -2239,17 +2239,31 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				text: statusTitleText,
 			});
 			let titleFrame: StatusTitleFrame | undefined;
+			// External parts with placement "status" paint inside the card, above
+			// its title box. Their digests join the card's, and a click inside
+			// their slot reaches them with part-local coordinates.
+			const statusEmbed = tui.terminal ? createStatusEmbed(sidebarState(tui)) : undefined;
+			if (tui.terminal) sidebarState(tui).statusEmbed = true;
+			let embedSlot: StatusEmbedSlot | undefined;
 			const part = sidebarPart(tui, "footer", bottomBar, {
 				digest: () => {
 					titleFrame = titleAnimator.frame();
 					titleAnimator.schedule(titleFrame);
-					return JSON.stringify([footerModel(), tracker.model, visualSettings, cardStyle(), statusTitleKey(titleFrame)]);
+					return JSON.stringify([footerModel(), tracker.model, visualSettings, cardStyle(), statusTitleKey(titleFrame), statusEmbed?.digest() ?? "[]"]);
 				},
 				// The rail only paints in fullscreen, where the header chrome (the top
 				// rail row, or the below-input widget) always paints too; the card then
 				// drops what the header shows so each field appears once.
-				render: (width) => renderShellSidebarBar({ ...footerModel(), statusTitle: titleFrame }, theme, width, visualSettings, { headerVisible: (tui as TUI & { mode?: string }).mode === "fullscreen" }),
+				render: (width) => {
+					const card = renderShellSidebarCard({ ...footerModel(), statusTitle: titleFrame }, theme, width, visualSettings, {
+						headerVisible: (tui as TUI & { mode?: string }).mode === "fullscreen",
+						...(statusEmbed ? { embed: (boxWidth: number) => statusEmbed.render(boxWidth) } : {}),
+					});
+					embedSlot = card.embed;
+					return card.rows;
+				},
 				invalidate() {},
+				handleMouse: (event) => statusEmbed?.handleMouse(event, embedSlot),
 			});
 			// The header row carries everything that ticks every frame (model,
 			// effort, context, cost, usage) plus session identity; it never sees
@@ -2297,7 +2311,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					return rows.length === 0 && (tui as TUI & { mode?: string }).mode === "fullscreen" && sidebarState(tui).framed?.() !== true
 						&& resolvePromptLayout(width, cardStyle(), theme.bg?.bind(theme)).background ? [""] : rows;
 				},
-				dispose() { titleAnimator.dispose(); untrim(); ctx.ui.setWidget(HEADER_WIDGET_KEY, undefined); disposeHeader(); uninstall(); part.dispose(); if (sidebarTui === tui) { sidebarTui = undefined; groupedChangesOwner = () => false; } } };
+				dispose() { titleAnimator.dispose(); untrim(); ctx.ui.setWidget(HEADER_WIDGET_KEY, undefined); disposeHeader(); uninstall(); part.dispose();
+					// A newer Status card may already own the slot; only the last one out clears the flag.
+					if (tui.terminal && !sidebarState(tui).parts.has("footer")) sidebarState(tui).statusEmbed = false;
+					if (sidebarTui === tui) { sidebarTui = undefined; groupedChangesOwner = () => false; } } };
 		});
 		shellChrome.ready();
 		void refreshUsage(ctx, true).catch(() => undefined);
