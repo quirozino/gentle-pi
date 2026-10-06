@@ -191,8 +191,8 @@ export function renderCallText(toolName, args = {}, width) {
   return top && text ? \`\${top}\\n\${text}\` : compact;
 }
 
-// V4's renderResultText, verbatim: V5 leaves it byte-identical, so the heal
-// must still succeed when replacing it changes nothing.
+// V4's renderResultText, verbatim (V5 left it byte-identical), so the heal
+// replaces it with V6's inset body.
 export function renderResultText(toolName, result, options = {}, width) {
   const status = compactResultStatus(toolName, result, options);
   const compact = \`\${PINK}╠ \${status} ╣\${RESET}\`;
@@ -233,6 +233,16 @@ function visibleWidth(text: string): number {
 	return width;
 }
 
+/**
+ * The box part of a framed line: V6 insets the box one column on the left and
+ * one on the right (outside gentle-pi's transcript gutter), so the line still
+ * measures the full width it was given.
+ */
+function boxed(line: string): string {
+	assert.ok(line.startsWith(" ") && line.endsWith(" "), `the box sits inside one-column margins: ${JSON.stringify(line)}`);
+	return line.slice(1, -1);
+}
+
 async function loadModule(path: string) {
 	// A fresh temp path each time keeps Node's module cache from serving a
 	// stale copy across fixtures that share a basename.
@@ -249,9 +259,9 @@ test("patching a pristine V1-style file produces a width-aware box", async (t) =
 	const lines = call.split("\n");
 	assert.equal(lines.length, 2, `call should render a border line + a text line: ${JSON.stringify(lines)}`);
 	assert.equal(visibleWidth(lines[0]), 60, `top border should span exactly 60 columns: ${JSON.stringify(lines[0])}`);
-	assert.ok(lines[0].startsWith("\u2554") && lines[0].endsWith("\u2557"), "top border should open/close with double-line caps");
+	assert.ok(boxed(lines[0]).startsWith("\u2554") && boxed(lines[0]).endsWith("\u2557"), "top border should open/close with double-line caps");
 	assert.equal(visibleWidth(lines[1]), 60, `text line should span exactly 60 columns: ${JSON.stringify(lines[1])}`);
-	assert.ok(lines[1].startsWith("\u2551") && lines[1].endsWith("\u2551"), "text line should open/close with double-line verticals");
+	assert.ok(boxed(lines[1]).startsWith("\u2551") && boxed(lines[1]).endsWith("\u2551"), "text line should open/close with double-line verticals");
 });
 
 test("patching a file with the stray V2 block heals it: no orphan helpers, no duplicate definitions", async (t) => {
@@ -273,7 +283,7 @@ test("patching a file with the stray V2 block heals it: no orphan helpers, no du
 	assert.equal(visibleWidth(call.split("\n")[0]), 60);
 });
 
-test("patching a V3-marked file heals it to V5: no orphan V3 helpers, no duplicate definitions", async (t) => {
+test("patching a V3-marked file heals it to V6: no orphan V3 helpers, no duplicate definitions", async (t) => {
 	const target = tempFile(t, "memory-tool-chrome.js", V3_CHROME);
 	const result = patchChromeFile(target);
 	assert.deepEqual(result, { changed: true, ok: true });
@@ -290,11 +300,11 @@ test("patching a V3-marked file heals it to V5: no orphan V3 helpers, no duplica
 	const lines = call.split("\n");
 	assert.equal(lines.length, 2);
 	assert.equal(visibleWidth(lines[0]), 60);
-	assert.ok(lines[0].startsWith("\u2554") && lines[0].endsWith("\u2557"));
+	assert.ok(boxed(lines[0]).startsWith("\u2554") && boxed(lines[0]).endsWith("\u2557"));
 
-	// A second run against the now-V5 file must be a true no-op.
+	// A second run against the now-V6 file must be a true no-op.
 	const secondPass = readFileSync(target, "utf8");
-	assert.equal(patchChromeFile(target).changed, false, "re-running against an already-healed V5 file should be a no-op");
+	assert.equal(patchChromeFile(target).changed, false, "re-running against an already-healed V6 file should be a no-op");
 	assert.equal(readFileSync(target, "utf8"), secondPass, "healing then re-patching must not change a single byte");
 });
 
@@ -316,10 +326,10 @@ test("a completed call+result renders one closed box spanning both", async (t) =
 	const lines = stripAnsi(`${call}\n${resultText}`).split("\n");
 
 	assert.equal(lines.length, 4, `expected 4 lines forming a closed box: ${JSON.stringify(lines)}`);
-	assert.ok(lines[0].startsWith("\u2554") && lines[0].endsWith("\u2557"), `top border: ${lines[0]}`);
-	assert.ok(lines[1].startsWith("\u2551") && lines[1].endsWith("\u2551"), `call text line: ${lines[1]}`);
-	assert.ok(lines[2].startsWith("\u2551") && lines[2].endsWith("\u2551"), `result text line: ${lines[2]}`);
-	assert.ok(lines[3].startsWith("\u255a") && lines[3].endsWith("\u255d"), `bottom border: ${lines[3]}`);
+	assert.ok(boxed(lines[0]).startsWith("\u2554") && boxed(lines[0]).endsWith("\u2557"), `top border: ${lines[0]}`);
+	assert.ok(boxed(lines[1]).startsWith("\u2551") && boxed(lines[1]).endsWith("\u2551"), `call text line: ${lines[1]}`);
+	assert.ok(boxed(lines[2]).startsWith("\u2551") && boxed(lines[2]).endsWith("\u2551"), `result text line: ${lines[2]}`);
+	assert.ok(boxed(lines[3]).startsWith("\u255a") && boxed(lines[3]).endsWith("\u255d"), `bottom border: ${lines[3]}`);
 
 	for (const line of lines) assert.equal(visibleWidth(line), 60, `every line should measure exactly 60: ${JSON.stringify(line)}`);
 	assert.ok(lines[1].includes("\u{1F9E0}"), "call line should carry the brain emoji");
@@ -368,20 +378,20 @@ test("renderResultText frames only the status line: box bottom border first, the
 	const expanded = mod.renderResultText("mem_search", result, { expanded: true }, 50);
 	const [statusLine, bottomBorder, blank, ...bodyLines] = stripAnsi(expanded).split("\n");
 	assert.equal(visibleWidth(statusLine), 50);
-	assert.ok(statusLine.startsWith("\u2551") && statusLine.endsWith("\u2551"));
+	assert.ok(boxed(statusLine).startsWith("\u2551") && boxed(statusLine).endsWith("\u2551"));
 	assert.equal(visibleWidth(bottomBorder), 50);
-	assert.ok(bottomBorder.startsWith("\u255a") && bottomBorder.endsWith("\u255d"));
+	assert.ok(boxed(bottomBorder).startsWith("\u255a") && boxed(bottomBorder).endsWith("\u255d"));
 	assert.equal(blank, "");
 	assert.equal(bodyLines.join("\n"), "full details\nwith more content");
 });
 
-test("patching a V4-marked file heals it to V5: no orphan V4 helpers, no duplicate definitions", async (t) => {
+test("patching a V4-marked file heals it to V6: no orphan V4 helpers, no duplicate definitions", async (t) => {
 	const target = tempFile(t, "memory-tool-chrome.js", V4_CHROME);
 	assert.deepEqual(patchChromeFile(target), { changed: true, ok: true });
 
 	const patched = readFileSync(target, "utf8");
 	assert.ok(!patched.includes("ENGRAM_CHROME_PATCHED_V4"), "stray V4 marker must be gone");
-	assert.ok(patched.includes("ENGRAM_CHROME_PATCHED_V5"), "should carry the V5 marker");
+	assert.ok(patched.includes("ENGRAM_CHROME_PATCHED_V6"), "should carry the V6 marker");
 	for (const name of ["function borderLine", "function textLine", "function stripAnsi", "const PINK = ", "export function renderCallText", "export function renderResultText", "export function memoryCallSweep"]) {
 		assert.equal(patched.split(name).length - 1, 1, `${name} must be defined exactly once`);
 	}
@@ -392,7 +402,7 @@ test("patching a V4-marked file heals it to V5: no orphan V4 helpers, no duplica
 	for (const line of lines) assert.equal(visibleWidth(line), 60);
 
 	const healed = readFileSync(target, "utf8");
-	assert.equal(patchChromeFile(target).changed, false, "re-running against an already-healed V5 file should be a no-op");
+	assert.equal(patchChromeFile(target).changed, false, "re-running against an already-healed V6 file should be a no-op");
 	assert.equal(readFileSync(target, "utf8"), healed, "healing then re-patching must not change a single byte");
 });
 
@@ -422,22 +432,24 @@ test("a running call sweeps a light-pink pulse around the visible frame without 
 	patchChromeFile(target);
 	const mod = await loadModule(target);
 	const width = 40;
+	// The box sits inside one-column margins: it is `frame` wide from column 1.
+	const frame = width - 2;
 	const still = stripAnsi(mod.renderCallText("mem_search", { query: "auth model" }, width));
 
 	// The path runs up the left wall, across the top border, down the right
 	// wall: the left wall is cell 0, top column c is cell c + 1, the right
-	// wall is cell width + 1. The head and two trailing cells are lit.
+	// wall is cell frame + 1. The head and two trailing cells are lit.
 	const [topMid, textMid] = mod.renderCallText("mem_search", { query: "auth model" }, width, 6).split("\n");
-	assert.deepEqual(sweptColumns(topMid), [3, 4, 5], "the pulse sits on the top border behind its head");
+	assert.deepEqual(sweptColumns(topMid), [4, 5, 6], "the pulse sits on the top border behind its head");
 	assert.deepEqual(sweptColumns(textMid), [], "no wall is lit while the pulse is mid-border");
 
 	const [topStart, textStart] = mod.renderCallText("mem_search", { query: "auth model" }, width, 1).split("\n");
-	assert.deepEqual(sweptColumns(textStart), [0, width - 1], "the trail wraps from the right wall to the left wall as the loop restarts");
-	assert.deepEqual(sweptColumns(topStart), [0], "the head lights the top-left corner");
+	assert.deepEqual(sweptColumns(textStart), [1, frame], "the trail wraps from the right wall to the left wall as the loop restarts");
+	assert.deepEqual(sweptColumns(topStart), [1], "the head lights the top-left corner");
 
-	const [topEnd, textEnd] = mod.renderCallText("mem_search", { query: "auth model" }, width, width + 1).split("\n");
-	assert.deepEqual(sweptColumns(textEnd), [width - 1], "the head reaches the right wall");
-	assert.deepEqual(sweptColumns(topEnd), [width - 2, width - 1]);
+	const [topEnd, textEnd] = mod.renderCallText("mem_search", { query: "auth model" }, width, frame + 1).split("\n");
+	assert.deepEqual(sweptColumns(textEnd), [frame], "the head reaches the right wall");
+	assert.deepEqual(sweptColumns(topEnd), [frame - 1, frame]);
 
 	for (const head of [0, 1, 6, width, width + 1, width + 2, 1234, -7]) {
 		const swept = mod.renderCallText("mem_search", { query: "auth model" }, width, head);
@@ -668,4 +680,51 @@ test("patchChromeFile reports failure instead of writing a half-patched file whe
 	const result = patchChromeFile(target);
 	assert.deepEqual(result, { changed: false, ok: false });
 	assert.equal(readFileSync(target, "utf8"), before, "file must be left untouched on a failed match");
+});
+
+// gentle-engram 0.2.0's memory-tool-chrome.js as the V5 patch left it on a
+// real install (tests/fixtures/engram-chrome/memory-tool-chrome.v5.js).
+const V5_CHROME = readFileSync(new URL("./fixtures/engram-chrome/memory-tool-chrome.v5.js", import.meta.url), "utf8");
+
+test("patching a V5-marked install heals it to V6: one copy of every helper, the box inside the margins", async (t) => {
+	assert.ok(V5_CHROME.includes("ENGRAM_CHROME_PATCHED_V5"), "the fixture is a V5 install");
+	const target = tempFile(t, "memory-tool-chrome.js", V5_CHROME);
+	assert.deepEqual(patchChromeFile(target), { changed: true, ok: true });
+
+	const patched = readFileSync(target, "utf8");
+	assert.ok(!patched.includes("ENGRAM_CHROME_PATCHED_V5"), "stray V5 marker must be gone");
+	assert.ok(patched.includes("ENGRAM_CHROME_PATCHED_V6"), "should carry the V6 marker");
+	for (const name of ["function borderLine", "function textLine", "function boxGeometry", "function sweepPath", "const PINK = ", "export function renderCallText", "export function renderResultText", "export function memoryCallSweep"]) {
+		assert.equal(patched.split(name).length - 1, 1, `${name} must be defined exactly once`);
+	}
+
+	const mod = await loadModule(target);
+	const lines = stripAnsi(`${mod.renderCallText("mem_search", { query: "auth model" }, 60)}\n${mod.renderResultText("mem_search", {}, { expanded: false }, 60)}`).split("\n");
+	assert.equal(lines.length, 4);
+	for (const line of lines) assert.equal(visibleWidth(line), 60);
+	assert.ok(boxed(lines[0]).startsWith("╔") && boxed(lines[0]).endsWith("╗"));
+	assert.ok(boxed(lines[3]).startsWith("╚") && boxed(lines[3]).endsWith("╝"));
+
+	const healed = readFileSync(target, "utf8");
+	assert.equal(patchChromeFile(target).changed, false, "re-running against an already-healed V6 file should be a no-op");
+	assert.equal(readFileSync(target, "utf8"), healed, "healing then re-patching must not change a single byte");
+});
+
+test("inside gentle-pi's transcript gutter the box drops its right margin and reaches the last column", async (t) => {
+	const target = tempFile(t, "memory-tool-chrome.js", PRISTINE_CHROME);
+	patchChromeFile(target);
+	const mod = await loadModule(target);
+	const slot = Symbol.for("gentle-pi.transcript-right-gutter");
+	const store = globalThis as unknown as Record<symbol, unknown>;
+	store[slot] = true;
+	t.after(() => { delete store[slot]; });
+	for (const width of [40, 61]) {
+		const lines = stripAnsi(`${mod.renderCallText("mem_search", { query: "auth model" }, width, 3)}\n${mod.renderResultText("mem_search", {}, { expanded: false }, width)}`).split("\n");
+		for (const line of lines) {
+			assert.equal(visibleWidth(line), width, JSON.stringify(line));
+			assert.ok(line.startsWith(" ") && /[╗║╝]$/u.test(line), `left margin only: ${JSON.stringify(line)}`);
+		}
+		assert.equal(lines[0].indexOf("╔"), 1, "the left edge keeps its margin column");
+		assert.equal(lines[1].indexOf("🧠"), 3, "the text starts two cells inside the frame, like gentle-pi's cards");
+	}
 });

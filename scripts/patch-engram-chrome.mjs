@@ -37,8 +37,13 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // so they are byte-identical in length and cannot drift. V5 keeps V4's box
 // and adds the running sweep: while a call has no result yet, a light-pink
 // pulse travels around the visible frame, the same pace and pulse length as
-// gentle-pi's own running cards (lib/card-sweep.ts).
-const CHROME_MARKER = "/* ENGRAM_CHROME_PATCHED_V5 */";
+// gentle-pi's own running cards (lib/card-sweep.ts). V6 keeps V5's box and
+// sweep but insets the box inside the same margins as gentle-pi's float
+// cards: one column on the left, and one on the right unless gentle-pi flags
+// the transcript's reserved scrollbar column as the right gap
+// (lib/transcript-gutter.ts). Its frame edges then meet the header's columns
+// instead of opening one column left of every other card.
+const CHROME_MARKER = "/* ENGRAM_CHROME_PATCHED_V6 */";
 // Index history: V1 made renderCall/renderResult return a width-aware,
 // multi-line-capable component instead of a fixed-content Text(). That
 // shape is exactly what V4's two-line box output needs (it already
@@ -68,12 +73,13 @@ function findEngramDir() {
 const STRAY_V2_RE =
   /\n*\/\* ENGRAM_CHROME_PATCHED_V2 \*\/[\s\S]*?(?=\n(?:\/\* ENGRAM_CHROME_PATCHED_V1 \*\/\n)?export function renderCallText)/;
 
-// V3's and V4's shared-helper blocks (PINK/PINK_BOLD/RESET/stripAnsi/
-// graphemes/visibleWidth, then V3's frameLine or V4's borderLine/textLine),
-// sitting in front of their own renderCallText. Matches from the marker
-// through to (but not including) the renderCallText that follows it, so
-// re-patching a V3 or V4 install replaces the whole block with V5's.
-const STRAY_V3_V4_RE = /\n*\/\* ENGRAM_CHROME_PATCHED_V[34] \*\/[\s\S]*?(?=\n+export function renderCallText)/;
+// V3's, V4's and V5's shared-helper blocks (PINK/PINK_BOLD/RESET/stripAnsi/
+// graphemes/visibleWidth, then V3's frameLine or V4's/V5's borderLine/
+// textLine, plus V5's sweep helpers and memoryCallSweep), sitting in front of
+// their own renderCallText. Matches from the marker through to (but not
+// including) the renderCallText that follows it, so re-patching a V3, V4 or
+// V5 install replaces the whole block with V6's.
+const STRAY_V3_V5_RE = /\n*\/\* ENGRAM_CHROME_PATCHED_V[345] \*\/[\s\S]*?(?=\n+export function renderCallText)/;
 
 // Anchors on the signature, so this matches the pristine, never-patched
 // function, a healed V1 patch (which just prefixed the same signature with
@@ -180,6 +186,20 @@ function textLine(color, content, width, litLeft, litRight) {
   if (fillWidth < 0) return undefined;
   const wall = (lit) => (lit ? SWEEP_PINK_BOLD + "\\u2551" + color : "\\u2551");
   return color + wall(litLeft) + " " + content + " ".repeat(fillWidth) + wall(litRight) + RESET;
+}
+
+// The box's place in the row it is given: one margin column on the left,
+// and one on the right unless gentle-pi flags the transcript's reserved
+// scrollbar column as the right gap (lib/transcript-gutter.ts, read through
+// its global symbol: this file cannot import gentle-pi). Same margins as
+// gentle-pi's float cards, so the box's frame edges meet theirs and the
+// header's. \`frame\` is the box width; \`row\` pads a box line back to the
+// full width the row was given.
+const TRANSCRIPT_GUTTER = Symbol.for("gentle-pi.transcript-right-gutter");
+
+function boxGeometry(width) {
+  const right = globalThis[TRANSCRIPT_GUTTER] === true ? 0 : 1;
+  return { frame: width - 1 - right, row: (line) => (line === undefined ? undefined : " " + line + " ".repeat(right)) };
 }
 
 // The running sweep. It mirrors gentle-pi's lib/card-sweep.ts (tick, pace,
@@ -290,9 +310,10 @@ export function renderCallText(toolName, args = {}, width, sweep) {
   const compact = \`\${PINK_BOLD}╔ \${inner} ╗\${RESET}\`;
   if (typeof width !== "number") return compact;
 
-  const path = typeof sweep === "number" && Number.isFinite(sweep) ? sweepPath(sweep, width) : undefined;
-  const top = borderLine(PINK_BOLD, "╔", "╗", width, path?.top);
-  const text = textLine(PINK_BOLD, inner, width, path?.left, path?.right);
+  const box = boxGeometry(width);
+  const path = typeof sweep === "number" && Number.isFinite(sweep) ? sweepPath(sweep, box.frame) : undefined;
+  const top = box.row(borderLine(PINK_BOLD, "╔", "╗", box.frame, path?.top));
+  const text = box.row(textLine(PINK_BOLD, inner, box.frame, path?.left, path?.right));
   return top && text ? \`\${top}\\n\${text}\` : compact;
 }`;
 
@@ -306,8 +327,9 @@ const PATCHED_RENDER_RESULT = `export function renderResultText(toolName, result
   const compact = \`\${PINK}╠ \${status} ╣\${RESET}\`;
   const frame = (() => {
     if (typeof width !== "number") return compact;
-    const text = textLine(PINK, status, width);
-    const bottom = borderLine(PINK, "╚", "╝", width);
+    const box = boxGeometry(width);
+    const text = box.row(textLine(PINK, status, box.frame));
+    const bottom = box.row(borderLine(PINK, "╚", "╝", box.frame));
     return text && bottom ? \`\${text}\\n\${bottom}\` : compact;
   })();
   if (!options.expanded || options.isPartial) return frame;
@@ -333,7 +355,7 @@ export function patchChromeFile(target) {
   }
 
   let working = original.replace(STRAY_V2_RE, "\n");
-  working = working.replace(STRAY_V3_V4_RE, "\n");
+  working = working.replace(STRAY_V3_V5_RE, "\n");
   // Healing V2/V3 can leave a run of blank lines where a marker+helper
   // block used to sit; collapse to a single blank line for cosmetic
   // consistency with the rest of the file (this never touches file
@@ -341,7 +363,7 @@ export function patchChromeFile(target) {
   working = working.replace(/\n{3,}/g, "\n\n");
 
   // Anchor matches, not byte changes, decide success: healing V4 leaves its
-  // renderResultText byte-identical (V5 only changes the call half).
+  // renderResultText byte-identical in shape (only its body changes).
   const callMatched = RENDER_CALL_RE.test(working);
   working = working.replace(RENDER_CALL_RE, () => PATCHED_RENDER_CALL);
 
@@ -496,7 +518,7 @@ function patchTests(engramDir, quiet) {
   const testFile = join(engramDir, "test", "memory-tool-chrome.test.mjs");
   if (!existsSync(testFile)) return;
   const content = readFileSync(testFile, "utf8");
-  if (content.includes("ENGRAM_CHROME_PATCHED_V5")) {
+  if (content.includes("ENGRAM_CHROME_PATCHED_V6")) {
     if (!quiet) console.log("patch-engram-chrome: tests already patched; skipping.");
     return;
   }

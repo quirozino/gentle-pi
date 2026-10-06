@@ -1,4 +1,4 @@
-/* ENGRAM_CHROME_PATCHED_V5 */
+/* ENGRAM_CHROME_PATCHED_V6 */
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -40,6 +40,13 @@ const existingTools = [
 // caring about the pink wrapper.
 function stripAnsi(text) {
   return text.replace(/\x1b\[[0-9;]*m/g, "");
+}
+
+// The box part of a framed line: the box sits inside one-column margins (the
+// same as gentle-pi's float cards), so the line still measures the full width.
+function boxed(line) {
+  assert.ok(line.startsWith(" ") && line.endsWith(" "), `the box sits inside one-column margins: ${JSON.stringify(line)}`);
+  return line.slice(1, -1);
 }
 
 const graphemeSegmenter = new Intl.Segmenter("en", { granularity: "grapheme" });
@@ -141,8 +148,8 @@ test("renderCallText renders a box top (pure border + text line) spanning the fu
     const lines = stripAnsi(call).split("\n");
     assert.equal(lines.length, 2, `call should render a border line + a text line: ${JSON.stringify(lines)}`);
     for (const line of lines) assert.equal(visibleWidth(line), width, `line at width ${width} should measure exactly that width: ${JSON.stringify(line)}`);
-    assert.ok(lines[0].startsWith("╔") && lines[0].endsWith("╗"), "top border should open/close with double-line caps");
-    assert.ok(lines[1].startsWith("║ ") && lines[1].endsWith("║"), "text line should open/close with double-line verticals");
+    assert.ok(boxed(lines[0]).startsWith("╔") && boxed(lines[0]).endsWith("╗"), "top border should open/close with double-line caps");
+    assert.ok(boxed(lines[1]).startsWith("║ ") && boxed(lines[1]).endsWith("║"), "text line should open/close with double-line verticals");
   }
 });
 
@@ -152,8 +159,8 @@ test("renderResultText renders a box bottom (text line + pure border) spanning t
   const lines = stripAnsi(status).split("\n");
   assert.equal(lines.length, 2, `result should render a text line + a border line: ${JSON.stringify(lines)}`);
   for (const line of lines) assert.equal(visibleWidth(line), 72, `line should measure exactly 72: ${JSON.stringify(line)}`);
-  assert.ok(lines[0].startsWith("║ ") && lines[0].endsWith("║"), "text line should open/close with double-line verticals");
-  assert.ok(lines[1].startsWith("╚") && lines[1].endsWith("╝"), "bottom border should open/close with double-line caps");
+  assert.ok(boxed(lines[0]).startsWith("║ ") && boxed(lines[0]).endsWith("║"), "text line should open/close with double-line verticals");
+  assert.ok(boxed(lines[1]).startsWith("╚") && boxed(lines[1]).endsWith("╝"), "bottom border should open/close with double-line caps");
 });
 
 test("a completed call+result renders one closed box, and the top/bottom borders never drift apart", () => {
@@ -163,10 +170,10 @@ test("a completed call+result renders one closed box, and the top/bottom borders
   const lines = stripAnsi(`${call}\n${status}`).split("\n");
 
   assert.equal(lines.length, 4, `expected 4 lines forming a closed box: ${JSON.stringify(lines)}`);
-  assert.ok(lines[0].startsWith("╔") && lines[0].endsWith("╗"), `top border: ${lines[0]}`);
-  assert.ok(lines[1].startsWith("║") && lines[1].endsWith("║"), `call text line: ${lines[1]}`);
-  assert.ok(lines[2].startsWith("║") && lines[2].endsWith("║"), `result text line: ${lines[2]}`);
-  assert.ok(lines[3].startsWith("╚") && lines[3].endsWith("╝"), `bottom border: ${lines[3]}`);
+  assert.ok(boxed(lines[0]).startsWith("╔") && boxed(lines[0]).endsWith("╗"), `top border: ${lines[0]}`);
+  assert.ok(boxed(lines[1]).startsWith("║") && boxed(lines[1]).endsWith("║"), `call text line: ${lines[1]}`);
+  assert.ok(boxed(lines[2]).startsWith("║") && boxed(lines[2]).endsWith("║"), `result text line: ${lines[2]}`);
+  assert.ok(boxed(lines[3]).startsWith("╚") && boxed(lines[3]).endsWith("╝"), `bottom border: ${lines[3]}`);
   for (const line of lines) assert.equal(visibleWidth(line), 60);
 
   // Regression guard for the font-drift defect: a pure border (no text, no
@@ -184,7 +191,7 @@ test("renderResultText frames only the status line: box bottom border first, the
   const [statusLine, bottomBorder, blank, ...bodyLines] = stripAnsi(expanded).split("\n");
   assert.equal(visibleWidth(statusLine), 60, "status line should still be framed to width");
   assert.equal(visibleWidth(bottomBorder), 60, "bottom border should close the box at width");
-  assert.ok(bottomBorder.startsWith("╚") && bottomBorder.endsWith("╝"));
+  assert.ok(boxed(bottomBorder).startsWith("╚") && boxed(bottomBorder).endsWith("╝"));
   assert.equal(blank, "", "box and body stay separated by a blank line");
   assert.equal(bodyLines.join("\n"), "full details\nwith more content", "body text is passed through unframed and unpadded");
 });
