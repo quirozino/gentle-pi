@@ -53,6 +53,11 @@ const initialCardStyle = cardStyle();
 before(() => setCardStyle(CARD_STYLE.NEON));
 after(() => setCardStyle(initialCardStyle));
 
+/** Rows flattened for wrapped-value matching: rails, rules and corners become spaces. */
+function flattened(rows: string[]): string {
+	return rows.map((row) => stripAnsi(row).replace(/[║│╔╗╚╝╟╢═─]/g, " ")).join(" ").replace(/\s+/g, " ");
+}
+
 function useCardStyle(t: TestContext, style: CardStyle): void {
 	const found = cardStyle();
 	t.after(() => setCardStyle(found));
@@ -363,7 +368,7 @@ test("Status panel boxes the title and splits groups with tee rules", () => {
 	assert.match(lines[1], /^│ ╔═+╗ │$/);
 	assert.match(lines[3], /^│ ╚═+╝ │$/);
 	assert.match(lines.join("\n"), /║ Project +~\/work\/gentle-pi ║[\s\S]*║ Branch +main ║[\s\S]*║ Profile +team ║/);
-	assert.equal(lines.filter((line) => /^│ ╟─+╢ │$/.test(line)).length, 3, "Project | Changes | Usage | Integrations");
+	assert.equal(lines.filter((line) => /^│ ╟─+╢ │$/.test(line)).length, 4, "Project | Changes | Usage | Integrations | Promoción");
 });
 
 test("sidebar unifies project, captured changes and integrations in one frame", () => {
@@ -985,7 +990,7 @@ test("the narrow-layout bottom-only bar stays unchanged in the float style", (t)
 	assert.deepEqual(renderShellBottomOnlyBar(data, theme, 100, "alt+u"), neon);
 });
 
-test("Directorio closes the Status card after Integrations as one more divided section", (t) => {
+test("Directorio and Promoción close the Status card after Integrations as divided sections", (t) => {
 	const directory = directoryLevels("/home/alan/.pi/agent/local-packages/gentle-pi", "/home/alan", "/home/alan/.pi/agent/local-packages/gentle-pi");
 	const data = model({ statuses: ["MCP connected"], directory });
 	for (const style of [CARD_STYLE.NEON, CARD_STYLE.FLOAT]) {
@@ -1001,9 +1006,67 @@ test("Directorio closes the Status card after Integrations as one more divided s
 		assert.match(body[heading + 1]!, /║  📁 …\/agent +║/);
 		assert.match(body[heading + 2]!, /║  └─ 📁 local-packages +║/);
 		assert.match(body[heading + 3]!, /║     └─ ⎇ gentle-pi +║/);
-		assert.match(body[heading + 4]!, /╚═+╝/, `${style}: the section closes the group box`);
+		assert.match(body[heading + 4]!, /╟─+╢/, `${style}: a divider opens the promotion section after Directorio`);
+		assert.match(body[heading + 5]!, /║ Promoción +║/);
+		assert.match(body[body.length - 2]!, /╚═+╝/, `${style}: the last group still closes the box`);
 	}
 	// Narrow widths clip names instead of breaking the frame.
 	for (const width of [1, 8, 24, 30]) assert.ok(renderShellSidebarBar(data, plainTheme, width).every((line) => visibleWidth(line) <= width), `width ${width}`);
 	assert.doesNotMatch(renderShellSidebarBar(model(), plainTheme, 46).join("\n"), /Directorio/, "no directory, no section");
+});
+
+test("the promotion group shows the idle phase and no candidate by default", () => {
+	const body = renderShellSidebarBar(model(), plainTheme, 60).map(stripAnsi).join("\n");
+	assert.match(body, /Fase +En espera/, "an idle session shows the neutral label, never a stale phase");
+	assert.match(body, /sin candidato/, "no captured evidence shows the explicit no-candidate state");
+	assert.doesNotMatch(body, /Candidato|Paso|Veredicto/, "no candidate id, step or verdict before a completed verifier run");
+});
+
+test("the promotion group shows phase, candidate, step and verdict once a report is captured", () => {
+	const data = model({ oddPhase: "checking", promotionReport: { candidateId: "lib/shell-bar.ts", step: "validacion-stage", verdict: "APTO" } });
+	const body = renderShellSidebarBar(data, plainTheme, 60).map(stripAnsi).join("\n");
+	assert.match(body, /Fase +checking…/, "the phase comes from the registry, not prose");
+	assert.match(body, /Candidato +lib\/shell-bar\.ts/);
+	assert.match(body, /Paso +validacion-stage/);
+	assert.match(body, /Veredicto +APTO · asesor · no autoriza despliegue/, "the advisory qualifier is displayed alongside the verdict");
+	assert.doesNotMatch(body, /sin candidato/, "a captured candidate replaces the neutral line");
+	// Advisory only: the verdict is never dressed up as deploy authority.
+	assert.doesNotMatch(body, /desplegad[oa]|deployed|aprobado para/i);
+});
+
+test("an idle session with a captured report keeps En espera and the captured evidence", () => {
+	const data = model({ promotionReport: { candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "EVIDENCIA INSUFICIENTE" } });
+	const body = flattened(renderShellSidebarBar(data, plainTheme, 60));
+	assert.match(body, /Fase +En espera/);
+	assert.match(body, /Candidato +lib\/x\.ts/);
+	assert.match(body, /Veredicto EVIDENCIA INSUFICIENTE · asesor · no autoriza despliegue/);
+});
+
+test("a captured report without a candidate states so explicitly with its verdict", () => {
+	const data = model({ promotionReport: { candidateId: null, step: "sin-candidato", verdict: "EVIDENCIA INSUFICIENTE" } });
+	const body = flattened(renderShellSidebarBar(data, plainTheme, 60));
+	assert.match(body, /Candidato +sin candidato/);
+	assert.match(body, /Veredicto EVIDENCIA INSUFICIENTE · asesor · no autoriza despliegue/);
+	assert.doesNotMatch(body, /Paso/, "sin-candidato has no step to show");
+});
+
+test("the promotion group follows Directorio in both panel styles and in the narrow fallback", (t) => {
+	const directory = directoryLevels("/home/alan/work/repo", "/home/alan", "/home/alan/work/repo");
+	const data = model({ directory, promotionReport: { candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "APTO" } });
+	for (const style of [CARD_STYLE.NEON, CARD_STYLE.FLOAT]) {
+		useCardStyle(t, style);
+		const body = renderShellSidebarBar(data, plainTheme, 60).map(stripAnsi).join("\n");
+		assert.ok(body.indexOf("Directorio") < body.indexOf("Promoción"), `${style}: Promoción follows Directorio`);
+		assert.match(body, /Candidato +lib\/x\.ts/);
+	}
+	// Below the boxed-panel minimum the single narrow panel keeps the group.
+	for (const width of [14, 15]) {
+		const rows = renderShellSidebarBar(data, plainTheme, width);
+		const narrow = rows.map(stripAnsi).join("\n");
+		assert.match(narrow, /Promoción/);
+		assert.match(narrow, /Candidato/);
+		assert.ok(rows.every((row) => visibleWidth(row) <= width), `width ${width} keeps the frame`);
+	}
+	// The advisory qualifier survives the narrow panel, wrapped on words.
+	assert.match(flattened(renderShellSidebarBar(data, plainTheme, 15)), /APTO · asesor · no autoriza despliegue/, "the advisory qualifier survives the narrow panel");
 });

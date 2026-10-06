@@ -10,6 +10,8 @@ import { REVIEW_SCOPE_UNAVAILABLE, REVIEW_SIDEBAR_LABELS, type ReviewSidebarSnap
 import type { VisualSettings } from "./visual-customization-policy.ts";
 import { renderChangesWidget, type ChangesModel } from "./shell-changes.ts";
 import { renderDirectoryTree, type DirectoryLevel } from "./directory-tree.ts";
+import { oddPhaseLabel, type OddPhase } from "./odd-phase.ts";
+import { promotionSidebarRows, type PromotionReport } from "./promotion-report.ts";
 
 type Presentation = Pick<VisualSettings, "density" | "visibility">;
 type HeaderPresentation = Presentation & Partial<Pick<VisualSettings, "headerPlacement" | "statusPlacement">>;
@@ -60,6 +62,10 @@ export interface ShellBarModel {
 	statusTitle?: StatusTitleFrame;
 	/** The session cwd as tree levels for the Directorio section; absent hides it. */
 	directory?: readonly DirectoryLevel[];
+	/** Session ODD phase read straight from oddPhaseRegistry; undefined is the idle "En espera". */
+	oddPhase?: OddPhase;
+	/** Captured advisory promotion verifier report; absent/null shows the neutral no-candidate state. */
+	promotionReport?: PromotionReport | null;
 }
 
 // The live header row above the fullscreen rail: session identity plus the
@@ -357,6 +363,7 @@ export function renderShellSidebarCard(model: ShellBarModel, theme: ShellBarThem
 				const percent = `${Math.round(row.percent)}%`.padStart(4);
 				return `${name} ${paintGauge(row.percent, theme, SIDEBAR_USAGE_METER_CELLS, model.tick)} ${value(percent)}`;
 			});
+	const promotion = promotionSidebarRows(model.promotionReport);
 	const allGroups: StatusGroup[] = [
 		{
 			title: "Project",
@@ -397,6 +404,17 @@ export function renderShellSidebarCard(model: ShellBarModel, theme: ShellBarThem
 			: [label("No status reported")] },
 		// The cwd as a tree, sized at render time so long names clip, never wrap.
 		...(model.directory?.length ? [{ title: "Directorio", lines: [], fitted: (lineWidth: number) => renderDirectoryTree(model.directory ?? [], theme, lineWidth) }] : []),
+		// ODD phase + advisory promotion evidence in one group, directly after
+		// Directorio. The verdict is displayed exactly as reported — never dressed
+		// up as deploy authority — and the idle phase is the neutral "En espera".
+		{
+			title: "Promoción",
+			pairs: [
+				["Fase", model.oddPhase ? oddPhaseLabel(model.oddPhase) : "En espera"] as const,
+				...promotion.pairs,
+			],
+			lines: promotion.lines.map((line) => label(line)),
+		},
 	];
 	// A group the header dedupe emptied goes whole: no heading over nothing.
 	// Without the header the card keeps its groups exactly as before.

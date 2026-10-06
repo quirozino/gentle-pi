@@ -1,9 +1,11 @@
 # Directorio promotion status
 
-Goal: show an honest neon status group below Directorio in the Gentle shell, combining session ODD phase with a candidate-scoped, evidence-backed DDATA promotion verdict when available.
+Goal: show a neon group below Directorio with the current session ODD phase and the candidate-scoped, advisory DDATA promotion report when available.
 
-- [ ] Map state sources and implement a bounded session-scoped status display; never infer a candidate from chat prose or turn an advisory APTO into deploy authority.
-- [ ] Verify NEON/FLOAT rendering, narrow widths, session lifecycle, unknown candidate and stale verdict behavior with focused tests.
-- [ ] Close with a local work-unit commit on feat/directorio-promotion-status; no package push/PR without a separate delivery decision.
+- [x] Implement bounded session-scoped status: phase from `oddPhaseRegistry`, verifier report from completed exact `ddata-promotion-verifier` results, no candidate inferred from chat or APTO-as-deployment mapping.
+- [x] Verify NEON/FLOAT, widths 14–60, session switch, no candidate, latest evaluation ordering, stale result/replay and background message correlation. RED observed before implementation; focused tests 343/343 green, `node scripts/check-types.mjs` 188 recorded diagnostics vs 200 baseline with zero regressions. Independent verifier repeated both. One sidebar-layout assertion fails identically on base 7deb29840 (pre-existing), and real background `message_end` delivery remains untested live.
+- [x] Close with local work-unit commits on `feat/directorio-promotion-status`; parser/tests commit `368339a08` and the UI/tests commit containing this ledger. No package push/PR without a separate delivery decision.
 
-Base: 7deb2984 on fix/flat-cards-uniform-width; stacked branch includes unmerged parent work. Keep main worktree's shell-usage WIP untouched.
+Implementation: `lib/promotion-report.ts` validates one bounded last-line `DDATA_PROMOTION_REPORT_V1` JSON marker, exact fields/steps/verdicts and candidate ID. The status is untrusted advisory, not a deployment gate or persisted workflow state. The registry uses session + latest verifier evaluation, correlates foreground `subagent_run`, async `subagent_result` and background `gentle-agents.result`; mismatched or stale completions fail closed. `extensions/gentle-shell.ts` clears on session change. `lib/shell-bar.ts` adds the framed group immediately after Directorio; no report shows `sin candidato`, idle phase shows `En espera`, each displayed verdict adds `asesor · no autoriza despliegue`. Tests live in `tests/promotion-report.test.ts`, `tests/shell-bar.test.ts`, `tests/gentle-shell.test.ts`.
+
+Base: 7deb2984 on `fix/flat-cards-uniform-width`; stacked branch contains unmerged parent work. Keep main worktree's shell-usage WIP untouched. Split changes into independent parser/tests and dependent UI/wiring/tests commits to protect review focus. Parser/tests grew to 544 lines after stale-evaluation/background fixes, UI/tests ~365 lines; this exceeds the ~400-line review budget for a single PR and requires a chained/stacked delivery decision before publishing. Temporary untracked node_modules symlink must never be staged. No push or PR.

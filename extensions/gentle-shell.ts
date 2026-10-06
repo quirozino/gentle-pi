@@ -31,6 +31,7 @@ import { GentleAiDevBinaryOverrideError, resolveGentleAiDevBinaryOverride } from
 import { DOUBLE_ESC_CANCEL_HINT, floatPromptRow, framePromptLines, resolvePromptLayout, IDLE_ESC_CLEAR_HINT, PROMPT_HINT, PROMPT_STATE, SHELL_PULSE_MS, withPromptHint, type PromptState } from "../lib/shell-prompt.ts";
 import { SHELL_GLYPHS } from "../lib/shell-glyphs.ts";
 import { oddPhaseRegistry } from "../lib/odd-phase.ts";
+import { completedVerifierMessage, completedVerifierResult, parsePromotionReport, promotionStatusRegistry, verifierRunStart, verifierRunTaskId } from "../lib/promotion-report.ts";
 import { inferOddPhase } from "../lib/odd-phase-inference.ts";
 import { isInteractiveMode } from "../lib/rpc-host.ts";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
@@ -430,6 +431,8 @@ export function buildShellBarModel(
 		cwd: shortenHome(ctx.sessionManager.getCwd(), home),
 		// findRepoRoot caches per cwd, so the per-frame rebuild never walks the disk twice.
 		directory: directoryLevels(ctx.sessionManager.getCwd(), home, findRepoRoot(ctx.sessionManager.getCwd())),
+		oddPhase: oddPhaseRegistry.get(ctx.sessionManager.getSessionId()),
+		promotionReport: promotionStatusRegistry.get(ctx.sessionManager.getSessionId()) ?? null,
 		profile: options.profile,
 		profileModels: options.profileModels,
 		orchestratorModel: options.orchestratorModel,
@@ -2348,8 +2351,15 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	pi.on("session_start", async (_event, ctx) => {
 		setUserMessageFrameTheme(ctx.hasUI && isInteractiveMode(ctx.mode) ? () => ctx.ui.theme : () => undefined);
 		shellChrome.begin();
+		// The promotion capture is in-memory only, so a session that starts —
+		// fresh or resumed — begins with no candidate evidence.
+		promotionStatusRegistry.clear(ctx.sessionManager.getSessionId());
 		// Backstop: a throw before setFooter must never hold statuses back forever.
 		try { await startShellSession(ctx); } finally { shellChrome.ready(); }
+	});
+	// Leaving a session drops its capture: switching sessions starts clean.
+	pi.on("session_before_switch", (_event, ctx) => {
+		promotionStatusRegistry.clear(ctx.sessionManager.getSessionId());
 	});
 	pi.on("session_shutdown", (_event, ctx) => {
 		closeCustomize?.();
@@ -2363,6 +2373,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		stopProfilePoll();
 		oddPhaseRegistry.clear(ctx.sessionManager.getSessionId());
 		oddPhaseRegistry.clearRenderRequest(ctx.sessionManager.getSessionId());
+		promotionStatusRegistry.clear(ctx.sessionManager.getSessionId());
 		pendingQueuedText = undefined;
 		stopIdleGaugeAnimation();
 		prompt?.dispose();
@@ -2838,6 +2849,48 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			const delegated = event.toolName === "subagent_run" || /^mcp__.+?__subagent_run$/.test(event.toolName);
 			oddPhaseRegistry.infer(ctx.sessionManager.getSessionId(), phase, delegated ? "delegation" : "tool");
 		}
+	});
+	pi.on("tool_execution_start", (event, ctx) => {
+		// A ddata-promotion-verifier run opening opens a chronological
+		// evaluation: the fresh evaluation clears the stale candidate while it
+		// runs, and only this latest evaluation may later capture its report.
+		if (!ctx.hasUI || !isInteractiveMode(ctx.mode)) return;
+		const start = verifierRunStart(event);
+		if (start) promotionStatusRegistry.beginEvaluation(ctx.sessionManager.getSessionId(), start.toolCallId);
+	});
+	pi.on("tool_result", (event, ctx) => {
+		// Advisory DDATA promotion capture: the sidebar reflects a completed
+		// ddata-promotion-verifier report for THIS session. Interactive UI only;
+		// the state is in-memory, session-scoped, and never a durable proof.
+		if (!ctx.hasUI || !isInteractiveMode(ctx.mode)) return;
+		// A verifier run's own result correlates its task id even before it
+		// completes (a background start reports queued), so a later async
+		// subagent_result pull can be matched to its evaluation.
+		const running = verifierRunTaskId(event);
+		if (running) promotionStatusRegistry.correlate(ctx.sessionManager.getSessionId(), running.toolCallId, running.taskId);
+		const completed = completedVerifierResult(event);
+		if (!completed) return;
+		const report = parsePromotionReport(completed.text);
+		// The registry correlates the completion (run call id, else task id) and
+		// fails closed when it cannot, so stale or uncorrelated reports never win.
+		if (report) promotionStatusRegistry.capture(ctx.sessionManager.getSessionId(), { toolCallId: completed.toolCallId, taskId: completed.taskId }, report);
+	});
+	pi.on("message_end", (event, ctx) => {
+		// A background verifier's completion arrives as a gentle-agents result
+		// message, not a tool_result. pi does not authenticate the message, so
+		// the source guard is exact (custom type + details.gentleAgents) and the
+		// capture is still gated on correlation: only a taskId tracked for this
+		// session's LATEST verifier evaluation can display, so an uncorrelated,
+		// replayed or foreign-session message fails closed. If the platform
+		// never delivers this message, the panel keeps the neutral evaluating
+		// state until an explicit subagent_result pull.
+		if (!ctx.hasUI || !isInteractiveMode(ctx.mode)) return;
+		const message = (event as { message?: unknown }).message;
+		if (typeof message !== "object" || message === null) return;
+		const completed = completedVerifierMessage(message);
+		if (!completed) return;
+		const report = parsePromotionReport(completed.text);
+		if (report) promotionStatusRegistry.capture(ctx.sessionManager.getSessionId(), { taskId: completed.taskId }, report);
 	});
 	pi.on("agent_settled", (_event, ctx) => {
 		// Pi clears its own run-active flag before emitting agent_settled, so
