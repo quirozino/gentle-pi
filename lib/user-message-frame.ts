@@ -17,6 +17,7 @@
 
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { notePiContractMissing } from "./pi-contracts.ts";
+import { transcriptRightGutter } from "./transcript-gutter.ts";
 
 export const USER_MESSAGE_FRAME_THEMES: ReadonlySet<string> = new Set(["Matrix-Green"]);
 export const USER_MESSAGE_FRAME_VERSION = "4";
@@ -31,8 +32,10 @@ const LEGACY_FRAME_V1_FLAG = "__matrixUserFrame";
 const LEGACY_FRAME_LAST_VERSION = "3";
 
 const MIN_WIDTH = 8;
-// The chat scroll view paints its scrollbar over the last content column;
-// reserve it so the right border closes before the scrollbar.
+// A transient ("auto") scrollbar paints over the last content column; reserve
+// it so the right border closes before the scrollbar. An "always" scrollbar
+// reserves its own column outside the content, which already is the gap (see
+// transcript-gutter.ts), so the box then reaches the last content column.
 const RIGHT_MARGIN_COLUMNS = 1;
 // Symmetric left inset: the box's outer edge sits one cell in, like tool
 // cards and the prompt box.
@@ -62,7 +65,7 @@ export function setUserMessageFrameTheme(getTheme: () => FrameTheme | undefined)
 const OSC_SEQUENCE = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
 
 export function userMessageFrameInnerWidth(width: number): number {
-	return width - 2 - LEFT_MARGIN_COLUMNS - RIGHT_MARGIN_COLUMNS;
+	return width - 2 - LEFT_MARGIN_COLUMNS - (transcriptRightGutter() ? 0 : RIGHT_MARGIN_COLUMNS);
 }
 
 /** Wraps already-rendered inner lines (rendered at userMessageFrameInnerWidth) in the frame. */

@@ -1,5 +1,6 @@
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { SHELL_GLYPHS } from "./shell-glyphs.ts";
+import { transcriptRightGutter } from "./transcript-gutter.ts";
 
 // Gentle Shell cards: the shape every Gentle notice takes in the transcript
 // and above the editor. The same rounded frame as the prompt and the
@@ -408,6 +409,18 @@ export interface CardParts {
 
 const FLOAT_MARGIN = 1;
 const FLOAT_MIN_WIDTH = 10;
+
+// The float card's right margin: none inside a transcript whose reserved
+// scrollbar column already is the gap (see transcript-gutter.ts), so its right
+// edge meets the header's and the prompt's column.
+function floatRightMargin(): number {
+	return transcriptRightGutter() ? 0 : FLOAT_MARGIN;
+}
+
+/** Columns a float card at this width draws between its margins. */
+function floatSpan(width: number): number {
+	return Math.floor(width) - FLOAT_MARGIN - floatRightMargin();
+}
 const FLOAT_BG_ROLE: Record<CardTone, string> = {
 	[CARD_TONE.INFO]: "toolSuccessBg",
 	[CARD_TONE.RUNNING]: "toolPendingBg",
@@ -510,7 +523,7 @@ export function floatRows(tone: CardTone, theme: CardTheme, width: number, rende
 	const target = Math.max(0, Math.floor(width));
 	const open = floatOpener(theme, tone, target);
 	const floatChrome = options.frame === false ? FLOAT_CHROME : FRAMED_FLOAT_CHROME;
-	const inner = open ? target - FLOAT_MARGIN * 2 : width;
+	const inner = open ? floatSpan(target) : width;
 	const draw = () => {
 		const measured = render(inner);
 		const slots = floatLayout(measured, Boolean(open));
@@ -568,13 +581,15 @@ function floatOpener(theme: CardTheme, tone: CardTone, width: number): string {
 }
 
 // Paints every row behind its tone background, re-armed after any reset the
-// content carries, inside a transparent one-column margin on both sides.
-// Padding rows keep their tone-coloured accent just like content rows. An
-// empty opener is the flat card: the same margins, nothing painted.
+// content carries, inside a transparent one-column margin on both sides (no
+// right one in a reserved transcript gutter). Padding rows keep their
+// tone-coloured accent just like content rows. An empty opener is the flat
+// card: the same margins, nothing painted.
 function paintFloat(rows: readonly string[], open: string): string[] {
-	const margin = " ".repeat(FLOAT_MARGIN);
-	if (!open) return rows.map((row) => `${margin}${row}${margin}`);
-	return rows.map((row) => `${margin}${open}${row.replace(BG_CLEARING, (reset) => reset + open)}${BG_RESET}${margin}`);
+	const left = " ".repeat(FLOAT_MARGIN);
+	const right = " ".repeat(floatRightMargin());
+	if (!open) return rows.map((row) => `${left}${row}${right}`);
+	return rows.map((row) => `${left}${open}${row.replace(BG_CLEARING, (reset) => reset + open)}${BG_RESET}${right}`);
 }
 
 /**
@@ -593,7 +608,7 @@ export function floatPanelActive(theme: CardTheme, width: number, tone: CardTone
  * columns narrower than the outlined frame, never re-wraps or clips them.
  */
 export function panelInnerWidth(theme: CardTheme, width: number, tone: CardTone = CARD_TONE.INFO): number {
-	return floatOpener(theme, tone, width) ? cardInnerWidth(Math.floor(width) - FLOAT_MARGIN * 2) : cardInnerWidth(width);
+	return floatOpener(theme, tone, width) ? cardInnerWidth(floatSpan(width)) : cardInnerWidth(width);
 }
 
 /**
@@ -625,7 +640,7 @@ export function renderCard(card: Card, theme: CardTheme, width: number, options:
 	// Without the panel opt-in, legacy cards always keep the outlined frame.
 	if (chrome !== OUTLINE_CHROME) return withChrome(OUTLINE_CHROME, () => renderCard(card, theme, width, options));
 	const open = options.panel ? floatOpener(theme, card.tone, width) : "";
-	if (open) return paintFloat(withChrome(options.frame === false ? FLOAT_CHROME : FRAMED_FLOAT_CHROME, () => floatPanel(card, theme, Math.floor(width) - FLOAT_MARGIN * 2, options)), options.fill === false ? "" : open);
+	if (open) return paintFloat(withChrome(options.frame === false ? FLOAT_CHROME : FRAMED_FLOAT_CHROME, () => floatPanel(card, theme, floatSpan(width), options)), options.fill === false ? "" : open);
 	const text = cardText(card, theme, cardInnerWidth(width), options.expanded);
 	const sweep = visibleSweep(card.tone, options.sweep);
 	const roleFor = sweep ? sweepRoles(sweep, Math.floor(width), text.length + 2) : undefined;

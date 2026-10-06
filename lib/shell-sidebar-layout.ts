@@ -6,6 +6,7 @@ import { renderSidebarBanner } from "./shell-sidebar-banner.ts";
 import type { Density, HeaderPlacement, StatusPlacement } from "./visual-customization-policy.ts";
 import { notePiContractMissing } from "./pi-contracts.ts";
 import { createWindowFrame, fillWindowBackground, WINDOW_FRAME_GAP, WINDOW_FRAME_INSET, windowFrameFits } from "./window-frame.ts";
+import { installTranscriptRightGutter } from "./transcript-gutter.ts";
 
 export const SIDEBAR_BREAKPOINT = 140;
 const RAIL_WIDTH = 50;
@@ -389,6 +390,10 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			if (roots.has(root)) return;
 			const original = root[NODE]!;
 			const descriptor = Object.getOwnPropertyDescriptor(root, NODE);
+			// Cards in pi's transcript close their right edge on the column an
+			// "always" scrollbar reserves (see transcript-gutter.ts).
+			const ungutter = installTranscriptRightGutter(original.call(root));
+			if (ungutter) cleanups.push(ungutter);
 			// Fullscreen gives this stretched stack an explicit viewport height.
 			// Its intrinsic-height probe is unused; real painting traverses NODE.
 			// Delegating that probe to root.render would render the transcript twice.

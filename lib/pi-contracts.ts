@@ -162,7 +162,7 @@ export const PI_CONTRACTS: PiContract[] = [
 	{
 		id: "scroll-view-content-width",
 		summary: "ScrollView.getContentWidth reserves a column only for scrollbar \"always\"",
-		guards: ["lib/shell-sidebar-layout.ts", "lib/user-message-frame.ts", "tests/shell-sidebar-layout.test.ts"],
+		guards: ["lib/shell-sidebar-layout.ts", "lib/user-message-frame.ts", "lib/transcript-gutter.ts", "tests/shell-sidebar-layout.test.ts"],
 		sources: ["scroll-view.js"],
 		check(inputs) {
 			const problems: string[] = [];
