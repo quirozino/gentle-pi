@@ -11,6 +11,7 @@ import { installUserMessageFrame, setUserMessageFrameTheme } from "../lib/user-m
 import * as os from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { buildShellHeaderModel, renderShellBar, renderShellBelowInputFloat, renderShellBottomOnlyBar, renderShellHeaderChrome, renderShellSidebarCard, shellBarEnabled, shellEnabled, shellHeaderUsageHit, statusTitleText, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
+import { directoryLevels, findRepoRoot } from "../lib/directory-tree.ts";
 import { CHANGE_STATUS, RootBranchLabels, renderChangesWidget, type ChangedFile, type ChangesModel, type GitRunner, type WorktreeChanges } from "../lib/shell-changes.ts";
 import { WorktreeChangesView } from "../lib/shell-changes-view.ts";
 import { SessionWorktreeRegistry, resolveSessionWorktree, worktreeGitEnvironment, type WorktreeResolver, type WorktreeIdentity } from "../lib/session-worktree-registry.ts";
@@ -427,6 +428,8 @@ export function buildShellBarModel(
 		.map(([, text]) => text);
 	return {
 		cwd: shortenHome(ctx.sessionManager.getCwd(), home),
+		// findRepoRoot caches per cwd, so the per-frame rebuild never walks the disk twice.
+		directory: directoryLevels(ctx.sessionManager.getCwd(), home, findRepoRoot(ctx.sessionManager.getCwd())),
 		profile: options.profile,
 		profileModels: options.profileModels,
 		orchestratorModel: options.orchestratorModel,

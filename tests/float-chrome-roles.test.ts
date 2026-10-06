@@ -5,6 +5,7 @@ import { CARD_STYLE, CARD_TONE, cardStyle, renderCard, setCardStyle, type CardSt
 import { buildShellHeaderModel, renderShellHeaderChrome, renderShellSidebarBar, type ShellBarModel } from "../lib/shell-bar.ts";
 import { floatPromptRow, resolvePromptLayout } from "../lib/shell-prompt.ts";
 import { GentleAiCallCard } from "../lib/gentle-ai-renderer.ts";
+import { directoryLevels } from "../lib/directory-tree.ts";
 
 // Float chrome (cards, rail panels, the top bar, the prompt row) must paint
 // only through theme roles, so a custom theme such as Matrix-Green owns every
@@ -74,9 +75,10 @@ test("float cards, rail panels, the top bar and the prompt row paint only throug
 	}
 	assert.ok(bgRoles.has("toolSuccessBg") && bgRoles.has("toolPendingBg") && bgRoles.has("toolErrorBg"), "each tone paints its tool background role");
 
-	const status = renderShellSidebarBar(model(), theme, 46);
+	const status = renderShellSidebarBar({ ...model(), directory: directoryLevels("/srv/repo/lib", undefined, "/srv/repo") }, theme, 46);
 	assert.match(status.join("\n"), /║/, "the float Status keeps its double-ruled group box");
 	assertRolesOnly(status, "Status panel");
+	assert.match(status.join("\n"), /Directorio/, "the Directorio section is painted through the same roles");
 
 	const header = renderShellHeaderChrome(buildShellHeaderModel(model()), theme, 120, "alt+u", undefined, 3);
 	assert.equal(header.headerRow, 1, "the float top bar is in effect");

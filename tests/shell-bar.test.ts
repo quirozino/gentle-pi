@@ -24,6 +24,7 @@ import { modelUsageRows, parseNanQuota } from "../lib/shell-usage.ts";
 import { REVIEW_SCOPE_UNAVAILABLE } from "../lib/review-sidebar-state.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import { CARD_STYLE, cardStyle, setCardStyle, type CardStyle } from "../lib/shell-card.ts";
+import { directoryLevels } from "../lib/directory-tree.ts";
 
 // The Gentle Shell bar replaces pi's three-line footer with one line of
 // segments. Rendering is pure so it can be verified without a TUI.
@@ -982,4 +983,27 @@ test("the narrow-layout bottom-only bar stays unchanged in the float style", (t)
 	const neon = renderShellBottomOnlyBar(data, theme, 100, "alt+u");
 	useCardStyle(t, CARD_STYLE.FLOAT);
 	assert.deepEqual(renderShellBottomOnlyBar(data, theme, 100, "alt+u"), neon);
+});
+
+test("Directorio closes the Status card after Integrations as one more divided section", (t) => {
+	const directory = directoryLevels("/home/alan/.pi/agent/local-packages/gentle-pi", "/home/alan", "/home/alan/.pi/agent/local-packages/gentle-pi");
+	const data = model({ statuses: ["MCP connected"], directory });
+	for (const style of [CARD_STYLE.NEON, CARD_STYLE.FLOAT]) {
+		useCardStyle(t, style);
+		const lines = renderShellSidebarBar(data, plainTheme, 46);
+		assert.ok(lines.every((line) => visibleWidth(line) === 46), `${style}: every row keeps the card width`);
+		const text = lines.join("\n");
+		assert.ok(text.indexOf("Integrations") < text.indexOf("Directorio"), `${style}: Directorio follows Integrations`);
+		const body = lines.map((line) => stripAnsi(line));
+		const heading = body.findIndex((line) => line.includes("Directorio"));
+		assert.match(body[heading - 1]!, /╟─+╢/, `${style}: a divider opens the section`);
+		assert.match(body[heading]!, /║ Directorio +║/);
+		assert.match(body[heading + 1]!, /║  📁 …\/agent +║/);
+		assert.match(body[heading + 2]!, /║  └─ 📁 local-packages +║/);
+		assert.match(body[heading + 3]!, /║     └─ ⎇ gentle-pi +║/);
+		assert.match(body[heading + 4]!, /╚═+╝/, `${style}: the section closes the group box`);
+	}
+	// Narrow widths clip names instead of breaking the frame.
+	for (const width of [1, 8, 24, 30]) assert.ok(renderShellSidebarBar(data, plainTheme, width).every((line) => visibleWidth(line) <= width), `width ${width}`);
+	assert.doesNotMatch(renderShellSidebarBar(model(), plainTheme, 46).join("\n"), /Directorio/, "no directory, no section");
 });

@@ -9,6 +9,7 @@ import { bannerFrame } from "./shell-sidebar-banner.ts";
 import { REVIEW_SCOPE_UNAVAILABLE, REVIEW_SIDEBAR_LABELS, type ReviewSidebarSnapshot } from "./review-sidebar-state.ts";
 import type { VisualSettings } from "./visual-customization-policy.ts";
 import { renderChangesWidget, type ChangesModel } from "./shell-changes.ts";
+import { renderDirectoryTree, type DirectoryLevel } from "./directory-tree.ts";
 
 type Presentation = Pick<VisualSettings, "density" | "visibility">;
 type HeaderPresentation = Presentation & Partial<Pick<VisualSettings, "headerPlacement" | "statusPlacement">>;
@@ -57,6 +58,8 @@ export interface ShellBarModel {
 	tick?: number;
 	/** The Status title box animation frame; absent draws the static title. */
 	statusTitle?: StatusTitleFrame;
+	/** The session cwd as tree levels for the Directorio section; absent hides it. */
+	directory?: readonly DirectoryLevel[];
 }
 
 // The live header row above the fullscreen rail: session identity plus the
@@ -392,11 +395,13 @@ export function renderShellSidebarCard(model: ShellBarModel, theme: ShellBarThem
 		{ title: "Integrations", lines: model.statuses.length
 			? model.statuses.map((status) => theme.fg(ROLE.STATUS, sanitizeStatus(status)))
 			: [label("No status reported")] },
+		// The cwd as a tree, sized at render time so long names clip, never wrap.
+		...(model.directory?.length ? [{ title: "Directorio", lines: [], fitted: (lineWidth: number) => renderDirectoryTree(model.directory ?? [], theme, lineWidth) }] : []),
 	];
 	// A group the header dedupe emptied goes whole: no heading over nothing.
 	// Without the header the card keeps its groups exactly as before.
 	const groups = options.headerVisible === true
-		? allGroups.filter((group) => group.value !== undefined || (group.pairs?.length ?? 0) > 0 || group.lines.length > 0)
+		? allGroups.filter((group) => group.value !== undefined || (group.pairs?.length ?? 0) > 0 || group.lines.length > 0 || group.fitted !== undefined)
 		: allGroups;
 	if (innerWidth - STATUS_PANEL_INSET < STATUS_PANEL_MIN_CONTENT) {
 		// Too narrow for nested boxes: the single (framed) panel keeps every fact readable.
@@ -405,6 +410,7 @@ export function renderShellSidebarCard(model: ShellBarModel, theme: ShellBarThem
 			...(presentation?.density === "minimal" ? [] : [label(group.title)]),
 			...[...(group.value ? [value(group.value)] : []), ...(group.pairs ?? []).map(([key, text]) => `${label(key)} ${value(text)}`), ...group.lines]
 				.flatMap((line) => wrapTextWithAnsi(line, innerWidth - inset).map((part) => " ".repeat(inset) + part)),
+			...(group.fitted?.(innerWidth - inset) ?? []).map((line) => " ".repeat(inset) + line),
 		]);
 		return { rows: renderCard({ title: "Status", body, tone: CARD_TONE.INFO, glyph: SHELL_GLYPHS.status }, theme, width, { expanded: true, panel: true }) };
 	}
@@ -449,6 +455,8 @@ interface StatusGroup {
 	/** Label/value rows: the value sits flush right when both fit on one row. */
 	pairs?: ReadonlyArray<readonly [string, string]>;
 	lines: string[];
+	/** Rows drawn for an exact line width instead of wrapped, e.g. the cwd tree. */
+	fitted?: (width: number) => string[];
 }
 
 /** The text of the boxed Status title, e.g. `(o_o) Status`. */
@@ -512,6 +520,7 @@ function statusBoxRows(groups: StatusGroup[], theme: ShellBarTheme, boxWidth: nu
 			: group.value ? pair(group.title, group.value, STATUS_PANEL_ROLE.HEADING) : [theme.fg(STATUS_PANEL_ROLE.HEADING, theme.bold(group.title))]),
 		...(group.pairs ?? []).flatMap(([key, text]) => pair(key, text)),
 		...group.lines.flatMap((line) => wrapTextWithAnsi(line, content - 1).map((part) => ` ${part}`)),
+		...(group.fitted?.(content - 1) ?? []).map((line) => ` ${line}`),
 	]).filter((section) => section.length > 0);
 
 	return [
