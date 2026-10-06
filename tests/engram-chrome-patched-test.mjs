@@ -1,4 +1,4 @@
-/* ENGRAM_CHROME_PATCHED_V4 */
+/* ENGRAM_CHROME_PATCHED_V5 */
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -6,6 +6,7 @@ import {
   compactResultStatus,
   compactToolArg,
   humanToolName,
+  memoryCallSweep,
   renderCallText,
   renderResultText,
 } from "../memory-tool-chrome.js";
@@ -209,4 +210,21 @@ test("renderCallText and renderResultText remain callable with no width (non-TUI
   assert.ok(call.startsWith("╔ ") && call.endsWith(" ╗"));
   const result = stripAnsi(renderResultText("mem_search", { details: { data: [] } }, { expanded: false }));
   assert.ok(result.startsWith("╠ ") && result.endsWith(" ╣"));
+});
+
+test("a running call sweeps a light-pink pulse around its frame without changing its width", () => {
+  const still = renderCallText("mem_search", { query: "auth model" }, 60);
+  assert.ok(!still.includes("\x1b[38;5;218m"), "the still frame carries no sweep colour");
+  for (const head of [0, 1, 30, 61, 999]) {
+    const swept = renderCallText("mem_search", { query: "auth model" }, 60, head);
+    assert.ok(swept.includes("\x1b[38;5;218m"), `head ${head} paints the light-pink pulse`);
+    assert.equal(stripAnsi(swept), stripAnsi(still), "the sweep recolours cells only");
+    for (const line of swept.split("\n")) assert.equal(visibleWidth(line), 60);
+  }
+});
+
+test("memoryCallSweep sweeps a live running row and stays still once it finishes", () => {
+  const context = { state: {}, args: {}, executionStarted: true, argsComplete: true, sweep: true, invalidate() {} };
+  assert.equal(typeof memoryCallSweep(context, true, 0), "number");
+  assert.equal(memoryCallSweep(context, false, 160), undefined, "the final render is still and cancels the pending redraw");
 });

@@ -38,6 +38,7 @@ export function renderResultText(toolName, result, options = {}) {
 `;
 
 const PRISTINE_INDEX = `import { Text } from "@earendil-works/pi-tui";
+import { compactResultStatus, humanToolName, renderCallText, renderResultText } from "./memory-tool-chrome.js";
 
 function registerMemoryTools(pi) {
   for (const toolName of ENGRAM_TOOLS) {
@@ -110,8 +111,8 @@ test("patchEngramChrome quiet mode patches gentle-engram and prints nothing on t
 	assert.equal(calls.log, 0, "quiet mode must not log routine status");
 	assert.equal(calls.warn, 0, "quiet mode must not warn on the happy path");
 	assert.equal(calls.error, 0, "a successful patch must not log an error");
-	assert.ok(readFileSync(join(engramDir, "memory-tool-chrome.js"), "utf8").includes("ENGRAM_CHROME_PATCHED_V4"));
-	assert.ok(readFileSync(join(engramDir, "index.ts"), "utf8").includes("ENGRAM_INDEX_PATCHED_V2"));
+	assert.ok(readFileSync(join(engramDir, "memory-tool-chrome.js"), "utf8").includes("ENGRAM_CHROME_PATCHED_V5"));
+	assert.ok(readFileSync(join(engramDir, "index.ts"), "utf8").includes("ENGRAM_INDEX_PATCHED_V3"));
 });
 
 test("patchEngramChrome is idempotent: a second quiet call changes nothing and stays quiet", (t) => {
@@ -161,6 +162,20 @@ test("patchEngramChrome no-ops without crashing when the installed gentle-engram
 	let result: unknown;
 	assert.doesNotThrow(() => { result = patchEngramChrome({ quiet: true }); });
 	assert.equal(result, false, "a drifted shape is a failed patch, not a silent success");
+});
+
+test("patchEngramChrome leaves index.ts untouched when the chrome patch fails", (t) => {
+	const home = isolatedHome(t);
+	// The patched index imports memoryCallSweep from the chrome module: patching
+	// it over an unpatched chrome would break gentle-engram's import outright.
+	const engramDir = fakeEngramDir(home, {
+		"memory-tool-chrome.js": "export function renderCallText() { return 'unrecognized shape'; }\n",
+		"index.ts": PRISTINE_INDEX,
+	});
+	captureConsole(t);
+
+	assert.equal(patchEngramChrome({ quiet: true }), false);
+	assert.equal(readFileSync(join(engramDir, "index.ts"), "utf8"), PRISTINE_INDEX, "index.ts must not be patched over a failed chrome patch");
 });
 
 test("the self-heal extension module imports without throwing and exports a callable no-op", async (t) => {

@@ -34,15 +34,19 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // rules drifted apart by one column in terminals whose font advances that
 // emoji differently than pi-tui's own width table assumes. V4 fixes both:
 // one closed box, with borders that are PURE `═` runs (no text, no emoji)
-// so they are byte-identical in length and cannot drift.
-const CHROME_MARKER = "/* ENGRAM_CHROME_PATCHED_V4 */";
+// so they are byte-identical in length and cannot drift. V5 keeps V4's box
+// and adds the running sweep: while a call has no result yet, a light-pink
+// pulse travels around the visible frame, the same pace and pulse length as
+// gentle-pi's own running cards (lib/card-sweep.ts).
+const CHROME_MARKER = "/* ENGRAM_CHROME_PATCHED_V5 */";
 // Index history: V1 made renderCall/renderResult return a width-aware,
 // multi-line-capable component instead of a fixed-content Text(). That
 // shape is exactly what V4's two-line box output needs (it already
 // `.split("\n")`s the result), so V2 only moves the marker -- see
-// patchIndexFile's heal-from-V1 branch below.
-const INDEX_MARKER = "/* ENGRAM_INDEX_PATCHED_V2 */";
-const OLD_INDEX_MARKER_V1 = "/* ENGRAM_INDEX_PATCHED_V1 */";
+// patchIndexFile's heal branch below. V3 hands pi's render context to the
+// chrome so a running call can sweep its frame and wake itself through
+// context.invalidate.
+const INDEX_MARKER = "/* ENGRAM_INDEX_PATCHED_V3 */";
 
 // Find gentle-engram's directory
 function findEngramDir() {
@@ -64,19 +68,19 @@ function findEngramDir() {
 const STRAY_V2_RE =
   /\n*\/\* ENGRAM_CHROME_PATCHED_V2 \*\/[\s\S]*?(?=\n(?:\/\* ENGRAM_CHROME_PATCHED_V1 \*\/\n)?export function renderCallText)/;
 
-// V3's shared-helper block (PINK/PINK_BOLD/RESET/stripAnsi/graphemes/
-// visibleWidth/frameLine), sitting in front of its own renderCallText.
-// Matches from the V3 marker through to (but not including) the
-// renderCallText that follows it, so re-patching a V3 install replaces the
-// whole block -- including its now-obsolete frameLine helper -- with V4's.
-const STRAY_V3_RE = /\n*\/\* ENGRAM_CHROME_PATCHED_V3 \*\/[\s\S]*?(?=\n+export function renderCallText)/;
+// V3's and V4's shared-helper blocks (PINK/PINK_BOLD/RESET/stripAnsi/
+// graphemes/visibleWidth, then V3's frameLine or V4's borderLine/textLine),
+// sitting in front of their own renderCallText. Matches from the marker
+// through to (but not including) the renderCallText that follows it, so
+// re-patching a V3 or V4 install replaces the whole block with V5's.
+const STRAY_V3_V4_RE = /\n*\/\* ENGRAM_CHROME_PATCHED_V[34] \*\/[\s\S]*?(?=\n+export function renderCallText)/;
 
 // Anchors on the signature, so this matches the pristine, never-patched
 // function, a healed V1 patch (which just prefixed the same signature with
-// its own marker comment), and a V3 patch (which added a trailing `, width`
-// parameter but kept the same base signature).
+// its own marker comment), and a V3/V4 patch (which added a trailing
+// `, width` parameter but kept the same base signature).
 const RENDER_CALL_RE =
-  /(?:\/\* ENGRAM_CHROME_PATCHED_V1 \*\/\n)?export function renderCallText\(toolName, args = \{\}(?:, width)?\) \{[\s\S]*?^}/m;
+  /(?:\/\* ENGRAM_CHROME_PATCHED_V1 \*\/\n)?export function renderCallText\(toolName, args = \{\}(?:, width(?:, sweep)?)?\) \{[\s\S]*?^}/m;
 const RENDER_RESULT_RE =
   /export function renderResultText\(toolName, result, options = \{\}(?:, width)?\) \{[\s\S]*?^}/m;
 
@@ -136,11 +140,30 @@ function visibleWidth(text) {
 // right visibleWidth in one fewer codepoint than the result rule below it,
 // so it painted one column short in fonts that advance that emoji by a
 // single cell). Returns undefined when there is no room for at least one
-// fill column, so callers fall back to the compact form.
-function borderLine(color, capLeft, capRight, width) {
+// fill column, so callers fall back to the compact form. \`lit\`, when given,
+// tells which columns the running sweep recolours (see sweepPath below).
+function borderLine(color, capLeft, capRight, width, lit) {
   const fillWidth = width - visibleWidth(capLeft) - visibleWidth(capRight);
   if (fillWidth < 0) return undefined;
-  return color + capLeft + "\\u2550".repeat(fillWidth) + capRight + RESET;
+  const cells = [capLeft, ...Array(fillWidth).fill("\\u2550"), capRight];
+  return color + paintCells(cells, color, lit) + RESET;
+}
+
+// Joins single-column cells, switching to the sweep colour over the lit
+// columns and back to the frame colour after them. Only colour codes are
+// inserted, never glyphs, so a swept line measures exactly what the still
+// one does. Without \`lit\` this is a plain join (the still frame's bytes).
+function paintCells(cells, color, lit) {
+  if (!lit) return cells.join("");
+  let painted = "";
+  let swept = false;
+  cells.forEach((cell, column) => {
+    const on = lit(column);
+    if (on !== swept) painted += on ? SWEEP_PINK_BOLD : color;
+    swept = on;
+    painted += cell;
+  });
+  return swept ? painted + color : painted;
 }
 
 // One text line inside the box: \`║ <content><fill of spaces>║\`, padded to
@@ -148,13 +171,109 @@ function borderLine(color, capLeft, capRight, width) {
 // the brain emoji or other wide graphemes, so it is measured with the same
 // grapheme-aware visibleWidth() as everything else here. Returns undefined
 // when the content itself does not fit, so callers fall back to the
-// compact form instead of overflowing or truncating.
-function textLine(color, content, width) {
+// compact form instead of overflowing or truncating. \`litLeft\`/\`litRight\`
+// paint a wall in the sweep colour while the pulse passes over it.
+function textLine(color, content, width, litLeft, litRight) {
   const left = "\\u2551 ";
   const right = "\\u2551";
   const fillWidth = width - visibleWidth(left) - visibleWidth(content) - visibleWidth(right);
   if (fillWidth < 0) return undefined;
-  return color + left + content + " ".repeat(fillWidth) + right + RESET;
+  const wall = (lit) => (lit ? SWEEP_PINK_BOLD + "\\u2551" + color : "\\u2551");
+  return color + wall(litLeft) + " " + content + " ".repeat(fillWidth) + wall(litRight) + RESET;
+}
+
+// The running sweep. It mirrors gentle-pi's lib/card-sweep.ts (tick, pace,
+// live-row rules, idle cutoff, redraw scheduling) and lib/shell-card.ts
+// (pulse length) as a small self-contained copy: this file lives inside
+// gentle-engram and cannot import gentle-pi modules. Light pink (256-color
+// 218) stands out from the hot-pink frame it travels on.
+const SWEEP_PINK_BOLD = "\\x1b[38;5;218m\\x1b[1m";
+const SWEEP_TICK_MS = 160;
+const SWEEP_CELLS_PER_TICK = 10;
+const SWEEP_LENGTH = 3;
+const SWEEP_STREAM_IDLE_MS = 5000;
+const SWEEP_POLICY_CACHE_MS = 1000;
+const SWEEP_SLOT = Symbol.for("gentle-engram.frame-sweep");
+
+// While a call runs only the box's top half is on screen, so the pulse
+// follows that open frame: up the left wall (cell 0), along the top border
+// (column c is cell c + 1), down the right wall (cell width + 1), then
+// loops. The head and the two cells behind it are lit.
+function sweepPath(head, width) {
+  const length = width + 2;
+  const at = ((Math.trunc(head) % length) + length) % length;
+  const lit = (cell) => (((at - cell) % length) + length) % length < SWEEP_LENGTH;
+  return { left: lit(0), top: (column) => lit(column + 1), right: lit(width + 1) };
+}
+
+// gentle-pi's animation policy (lib/animation-policy.ts), read from the same
+// file: \`$GENTLE_PI_CONFIG_HOME/animations.json\`, default ~/.pi/gentle-ai.
+// Only \`quality\` (also the default for a missing or malformed file)
+// sweeps. Node's fs is reached through process.getBuiltinModule so this file
+// keeps no static node: import; a host without it simply sweeps.
+function readAnimationPolicy() {
+  const host = typeof process === "undefined" ? undefined : process;
+  const fs = host?.getBuiltinModule?.("node:fs");
+  const os = host?.getBuiltinModule?.("node:os");
+  const home = host?.env?.GENTLE_PI_CONFIG_HOME || (os ? os.homedir() + "/.pi/gentle-ai" : undefined);
+  if (!fs || !home) return "quality";
+  try {
+    const value = JSON.parse(fs.readFileSync(home + "/animations.json", "utf8"));
+    const valid =
+      value !== null && typeof value === "object" && !Array.isArray(value) && value.schema === "gentle-pi.animations/v1" && Object.keys(value).length === 2;
+    return valid && (value.policy === "performance" || value.policy === "potato") ? value.policy : "quality";
+  } catch {
+    return "quality";
+  }
+}
+
+let sweepPolicyCache;
+
+function sweepPolicyAllows(now) {
+  if (sweepPolicyCache === undefined || now - sweepPolicyCache.at >= SWEEP_POLICY_CACHE_MS || now < sweepPolicyCache.at) {
+    sweepPolicyCache = { at: now, quality: readAnimationPolicy() === "quality" };
+  }
+  return sweepPolicyCache.quality;
+}
+
+/**
+ * The sweep head a memory call row draws now, or undefined for a still
+ * frame; pass it to renderCallText. Call it on EVERY render of the row with
+ * pi's render context: it cancels the row's pending redraw, and while the
+ * row runs (\`running\`: no final result yet) and is live -- pi started
+ * executing it, or its arguments are still streaming in and changed within
+ * the last SWEEP_STREAM_IDLE_MS -- it schedules exactly one redraw a tick
+ * later through context.invalidate. A replayed row is never live, and the
+ * final render schedules nothing, so no timer outlives the call.
+ * \`context.sweep\` (a boolean) overrides the animation policy in tests.
+ */
+export function memoryCallSweep(context, running, now) {
+  const state = context?.state;
+  if (state === null || typeof state !== "object") return undefined;
+  const slot = (state[SWEEP_SLOT] ??= {});
+  if (slot.timer !== undefined) clearTimeout(slot.timer);
+  slot.timer = undefined;
+  if (!running) return undefined;
+  if (context.executionStarted !== true && context.argsComplete !== true) {
+    if (slot.args !== undefined && slot.args.value !== context.args) {
+      slot.streaming = true;
+      slot.changedAt = now;
+    }
+    slot.args = { value: context.args };
+  }
+  const streamLive = slot.streaming === true && slot.changedAt !== undefined && now >= slot.changedAt && now - slot.changedAt < SWEEP_STREAM_IDLE_MS;
+  if (context.executionStarted !== true && !streamLive) return undefined;
+  const enabled = typeof context.sweep === "boolean" ? context.sweep : sweepPolicyAllows(now);
+  if (!enabled) return undefined;
+  const invalidate = context.invalidate;
+  if (typeof invalidate === "function") {
+    slot.timer = setTimeout(() => {
+      slot.timer = undefined;
+      invalidate();
+    }, SWEEP_TICK_MS);
+    slot.timer.unref?.();
+  }
+  return Math.floor(now / SWEEP_TICK_MS) * SWEEP_CELLS_PER_TICK;
 }
 
 // Emits the box's TOP half only: a pure border line, then the call's own
@@ -163,14 +282,17 @@ function textLine(color, content, width) {
 // completed call+result reads as a single closed four-sided box. While a
 // call has no result yet, this top half is legitimately unmatched at the
 // bottom -- that reads as "in progress" and must not be closed early.
-export function renderCallText(toolName, args = {}, width) {
+// \`sweep\` is the running pulse's head from memoryCallSweep; undefined
+// draws the still frame.
+export function renderCallText(toolName, args = {}, width, sweep) {
   const arg = compactToolArg(toolName, args);
   const inner = \`🧠 \${humanToolName(toolName)}\${arg ? \` \${arg}\` : ""} …\`;
   const compact = \`\${PINK_BOLD}╔ \${inner} ╗\${RESET}\`;
   if (typeof width !== "number") return compact;
 
-  const top = borderLine(PINK_BOLD, "╔", "╗", width);
-  const text = textLine(PINK_BOLD, inner, width);
+  const path = typeof sweep === "number" && Number.isFinite(sweep) ? sweepPath(sweep, width) : undefined;
+  const top = borderLine(PINK_BOLD, "╔", "╗", width, path?.top);
+  const text = textLine(PINK_BOLD, inner, width, path?.left, path?.right);
   return top && text ? \`\${top}\\n\${text}\` : compact;
 }`;
 
@@ -211,22 +333,22 @@ export function patchChromeFile(target) {
   }
 
   let working = original.replace(STRAY_V2_RE, "\n");
-  working = working.replace(STRAY_V3_RE, "\n");
+  working = working.replace(STRAY_V3_V4_RE, "\n");
   // Healing V2/V3 can leave a run of blank lines where a marker+helper
   // block used to sit; collapse to a single blank line for cosmetic
   // consistency with the rest of the file (this never touches file
   // behavior, only whitespace between top-level declarations).
   working = working.replace(/\n{3,}/g, "\n\n");
 
-  const beforeCall = working;
-  working = working.replace(RENDER_CALL_RE, PATCHED_RENDER_CALL);
-  const callReplaced = working !== beforeCall;
+  // Anchor matches, not byte changes, decide success: healing V4 leaves its
+  // renderResultText byte-identical (V5 only changes the call half).
+  const callMatched = RENDER_CALL_RE.test(working);
+  working = working.replace(RENDER_CALL_RE, () => PATCHED_RENDER_CALL);
 
-  const beforeResult = working;
-  working = working.replace(RENDER_RESULT_RE, PATCHED_RENDER_RESULT);
-  const resultReplaced = working !== beforeResult;
+  const resultMatched = RENDER_RESULT_RE.test(working);
+  working = working.replace(RENDER_RESULT_RE, () => PATCHED_RENDER_RESULT);
 
-  if (!callReplaced || !resultReplaced || !working.includes(CHROME_MARKER)) {
+  if (!callMatched || !resultMatched || !working.includes(CHROME_MARKER)) {
     return { changed: false, ok: false };
   }
 
@@ -263,8 +385,10 @@ const INDEX_RENDER_METHODS_V0 = `      renderCall(args) {
         return new Text(renderResultText(toolName, result, { expanded: options.expanded, isPartial: options.isPartial, isError: context.isError }), 0, 0);
       },`;
 
-const INDEX_RENDER_METHODS_PATCHED = `${INDEX_MARKER}
-      renderCall(args) {
+// The render body V1 and V2 installed: width-aware, but renderCall takes no
+// render context, so it can never animate. Both versions carry this exact
+// body; only the marker comment in front of it (indented or not) differs.
+const INDEX_RENDER_METHODS_V1_V2 = `      renderCall(args) {
         return { render: (width) => renderCallText(toolName, args, width).split("\\n"), invalidate() {} };
       },
       renderResult(result, options, _theme, context) {
@@ -276,13 +400,44 @@ const INDEX_RENDER_METHODS_PATCHED = `${INDEX_MARKER}
           invalidate() {},
         };
       },`;
+const OLD_INDEX_MARKER_RE = /^[ \t]*\/\* ENGRAM_INDEX_PATCHED_V[12] \*\/\n/m;
+
+// renderCall reads pi's render context (renderCall(args, theme, context) in
+// @earendil-works/pi-coding-agent's ToolDefinition) so memoryCallSweep can
+// tell a running live row from a finished or replayed one and wake it
+// through context.invalidate. pi re-runs renderCall on every update of the
+// row, so the sweep head is taken once per render pass. renderResult settles
+// the same row slot: a final result leaves no redraw pending.
+const INDEX_RENDER_METHODS_PATCHED = `${INDEX_MARKER}
+      renderCall(args, _theme, context) {
+        const sweep = memoryCallSweep(context, context?.isPartial !== false && context?.isError !== true, Date.now());
+        return { render: (width) => renderCallText(toolName, args, width, sweep).split("\\n"), invalidate() {} };
+      },
+      renderResult(result, options, _theme, context) {
+        memoryCallSweep(context, options.isPartial === true && context?.isError !== true, Date.now());
+        return {
+          render: (width) =>
+            renderResultText(toolName, result, { expanded: options.expanded, isPartial: options.isPartial, isError: context.isError }, width).split(
+              "\\n",
+            ),
+          invalidate() {},
+        };
+      },`;
 
 const INDEX_TEXT_IMPORT = 'import { Text } from "@earendil-works/pi-tui";\n';
+// gentle-engram's own import of the chrome helpers; the patched renderCall
+// also needs memoryCallSweep from it.
+const INDEX_CHROME_IMPORT = 'import { compactResultStatus, humanToolName, renderCallText, renderResultText } from "./memory-tool-chrome.js";';
+const INDEX_CHROME_IMPORT_PATCHED =
+  'import { compactResultStatus, humanToolName, memoryCallSweep, renderCallText, renderResultText } from "./memory-tool-chrome.js";';
 
 /**
  * Patch an index.ts file (or fixture copy) so renderCall/renderResult
- * return a width-aware duck-typed component instead of a fixed-content
- * Text(), and drop the now-unused Text import. Returns { changed, ok }.
+ * return a width-aware duck-typed component that sweeps while the call
+ * runs, instead of a fixed-content Text(), and drop the now-unused Text
+ * import. Heals a V1/V2 patch (same render body, older marker) the same
+ * way. Returns { changed, ok }; ok is false, with the file untouched, when
+ * the render methods or the chrome import are not found.
  */
 export function patchIndexFile(target) {
   const original = readFileSync(target, "utf8");
@@ -291,27 +446,25 @@ export function patchIndexFile(target) {
     return { changed: false, ok: true };
   }
 
-  // Heal a file still carrying the old V1 marker: the render body it
-  // installed already returns a width-aware, multi-line-capable component
-  // (it `.split("\n")`s renderCallText/renderResultText's output), which is
-  // exactly what V4's two-line box output needs -- only the marker comment
-  // needs to move.
-  if (original.includes(OLD_INDEX_MARKER_V1)) {
-    const working = original.replace(OLD_INDEX_MARKER_V1, INDEX_MARKER);
-    writeFileSync(target, working, "utf8");
-    return { changed: true, ok: true };
-  }
-
-  if (!original.includes(INDEX_RENDER_METHODS_V0)) {
+  if (!original.includes(INDEX_CHROME_IMPORT)) {
     return { changed: false, ok: false };
   }
 
-  let working = original.replace(INDEX_RENDER_METHODS_V0, INDEX_RENDER_METHODS_PATCHED);
-  // Text becomes unused once renderCall/renderResult stop constructing it
-  // directly; only drop the import when it is actually otherwise unused.
-  if (working.includes(INDEX_TEXT_IMPORT) && !/\bText\(/.test(working.replace(INDEX_TEXT_IMPORT, ""))) {
-    working = working.replace(INDEX_TEXT_IMPORT, "");
+  let working;
+  const healed = original.replace(OLD_INDEX_MARKER_RE, "");
+  if (healed !== original && healed.includes(INDEX_RENDER_METHODS_V1_V2)) {
+    working = healed.replace(INDEX_RENDER_METHODS_V1_V2, INDEX_RENDER_METHODS_PATCHED);
+  } else if (original.includes(INDEX_RENDER_METHODS_V0)) {
+    working = original.replace(INDEX_RENDER_METHODS_V0, INDEX_RENDER_METHODS_PATCHED);
+    // Text becomes unused once renderCall/renderResult stop constructing it
+    // directly; only drop the import when it is actually otherwise unused.
+    if (working.includes(INDEX_TEXT_IMPORT) && !/\bText\(/.test(working.replace(INDEX_TEXT_IMPORT, ""))) {
+      working = working.replace(INDEX_TEXT_IMPORT, "");
+    }
+  } else {
+    return { changed: false, ok: false };
   }
+  working = working.replace(INDEX_CHROME_IMPORT, INDEX_CHROME_IMPORT_PATCHED);
 
   if (!working.includes(INDEX_MARKER)) {
     return { changed: false, ok: false };
@@ -343,7 +496,7 @@ function patchTests(engramDir, quiet) {
   const testFile = join(engramDir, "test", "memory-tool-chrome.test.mjs");
   if (!existsSync(testFile)) return;
   const content = readFileSync(testFile, "utf8");
-  if (content.includes("ENGRAM_CHROME_PATCHED_V4")) {
+  if (content.includes("ENGRAM_CHROME_PATCHED_V5")) {
     if (!quiet) console.log("patch-engram-chrome: tests already patched; skipping.");
     return;
   }
@@ -375,7 +528,10 @@ export function patchEngramChrome(options = {}) {
     return false;
   }
   const chromeOk = patchChrome(engramDir, quiet);
-  const indexOk = patchIndex(engramDir, quiet);
+  // The patched index.ts imports memoryCallSweep from the patched chrome:
+  // patching it over a chrome that failed to patch would break
+  // gentle-engram's import outright, so a failed chrome leaves index.ts as is.
+  const indexOk = chromeOk && patchIndex(engramDir, quiet);
   patchTests(engramDir, quiet);
   return chromeOk && indexOk;
 }

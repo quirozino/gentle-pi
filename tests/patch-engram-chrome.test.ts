@@ -147,6 +147,71 @@ export function renderResultText(toolName, result, options = {}, width) {
 }
 `;
 
+// The shape the real installed package carries right before this round: a
+// full V4 patch -- one closed box with pure `═` borders, but a static frame
+// with no running sweep. Trimmed to the helpers the heal must remove.
+const V4_CHROME = `function firstTextContent(result) { return result?.text ?? ""; }
+function resultData(result) { return result?.data ?? result; }
+function truncateText(value, max) { return String(value).slice(0, max); }
+function compactToolArg(toolName, args) { return args?.query ? \`"\${args.query}"\` : ""; }
+function humanToolName(toolName) { return toolName.replace(/^mem_/, ""); }
+function compactResultStatus(toolName, result, options) { return options?.isPartial ? "running…" : "✓ done"; }
+
+/* ENGRAM_CHROME_PATCHED_V4 */
+const PINK = "\\x1b[38;5;205m";
+const PINK_BOLD = "\\x1b[38;5;205m\\x1b[1m";
+const RESET = "\\x1b[0m";
+
+function stripAnsi(text) {
+  return text.replace(/\\x1b\\[[0-9;]*m/g, "");
+}
+
+function visibleWidth(text) {
+  return Array.from(stripAnsi(text)).length;
+}
+
+function borderLine(color, capLeft, capRight, width) {
+  const fillWidth = width - visibleWidth(capLeft) - visibleWidth(capRight);
+  if (fillWidth < 0) return undefined;
+  return color + capLeft + "\\u2550".repeat(fillWidth) + capRight + RESET;
+}
+
+function textLine(color, content, width) {
+  const fillWidth = width - 3 - visibleWidth(content);
+  if (fillWidth < 0) return undefined;
+  return color + "\\u2551 " + content + " ".repeat(fillWidth) + "\\u2551" + RESET;
+}
+
+export function renderCallText(toolName, args = {}, width) {
+  const inner = \`🧠 \${humanToolName(toolName)} …\`;
+  const compact = \`\${PINK_BOLD}╔ \${inner} ╗\${RESET}\`;
+  if (typeof width !== "number") return compact;
+  const top = borderLine(PINK_BOLD, "╔", "╗", width);
+  const text = textLine(PINK_BOLD, inner, width);
+  return top && text ? \`\${top}\\n\${text}\` : compact;
+}
+
+// V4's renderResultText, verbatim: V5 leaves it byte-identical, so the heal
+// must still succeed when replacing it changes nothing.
+export function renderResultText(toolName, result, options = {}, width) {
+  const status = compactResultStatus(toolName, result, options);
+  const compact = \`\${PINK}╠ \${status} ╣\${RESET}\`;
+  const frame = (() => {
+    if (typeof width !== "number") return compact;
+    const text = textLine(PINK, status, width);
+    const bottom = borderLine(PINK, "╚", "╝", width);
+    return text && bottom ? \`\${text}\\n\${bottom}\` : compact;
+  })();
+  if (!options.expanded || options.isPartial) return frame;
+
+  const text = firstTextContent(result);
+  if (text) return \`\${frame}\\n\\n\${text}\`;
+
+  const data = resultData(result);
+  return \`\${frame}\\n\\n\${truncateText(JSON.stringify(data, null, 2), 2000)}\`;
+}
+`;
+
 function tempFile(t: { after(fn: () => void): void }, name: string, content: string) {
 	const root = mkdtempSync(join(tmpdir(), "patch-engram-chrome-test-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -208,7 +273,7 @@ test("patching a file with the stray V2 block heals it: no orphan helpers, no du
 	assert.equal(visibleWidth(call.split("\n")[0]), 60);
 });
 
-test("patching a V3-marked file heals it to V4: no orphan V3 helpers, no duplicate definitions", async (t) => {
+test("patching a V3-marked file heals it to V5: no orphan V3 helpers, no duplicate definitions", async (t) => {
 	const target = tempFile(t, "memory-tool-chrome.js", V3_CHROME);
 	const result = patchChromeFile(target);
 	assert.deepEqual(result, { changed: true, ok: true });
@@ -227,9 +292,9 @@ test("patching a V3-marked file heals it to V4: no orphan V3 helpers, no duplica
 	assert.equal(visibleWidth(lines[0]), 60);
 	assert.ok(lines[0].startsWith("\u2554") && lines[0].endsWith("\u2557"));
 
-	// A second run against the now-V4 file must be a true no-op.
+	// A second run against the now-V5 file must be a true no-op.
 	const secondPass = readFileSync(target, "utf8");
-	assert.equal(patchChromeFile(target).changed, false, "re-running against an already-healed V4 file should be a no-op");
+	assert.equal(patchChromeFile(target).changed, false, "re-running against an already-healed V5 file should be a no-op");
 	assert.equal(readFileSync(target, "utf8"), secondPass, "healing then re-patching must not change a single byte");
 });
 
@@ -310,7 +375,163 @@ test("renderResultText frames only the status line: box bottom border first, the
 	assert.equal(bodyLines.join("\n"), "full details\nwith more content");
 });
 
+test("patching a V4-marked file heals it to V5: no orphan V4 helpers, no duplicate definitions", async (t) => {
+	const target = tempFile(t, "memory-tool-chrome.js", V4_CHROME);
+	assert.deepEqual(patchChromeFile(target), { changed: true, ok: true });
+
+	const patched = readFileSync(target, "utf8");
+	assert.ok(!patched.includes("ENGRAM_CHROME_PATCHED_V4"), "stray V4 marker must be gone");
+	assert.ok(patched.includes("ENGRAM_CHROME_PATCHED_V5"), "should carry the V5 marker");
+	for (const name of ["function borderLine", "function textLine", "function stripAnsi", "const PINK = ", "export function renderCallText", "export function renderResultText", "export function memoryCallSweep"]) {
+		assert.equal(patched.split(name).length - 1, 1, `${name} must be defined exactly once`);
+	}
+
+	const mod = await loadModule(target);
+	const lines = stripAnsi(mod.renderCallText("mem_search", { query: "auth model" }, 60, 0)).split("\n");
+	assert.equal(lines.length, 2);
+	for (const line of lines) assert.equal(visibleWidth(line), 60);
+
+	const healed = readFileSync(target, "utf8");
+	assert.equal(patchChromeFile(target).changed, false, "re-running against an already-healed V5 file should be a no-op");
+	assert.equal(readFileSync(target, "utf8"), healed, "healing then re-patching must not change a single byte");
+});
+
+const LIGHT_PINK = "\x1b[38;5;218m";
+
+/** Visible column indexes painted light pink in one rendered line. */
+function sweptColumns(line: string): number[] {
+	const columns: number[] = [];
+	let swept = false;
+	let column = 0;
+	for (const part of line.split(/(\x1b\[[0-9;]*m)/)) {
+		if (part.startsWith("\x1b[")) {
+			if (part === LIGHT_PINK) swept = true;
+			else if (/^\x1b\[(?:0|38;5;\d+)m$/.test(part)) swept = false;
+			continue;
+		}
+		for (const { segment } of new Intl.Segmenter("en", { granularity: "grapheme" }).segment(part)) {
+			if (swept) columns.push(column);
+			column += visibleWidth(segment);
+		}
+	}
+	return columns;
+}
+
+test("a running call sweeps a light-pink pulse around the visible frame without changing its width", async (t) => {
+	const target = tempFile(t, "memory-tool-chrome.js", PRISTINE_CHROME);
+	patchChromeFile(target);
+	const mod = await loadModule(target);
+	const width = 40;
+	const still = stripAnsi(mod.renderCallText("mem_search", { query: "auth model" }, width));
+
+	// The path runs up the left wall, across the top border, down the right
+	// wall: the left wall is cell 0, top column c is cell c + 1, the right
+	// wall is cell width + 1. The head and two trailing cells are lit.
+	const [topMid, textMid] = mod.renderCallText("mem_search", { query: "auth model" }, width, 6).split("\n");
+	assert.deepEqual(sweptColumns(topMid), [3, 4, 5], "the pulse sits on the top border behind its head");
+	assert.deepEqual(sweptColumns(textMid), [], "no wall is lit while the pulse is mid-border");
+
+	const [topStart, textStart] = mod.renderCallText("mem_search", { query: "auth model" }, width, 1).split("\n");
+	assert.deepEqual(sweptColumns(textStart), [0, width - 1], "the trail wraps from the right wall to the left wall as the loop restarts");
+	assert.deepEqual(sweptColumns(topStart), [0], "the head lights the top-left corner");
+
+	const [topEnd, textEnd] = mod.renderCallText("mem_search", { query: "auth model" }, width, width + 1).split("\n");
+	assert.deepEqual(sweptColumns(textEnd), [width - 1], "the head reaches the right wall");
+	assert.deepEqual(sweptColumns(topEnd), [width - 2, width - 1]);
+
+	for (const head of [0, 1, 6, width, width + 1, width + 2, 1234, -7]) {
+		const swept = mod.renderCallText("mem_search", { query: "auth model" }, width, head);
+		assert.equal(stripAnsi(swept), still, `the sweep recolours cells only (head ${head})`);
+		for (const line of swept.split("\n")) assert.equal(visibleWidth(line), width, `head ${head} keeps the line width-exact`);
+	}
+});
+
+test("a finished call draws the static hot-pink frame with no sweep", async (t) => {
+	const target = tempFile(t, "memory-tool-chrome.js", PRISTINE_CHROME);
+	patchChromeFile(target);
+	const mod = await loadModule(target);
+	const context = { state: {}, args: {}, executionStarted: true, argsComplete: true, isPartial: false, sweep: true, invalidate() {} };
+	const sweep = mod.memoryCallSweep(context, false, 1000);
+	assert.equal(sweep, undefined, "no result-less running state means no pulse");
+	const call = mod.renderCallText("mem_search", { query: "auth model" }, 40, sweep);
+	assert.ok(!call.includes(LIGHT_PINK), "the finished frame carries no light pink");
+	assert.ok(call.includes("\x1b[38;5;205m"), "the finished frame stays hot pink");
+});
+
+function sweepContext(overrides: Record<string, unknown> = {}) {
+	const calls = { invalidate: 0 };
+	const context = { state: {}, args: { query: "a" }, executionStarted: true, argsComplete: true, isPartial: true, isError: false, sweep: true, invalidate: () => { calls.invalidate += 1; }, ...overrides };
+	return { context, calls };
+}
+
+test("a live running call schedules exactly one redraw per tick and every render replaces the pending one", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const target = tempFile(t, "memory-tool-chrome.js", PRISTINE_CHROME);
+	patchChromeFile(target);
+	const mod = await loadModule(target);
+	const { context, calls } = sweepContext();
+
+	assert.equal(mod.memoryCallSweep(context, true, 0), 0);
+	assert.equal(mod.memoryCallSweep(context, true, 160), 10, "the pulse advances ten cells per 160 ms tick");
+	t.mock.timers.tick(160);
+	assert.equal(calls.invalidate, 1, "two renders still leave a single pending redraw");
+
+	mod.memoryCallSweep(context, true, 320);
+	mod.memoryCallSweep(context, false, 330);
+	t.mock.timers.tick(1000);
+	assert.equal(calls.invalidate, 1, "the final render cancels the pending redraw and schedules none");
+});
+
+test("a replayed or abandoned call never sweeps or schedules", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const target = tempFile(t, "memory-tool-chrome.js", PRISTINE_CHROME);
+	patchChromeFile(target);
+	const mod = await loadModule(target);
+
+	const replay = sweepContext({ executionStarted: false, argsComplete: false });
+	assert.equal(mod.memoryCallSweep(replay.context, true, 0), undefined, "a row pi never saw streaming or executing is not live");
+	assert.equal(mod.memoryCallSweep(replay.context, true, 100), undefined);
+
+	const stream = sweepContext({ executionStarted: false, argsComplete: false });
+	mod.memoryCallSweep(stream.context, true, 0);
+	stream.context.args = { query: "ab" };
+	assert.notEqual(mod.memoryCallSweep(stream.context, true, 100), undefined, "changing arguments make a streaming row live");
+	assert.equal(mod.memoryCallSweep(stream.context, true, 5100), undefined, "a stream idle for 5 s stops sweeping");
+	t.mock.timers.tick(1000);
+	assert.equal(replay.calls.invalidate + stream.calls.invalidate, 0, "no redraw is left pending");
+
+	const missing = mod.memoryCallSweep({ executionStarted: true }, true, 0);
+	assert.equal(missing, undefined, "a context without row state never sweeps");
+});
+
+test("the sweep follows gentle-pi's animation policy when the context does not decide", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const home = mkdtempSync(join(tmpdir(), "engram-sweep-policy-"));
+	const previous = process.env.GENTLE_PI_CONFIG_HOME;
+	process.env.GENTLE_PI_CONFIG_HOME = home;
+	t.after(() => {
+		if (previous === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
+		else process.env.GENTLE_PI_CONFIG_HOME = previous;
+		rmSync(home, { recursive: true, force: true });
+	});
+	const target = tempFile(t, "memory-tool-chrome.js", PRISTINE_CHROME);
+	patchChromeFile(target);
+
+	const quality = await loadModule(target);
+	assert.equal(quality.memoryCallSweep(sweepContext({ sweep: undefined }).context, true, 0), 0, "no policy file means quality: sweep");
+
+	writeFileSync(join(home, "animations.json"), JSON.stringify({ schema: "gentle-pi.animations/v1", policy: "performance" }));
+	const performance = await loadModule(target);
+	const { context, calls } = sweepContext({ sweep: undefined });
+	assert.equal(performance.memoryCallSweep(context, true, 0), undefined, "performance keeps the frame still");
+	t.mock.timers.tick(1000);
+	assert.equal(calls.invalidate, 0);
+});
+
+const CHROME_IMPORT = 'import { compactResultStatus, humanToolName, renderCallText, renderResultText } from "./memory-tool-chrome.js";';
+
 const PRISTINE_INDEX = `import { Text } from "@earendil-works/pi-tui";
+${CHROME_IMPORT}
 
 function registerMemoryTools(pi) {
   for (const toolName of ENGRAM_TOOLS) {
@@ -334,7 +555,9 @@ function registerMemoryTools(pi) {
 // The shape a live install carries right before this round: already at the
 // old V1 index marker, with the width-aware render body V1 introduced (the
 // same body V4 still wants -- only the marker needs to move to V2).
-const V1_INDEX = `function registerMemoryTools(pi) {
+const V1_INDEX = `${CHROME_IMPORT}
+
+function registerMemoryTools(pi) {
   for (const toolName of ENGRAM_TOOLS) {
     pi.registerTool({
       name: toolName,
@@ -360,17 +583,56 @@ const V1_INDEX = `function registerMemoryTools(pi) {
 }
 `;
 
-test("patching index.ts replaces the fixed-content Text() with a width-aware component", async (t) => {
+// The shape the live install carries right before this round: the V2
+// marker in front of the width-aware render body, with a renderCall that
+// takes no render context and so can never animate.
+const V2_INDEX = `${CHROME_IMPORT}
+
+function registerMemoryTools(pi) {
+  for (const toolName of ENGRAM_TOOLS) {
+    pi.registerTool({
+      name: toolName,
+      renderShell: "self",
+/* ENGRAM_INDEX_PATCHED_V2 */
+      renderCall(args) {
+        return { render: (width) => renderCallText(toolName, args, width).split("\\n"), invalidate() {} };
+      },
+      renderResult(result, options, _theme, context) {
+        return {
+          render: (width) =>
+            renderResultText(toolName, result, { expanded: options.expanded, isPartial: options.isPartial, isError: context.isError }, width).split(
+              "\\n",
+            ),
+          invalidate() {},
+        };
+      },
+    });
+  }
+}
+`;
+
+function assertSweepingIndex(patched: string) {
+	assert.ok(patched.includes("ENGRAM_INDEX_PATCHED_V3"), "should carry the V3 marker");
+	assert.ok(!/ENGRAM_INDEX_PATCHED_V[12]\b/.test(patched), "older index markers must be gone");
+	assert.ok(!patched.includes("new Text("), "renderCall/renderResult must no longer construct a fixed-content Text()");
+	assert.ok(
+		patched.includes('import { compactResultStatus, humanToolName, memoryCallSweep, renderCallText, renderResultText } from "./memory-tool-chrome.js";'),
+		"the chrome import must bring in memoryCallSweep",
+	);
+	assert.match(patched, /renderCall\(args, _theme, context\) \{/, "renderCall must take pi's render context");
+	assert.match(patched, /const sweep = memoryCallSweep\(context, context\?\.isPartial !== false && context\?\.isError !== true, Date\.now\(\)\);/);
+	assert.match(patched, /render: \(width\) => renderCallText\(toolName, args, width, sweep\)\.split\("\\n"\)/);
+	assert.match(patched, /memoryCallSweep\(context, options\.isPartial === true && context\?\.isError !== true, Date\.now\(\)\);/, "renderResult must settle the row's pending redraw");
+	assert.equal((patched.match(/renderCall\(/g) ?? []).length, 1, "renderCall must be defined exactly once");
+}
+
+test("patching index.ts replaces the fixed-content Text() with a width-aware, sweeping component", async (t) => {
 	const target = tempFile(t, "index.ts", PRISTINE_INDEX);
-	const result = patchIndexFile(target);
-	assert.deepEqual(result, { changed: true, ok: true });
+	assert.deepEqual(patchIndexFile(target), { changed: true, ok: true });
 
 	const patched = readFileSync(target, "utf8");
-	assert.ok(!patched.includes("new Text("), "renderCall/renderResult must no longer construct a fixed-content Text()");
+	assertSweepingIndex(patched);
 	assert.ok(!patched.includes('import { Text } from "@earendil-works/pi-tui";'), "the now-unused Text import must be dropped");
-	assert.match(patched, /render: \(width\) => renderCallText\(toolName, args, width\)\.split\("\\n"\)/);
-	assert.match(patched, /invalidate\(\) \{\}/);
-	assert.ok(patched.includes("ENGRAM_INDEX_PATCHED_V2"), "should carry the V2 marker");
 });
 
 test("patching index.ts twice is byte-identical (idempotent)", async (t) => {
@@ -381,20 +643,23 @@ test("patching index.ts twice is byte-identical (idempotent)", async (t) => {
 	assert.equal(readFileSync(target, "utf8"), firstPass);
 });
 
-test("patching a V1-marked index.ts heals it to V2 by moving only the marker", async (t) => {
-	const target = tempFile(t, "index.ts", V1_INDEX);
-	const result = patchIndexFile(target);
-	assert.deepEqual(result, { changed: true, ok: true });
+for (const [label, source] of [["V1", V1_INDEX], ["V2", V2_INDEX]] as const) {
+	test(`patching a ${label}-marked index.ts heals it to V3`, async (t) => {
+		const target = tempFile(t, "index.ts", source);
+		assert.deepEqual(patchIndexFile(target), { changed: true, ok: true });
+		const healed = readFileSync(target, "utf8");
+		assertSweepingIndex(healed);
 
-	const patched = readFileSync(target, "utf8");
-	assert.ok(!patched.includes("ENGRAM_INDEX_PATCHED_V1"), "stray V1 marker must be gone");
-	assert.ok(patched.includes("ENGRAM_INDEX_PATCHED_V2"), "should now carry the V2 marker");
-	// Everything else -- the render body itself -- must be untouched: the
-	// healed file is byte-identical to the input with only the marker
-	// comment swapped.
-	assert.equal(patched, V1_INDEX.replace("ENGRAM_INDEX_PATCHED_V1", "ENGRAM_INDEX_PATCHED_V2"));
+		assert.equal(patchIndexFile(target).changed, false, "re-running against an already-healed V3 file should be a no-op");
+		assert.equal(readFileSync(target, "utf8"), healed);
+	});
+}
 
-	assert.equal(patchIndexFile(target).changed, false, "re-running against an already-healed V2 file should be a no-op");
+test("patchIndexFile reports failure instead of half-patching when the chrome import is missing", async (t) => {
+	const source = PRISTINE_INDEX.replace(`${CHROME_IMPORT}\n`, "");
+	const target = tempFile(t, "index.ts", source);
+	assert.deepEqual(patchIndexFile(target), { changed: false, ok: false });
+	assert.equal(readFileSync(target, "utf8"), source, "file must be left untouched on a failed match");
 });
 
 test("patchChromeFile reports failure instead of writing a half-patched file when anchors are missing", async (t) => {
