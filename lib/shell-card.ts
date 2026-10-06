@@ -76,6 +76,13 @@ export interface CardRenderOptions {
 	 */
 	frame?: boolean;
 	/**
+	 * Float only: `false` draws the card flat. Same rows, margins and frame,
+	 * but no tone background behind them: frame and text sit on the window
+	 * background like the surrounding pane. The theme background still decides
+	 * whether the float style applies at all.
+	 */
+	fill?: boolean;
+	/**
 	 * Fixed chrome panels (Agents, Todos, Status rail) opt in here. The float
 	 * style then paints them like float cards, centered between two padding
 	 * rows with a blank row between header and body: `panelExtraRows` taller
@@ -446,6 +453,8 @@ export interface FloatRowsOptions {
 	frame?: boolean;
 	/** A pulse travelling clockwise around this card's frame; see CardRenderOptions.sweep. */
 	sweep?: CardSweep;
+	/** `false` draws the card flat, without the tone background; see CardRenderOptions.fill. */
+	fill?: boolean;
 	/** This component draws only part of the card. */
 	split?: CardSplit;
 }
@@ -534,7 +543,7 @@ export function floatRows(tone: CardTone, theme: CardTheme, width: number, rende
 		});
 	};
 	if (!open) return draw();
-	return paintFloat(withChrome(floatChrome, draw), open);
+	return paintFloat(withChrome(floatChrome, draw), options.fill === false ? "" : open);
 }
 
 // The framed float's top rule: `╔══…══╗` in the configured frame glyphs.
@@ -560,9 +569,11 @@ function floatOpener(theme: CardTheme, tone: CardTone, width: number): string {
 
 // Paints every row behind its tone background, re-armed after any reset the
 // content carries, inside a transparent one-column margin on both sides.
-// Padding rows keep their tone-coloured accent just like content rows.
+// Padding rows keep their tone-coloured accent just like content rows. An
+// empty opener is the flat card: the same margins, nothing painted.
 function paintFloat(rows: readonly string[], open: string): string[] {
 	const margin = " ".repeat(FLOAT_MARGIN);
+	if (!open) return rows.map((row) => `${margin}${row}${margin}`);
 	return rows.map((row) => `${margin}${open}${row.replace(BG_CLEARING, (reset) => reset + open)}${BG_RESET}${margin}`);
 }
 
@@ -610,11 +621,11 @@ export function renderCard(card: Card, theme: CardTheme, width: number, options:
 		head: [cardTop(card, theme, inner, options.hint)],
 		body: cardBodyRows(card.body.map((line) => theme.fg(BODY_ROLE, line)), card.tone, theme, inner, options),
 		bottom: cardBottom(card.tone, theme, inner),
-	}), { frame: options.frame });
+	}), { frame: options.frame, fill: options.fill });
 	// Without the panel opt-in, legacy cards always keep the outlined frame.
 	if (chrome !== OUTLINE_CHROME) return withChrome(OUTLINE_CHROME, () => renderCard(card, theme, width, options));
 	const open = options.panel ? floatOpener(theme, card.tone, width) : "";
-	if (open) return paintFloat(withChrome(options.frame === false ? FLOAT_CHROME : FRAMED_FLOAT_CHROME, () => floatPanel(card, theme, Math.floor(width) - FLOAT_MARGIN * 2, options)), open);
+	if (open) return paintFloat(withChrome(options.frame === false ? FLOAT_CHROME : FRAMED_FLOAT_CHROME, () => floatPanel(card, theme, Math.floor(width) - FLOAT_MARGIN * 2, options)), options.fill === false ? "" : open);
 	const text = cardText(card, theme, cardInnerWidth(width), options.expanded);
 	const sweep = visibleSweep(card.tone, options.sweep);
 	const roleFor = sweep ? sweepRoles(sweep, Math.floor(width), text.length + 2) : undefined;

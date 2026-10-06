@@ -33,11 +33,16 @@ function withBackground<T extends object>(theme: T): T & { bg(color: string, tex
 	return { ...theme, bg: (_color: string, text: string) => `${BG_OPEN}${text}${BG_CLOSE}` };
 }
 
-/** Float panel rows: a painted panel inside transparent one-column margins, framed by the configured frame (single in tests). */
+/**
+ * Float panel rows: a flat panel (no background, the frame and text sit on the
+ * window background) inside one-column margins, framed by the configured frame
+ * (single in tests).
+ */
 function assertFloatRows(lines: readonly string[], width: number): void {
 	for (const line of lines) {
 		assert.equal(visibleWidth(line), width, `"${stripAnsi(line)}" is not ${width} wide`);
-		assert.ok(line.startsWith(` ${BG_OPEN}`) && line.endsWith(`${BG_CLOSE} `), `painted inside the margins: ${JSON.stringify(line)}`);
+		assert.ok(line.startsWith(" ") && line.endsWith(" "), `inside the margins: ${JSON.stringify(line)}`);
+		assert.ok(!line.includes(BG_OPEN) && !line.includes(BG_CLOSE), `flat, no background: ${JSON.stringify(line)}`);
 	}
 	assert.equal(stripAnsi(lines[0]!), ` ╭${"─".repeat(width - 4)}╮ `, "the top rule sits above the header row");
 	assert.equal(stripAnsi(lines.at(-1)!), ` ╰${"─".repeat(width - 4)}╯ `, "the bottom rule closes the panel");

@@ -140,12 +140,13 @@ export class GentleAiCallCard {
 	render(width: number): string[] {
 		if (width <= 0) return [];
 		// The command detail and the lens rows belong to the heading; the result
-		// below owns the body. A running card sweeps its frame.
+		// below owns the body. A running card sweeps its frame. Both cards are
+		// flat: frame and text on the window background, no tone fill.
 		const detail = [...(this.detail ? [this.detail] : []), ...this.rows];
 		return floatRows(this.card.tone, this.theme, width, (inner, roles) => ({
 			head: [cardTop(this.card, this.theme, inner, this.hint, roles?.head(0)), ...detail.map((text, index) => cardLine(this.theme.fg(DETAIL_ROLE, text), this.card.tone, this.theme, inner, roles?.head(index + 1)))],
 			bottom: this.open ? cardBottom(this.card.tone, this.theme, inner, this.elapsed || undefined, roles?.bottom()) : undefined,
-		}), { sweep: this.sweep });
+		}), { sweep: this.sweep, fill: false });
 	}
 
 	invalidate(): void {}
@@ -244,7 +245,7 @@ export class GentleAiResultCard {
 			body: this.body(inner, role),
 			bottom: this.partial ? undefined : cardBottom(this.tone, this.theme, inner, this.elapsed || undefined),
 			afterHeading: !this.partial,
-		}));
+		}), { fill: false });
 	}
 
 	private body(width: number, role: string): string[] {

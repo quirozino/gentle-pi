@@ -768,7 +768,7 @@ interface MutablePromptThemeHost {
 	theme: ExtensionContext["ui"]["theme"];
 }
 
-test("T2 float prompt installed editor reads live toolSuccessBg and preserves Esc/queued hints", () => {
+test("T2 float prompt installed editor floats flat on live toolSuccessBg support and preserves Esc/queued hints", () => {
 	const previous = cardStyle();
 	const { pi, handlers } = fakePi();
 	gentleShell(pi, { GENTLE_PI_DOUBLE_ESC_CANCEL: "on" });
@@ -784,10 +784,12 @@ test("T2 float prompt installed editor reads live toolSuccessBg and preserves Es
 			return `\x1b[44m${text}\x1b[49m`;
 		} } as unknown as typeof ctx.ui.theme;
 		editor.focused = true;
-		assert.match(editor.render(80)[0], /\x1b\[44m/);
+		// The theme background only turns the float layout on; the prompt itself is flat.
+		assert.match(stripAnsi(editor.render(80)[0]), /^ ╭/);
+		assert.doesNotMatch(editor.render(80).join("\n"), /\x1b\[44m/);
 		assert.match(stripAnsi(editor.render(80)[1]), /type, or \/ for commands/);
 		themeHost.theme = { ...plainTheme, bg: (_role: string, text: string) => `\x1b[45m${text}\x1b[49m` } as unknown as typeof ctx.ui.theme;
-		assert.match(editor.render(80)[0], /\x1b\[45m/);
+		assert.match(stripAnsi(editor.render(80)[0]), /^ ╭/);
 		editor.setText("draft");
 		editor.handleInput("\x1b");
 		assert.match(stripAnsi(editor.render(80)[0]), /esc again to clear/);
@@ -795,8 +797,8 @@ test("T2 float prompt installed editor reads live toolSuccessBg and preserves Es
 		assert.match(stripAnsi(editor.render(80)[0]), /queued/);
 		editor.handleInput("\x1b");
 		assert.match(stripAnsi(editor.render(80)[0]), /esc again to cancel/);
-		assert.match(editor.render(80)[0], /\x1b\[45m/);
-		assert.match(editor.render(80)[2], /\x1b\[45m/);
+		assert.doesNotMatch(editor.render(80).join("\n"), /\x1b\[45m/);
+		assert.match(stripAnsi(editor.render(80)[2]), /^ ╰/);
 		themeHost.theme = plainTheme as unknown as typeof ctx.ui.theme;
 		assert.match(stripAnsi(editor.render(80)[0]), /^╭/);
 	} finally { themeHost.theme = originalTheme; editor.dispose(); setCardStyle(previous); }

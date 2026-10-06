@@ -433,6 +433,7 @@ export function renderAgentsCard(tasks: readonly TaskRecord[], theme: CardTheme,
 		{ title: "Agents", subtitle: counts(shown), body, tone: tone(shown), glyph: agentsGlyph(options.tick) },
 		theme,
 		width,
-		{ expanded: true, hint, sweep: sweepFor(shown, now, options), panel: true },
+		// Flat: the frame and rows sit on the window background, no panel fill.
+		{ expanded: true, hint, sweep: sweepFor(shown, now, options), panel: true, fill: false },
 	);
 }

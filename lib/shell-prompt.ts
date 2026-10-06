@@ -4,8 +4,9 @@ import { SHELL_GLYPHS } from "./shell-glyphs.ts";
 import { CARD_STYLE, type CardStyle } from "./shell-card.ts";
 
 // Pure prompt chrome: both styles keep Pi's rule/content/rule rows in the
-// configured frame (`╔═╗` with glyphs.frame=double); float draws it inside
-// the quiet card background with one margin and one padding cell per side.
+// configured frame (`╔═╗` with glyphs.frame=double); float draws it flat (no
+// panel fill, on the window background) with one margin and one padding cell
+// per side.
 
 export const PROMPT_STATE = {
 	IDLE: "idle",
@@ -151,6 +152,10 @@ export interface PromptLayout {
 	width: number;
 	nativeWidth: number;
 	prefixWidth: number;
+	/**
+	 * The quiet card background SGR when the float layout applies, else "".
+	 * It only selects the layout: the float prompt is flat and never paints it.
+	 */
 	background: string;
 }
 
@@ -194,26 +199,24 @@ function promptSgrCommands(parameters: string): number[][] {
 	return commands;
 }
 
-// Rearm only the panel background, leaving marker/inversion bytes intact.
-function rearmPromptBackground(text: string, background: string): string {
-	return text.replace(/\x1b\[([\d;]*)m/g, (sgr, parameters: string) =>
-		promptSgrCommands(parameters).some(([code]) => code === 0 || code === 49) ? sgr + background : sgr);
-}
-
-/** One full float panel row (a rule, already `layout.width - 2` wide) inside the transparent margins. */
-export function floatPromptRule(row: string, layout: PromptLayout): string {
-	return " " + layout.background + rearmPromptBackground(row, layout.background) + "\x1b[49m ";
+/**
+ * One full float row (a rule, already `layout.width - 2` wide) inside the
+ * transparent margins. Flat: the row's own bytes pass through unchanged and
+ * no background is painted, so the window background shows through.
+ */
+function floatPromptRule(row: string): string {
+	return " " + row + " ";
 }
 
 /**
  * Same chrome and horizontal prefix for editable and native completion rows:
  * the configured frame edges (`║` with glyphs.frame=double) around one padding
- * cell on each side, inside the float background.
+ * cell on each side, flat inside the float margins.
  */
 export function floatPromptRow(line: string, layout: PromptLayout, borderColor: PromptFrameOptions["borderColor"]): string {
 	const clipped = truncateToWidth(line, layout.nativeWidth, "");
 	const vertical = borderColor(SHELL_GLYPHS.frame.vertical);
-	return floatPromptRule(vertical + " " + clipped + " ".repeat(Math.max(0, layout.nativeWidth - visibleWidth(clipped))) + " " + vertical, layout);
+	return floatPromptRule(vertical + " " + clipped + " ".repeat(Math.max(0, layout.nativeWidth - visibleWidth(clipped))) + " " + vertical);
 }
 
 // The float top rule carries the face, the state label and any scroll or Esc
@@ -243,9 +246,9 @@ export function framePromptLines(lines: string[], width: number, options: Prompt
 		const { bottomLeft, bottomRight } = SHELL_GLYPHS.frame;
 		const closing = options.borderColor(`${bottomLeft}${rule(ruleWidth - 2)}${bottomRight}`);
 		return [
-			floatPromptRule(floatTopRule(lines[0], lines[lines.length - 1], options, ruleWidth), layout),
+			floatPromptRule(floatTopRule(lines[0], lines[lines.length - 1], options, ruleWidth)),
 			...lines.slice(1, -1).map((line) => floatPromptRow(line, layout, options.borderColor)),
-			floatPromptRule(options.decorateBottomRule ? options.decorateBottomRule(closing, ruleWidth) : closing, layout),
+			floatPromptRule(options.decorateBottomRule ? options.decorateBottomRule(closing, ruleWidth) : closing),
 		];
 	}
 	if (lines.length < 2) return lines.map((line) => truncateToWidth(line, width, ""));

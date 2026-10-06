@@ -230,16 +230,17 @@ test("neon/fallback transparent prompt preserves pi's cursor reset", () => {
 
 const floatBg = (_role: string, text: string) => `\x1b[48;2;20;30;40m${text}\x1b[49m`;
 
-test("T1 float prompt frames status and content with the configured glyphs inside the background", () => {
+test("T1 float prompt frames status and content with the configured glyphs, flat inside the margins", () => {
 	const rows = framePromptLines(["── ↑ 2 more", `ab${CURSOR}cd`, "── ↓ 3 more"], 80, options({
 		style: "float", bg: floatBg, fg: (_c, t) => t, state: PROMPT_STATE.WORKING, workingLabel: "exploring…", escHint: "esc again to cancel",
 	}));
 	assert.equal(rows.length, 3);
 	assert.match(stripAnsi(rows[0]), /^ ╭─ ✿ exploring… · ↑ 2 more · esc again to cancel ─+╮ $/);
 	assert.match(stripAnsi(rows[1]), /^ │ ab cd +│ $/);
-	assert.ok(rows[1].includes(`${CURSOR}\x1b[48;2;20;30;40m`));
+	assert.ok(rows[1].includes(CURSOR), "pi's cursor reset passes through untouched");
 	assert.equal(stripAnsi(rows[2]), ` ╰${"─".repeat(76)}╯ `);
-	assert.ok(rows.every((row) => row.startsWith(" \x1b[48;2;20;30;40m") && row.endsWith("\x1b[49m ")));
+	// Flat: frame and text on the window background, no panel fill.
+	assert.ok(rows.every((row) => row.startsWith(" ") && row.endsWith(" ") && !/\x1b\[48;|\x1b\[49m/.test(row)), JSON.stringify(rows));
 	assert.ok(rows.every((row) => visibleWidth(row) === 80));
 });
 
@@ -302,11 +303,12 @@ test("T2 float prompt idle label uses the quiet card background without changing
 	assert.doesNotMatch(stripAnsi(neon[0]), /waiting for input/);
 });
 
-test("T2 float prompt rearms real SGR resets without altering inversion or marker bytes", () => {
+test("T2 flat float prompt passes SGR resets, inversion and marker bytes through unchanged", () => {
 	for (const open of ["\x1b[44m", "\x1b[48;5;24m", "\x1b[48;2;0;30;0m"]) {
 		const marker = "\x1b_pi:c\x07";
 		const native = `${marker}\x1b[7mx\x1b[0mY\x1b[0;7mZ\x1b[27m`;
 		const rows = framePromptLines(["──", native, "──"], 30, options({ style: "float", bg: (_r, t) => `${open}${t}\x1b[49m`, fg: (_c, t) => t }));
-		assert.ok(rows[1].includes(`${marker}\x1b[7mx\x1b[0m${open}Y\x1b[0;7m${open}Z\x1b[27m`));
+		assert.ok(rows[1].includes(native), JSON.stringify(rows[1]));
+		assert.ok(rows.every((row) => !row.includes(open)), "the float prompt paints no background");
 	}
 });

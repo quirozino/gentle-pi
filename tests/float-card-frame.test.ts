@@ -11,7 +11,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 // renders a card. Each test file runs in its own process.
 process.env.GENTLE_PI_GLYPHS_FRAME = "double";
 delete process.env.GENTLE_PI_QUIET_TOOLS;
-const { CARD_STYLE, CARD_TONE, renderCard, setCardStyle } = await import("../lib/shell-card.ts");
+const { CARD_STYLE, CARD_TONE, cardBottom, cardLine, cardTop, floatRows, renderCard, setCardStyle } = await import("../lib/shell-card.ts");
 const { renderAgentsCard, SWEEP_ROLE } = await import("../lib/agents-widget.ts");
 const { TASK_STATUS } = await import("../lib/agents-protocol.ts");
 const { createQuietToolRenderer } = await import("../extensions/quiet-tools.ts");
@@ -74,12 +74,17 @@ function roleCells(rows: readonly string[], role: string): string[] {
 	return [...roleMap(rows)].filter(([, cell]) => cell.role === role && DOUBLE.test(cell.glyph)).map(([key]) => key);
 }
 
-/** Asserts the double frame closes every row inside the one-column float margins. */
-function assertFramed(rows: readonly string[], width: number): void {
+/**
+ * Asserts the double frame closes every row inside the one-column float
+ * margins: on the tone background, or flat (no background at all) for the
+ * surfaces that opt out of the fill.
+ */
+function assertFramed(rows: readonly string[], width: number, fill = true): void {
 	const text = rows.map(plain);
 	for (const [index, row] of rows.entries()) {
 		assert.equal(visibleWidth(row), width, `row ${index} "${text[index]}" is not ${width} wide`);
-		assert.ok(row.startsWith(` ${BG_OPEN}`) && row.endsWith(`${BG_CLOSE} `), `float background inside the margins: ${JSON.stringify(row)}`);
+		if (fill) assert.ok(row.startsWith(` ${BG_OPEN}`) && row.endsWith(`${BG_CLOSE} `), `float background inside the margins: ${JSON.stringify(row)}`);
+		else assert.ok(row.startsWith(" ") && row.endsWith(" ") && !/\x1b\[(?:4[0-8]|10[0-7])[;m]/.test(row), `flat row paints no background: ${JSON.stringify(row)}`);
 		assert.doesNotMatch(text[index]!, SINGLE, `row ${index} draws no single or accent-bar glyph`);
 	}
 	assert.match(text[0]!, /^ ╔═+╗ $/, "the top rule opens the card");
@@ -134,7 +139,8 @@ function lapSides(render: (position: number) => string[], width: number, role: s
 
 test("float Agents, Code and tool cards draw the double frame inside the float background", () => {
 	for (const width of [24, 40, 80, 120]) {
-		assertFramed(agentsRows(width, 0), width);
+		// The Agents card is flat: the frame on the window background.
+		assertFramed(agentsRows(width, 0), width, false);
 		assertFramed(editRows(width), width);
 		assertFramed(codeRows(width), width);
 		assertFramed(renderCard({ title: "Agent result", body: ["answer"], tone: CARD_TONE.SUCCESS }, theme, width, { expanded: false, previewRows: 3 }), width);
@@ -204,7 +210,7 @@ test("the pulse advances with the tick and recolours only frame cells", () => {
 
 test("the sweep stops when the card finishes, and animations off keep a static frame", () => {
 	const done = renderAgentsCard([task({ status: TASK_STATUS.COMPLETED, endedAt: 4000 })], theme, 60, 5000, { collapsed: false, keepFinished: true, tick: 3, sweep: true });
-	assertFramed(done, 60);
+	assertFramed(done, 60, false);
 	assert.deepEqual(roleCells(done, SWEEP_ROLE.WORKING), [], "a finished Agents card is static");
 
 	const state = {};
@@ -332,5 +338,23 @@ test("neon keeps the outlined card and its perimeter sweep", () => {
 		assert.match(edit.at(-1)!, /^╚═+╝$/u);
 	} finally {
 		setCardStyle(CARD_STYLE.FLOAT);
+	}
+});
+
+test("a flat float card keeps the framed float geometry and paints no background", () => {
+	for (const width of [24, 60, 120]) {
+		for (const tone of Object.values(CARD_TONE)) {
+			const card = { title: "Agents", subtitle: "1 active", body: ["task one", "task two"], tone };
+			const filled = renderCard(card, theme, width, { expanded: true, panel: true });
+			const flat = renderCard(card, theme, width, { expanded: true, panel: true, fill: false });
+			assertFramed(filled, width);
+			assertFramed(flat, width, false);
+			assert.deepEqual(flat.map(plain), filled.map(plain), "same cells, only the background is gone");
+			const rows = (fill?: boolean) => floatRows(tone, theme, width, (inner) => ({
+				head: [cardTop(card, theme, inner)], body: [cardLine(theme.fg("text", "body"), tone, theme, inner)], bottom: cardBottom(tone, theme, inner),
+			}), { fill });
+			assertFramed(rows(false), width, false);
+			assert.deepEqual(rows(false).map(plain), rows().map(plain));
+		}
 	}
 });

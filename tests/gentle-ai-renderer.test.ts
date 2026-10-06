@@ -705,7 +705,7 @@ test("rose call cards stay exactly as wide as the terminal with the 2-cell emoji
 	}
 });
 
-// Float style: the rose call card and its result read as one borderless panel.
+// Float style: the rose call card and its result read as one framed card.
 const floatTheme = {
 	fg: (_color: string, text: string) => `\x1b[38;5;114m${text}\x1b[39m`,
 	bg: (color: string, text: string) => `\x1b[48;5;${color === "toolErrorBg" ? 52 : color === "toolPendingBg" ? 58 : 22}m${text}\x1b[49m`,
@@ -720,7 +720,13 @@ function withFloatCards<T>(run: () => T): T {
 	}
 }
 
-// Framed float (the default): the configured frame (single in tests) inside the background.
+// Framed float (the default): the configured frame (single in tests) inside
+// the one-column margins. The Gentle Review cards are flat: frame and text on
+// the window background, no tone background behind them.
+function assertFlat(line: string): void {
+	assert.ok(line.startsWith(" ") && line.endsWith(" "), JSON.stringify(line));
+	assert.doesNotMatch(line, /\x1b\[48;/, `flat row paints no background: ${JSON.stringify(line)}`);
+}
 const TOP = /^ ╭─+╮ $/;
 const BLANK = /^ │ +│ $/;
 const BOTTOM = /^ ╰─+╯ $/;
@@ -736,7 +742,7 @@ test("float rose cards join the call and the JSON summary into one panel", () =>
 	const plain = rows.map(stripAnsi);
 	for (const line of rows) {
 		assert.equal(visibleWidth(line), 70);
-		assert.ok(line.startsWith(" \x1b[48;5;22m") && line.endsWith("\x1b[49m "), JSON.stringify(line));
+		assertFlat(line);
 	}
 	assert.match(plain[0]!, TOP);
 	assert.match(plain[1]!, /^ │ 🌹 rdd inspect +ctrl\+o to expand  │ $/);
@@ -761,15 +767,14 @@ test("float rose cards keep the elapsed time on the blank closing row and add no
 	assert.match(plain[2]!, /^ ╰─+ 3s ╯ $/);
 	assert.match(plain[3]!, /^ │ working +│ $/);
 	assert.equal(plain.length, 4);
-	// A running call takes the running tone, so it paints the pending tool
-	// background (green frame, never the warning yellow).
-	for (const line of rows) assert.ok(line.startsWith(" \x1b[48;5;58m"), JSON.stringify(line));
+	// Flat: the running tone colours the frame, no background.
+	for (const line of rows) assertFlat(line);
 });
 
-test("float rose error results paint the error background on every row", () => {
+test("float rose error results are flat on every row", () => {
 	const rows = withFloatCards(() => renderGentleAiResult({ content: [{ type: "text", text: "boom\nsecond" }] } as never, { isError: true }, floatTheme).render(40));
 	const plain = rows.map(stripAnsi);
 	assert.deepEqual(plain.map((line) => BLANK.test(line)), [true, false, false, false]);
 	assert.match(plain[3]!, BOTTOM);
-	for (const line of rows) assert.ok(line.startsWith(" \x1b[48;5;52m"), JSON.stringify(line));
+	for (const line of rows) assertFlat(line);
 });
