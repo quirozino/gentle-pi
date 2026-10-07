@@ -120,12 +120,13 @@ export interface AgentsDeps extends RunnerDeps {
 }
 
 // gentle-shell#1587: children do not load the gentle-pi package in the
-// isolated Gentle Shell home, so context filtering and destructive-command
-// safety are passed to every child explicitly. Missing files are omitted;
-// installations must include both entries to provide the delegated boundary.
+// isolated Gentle Shell home, so context filtering, destructive-command
+// safety and the DDATA promotion guard (children never deploy to production)
+// are passed to every child explicitly. Missing files are omitted;
+// installations must include every entry to provide the delegated boundary.
 export function childContextExtensionPaths(exists: (path: string) => boolean = existsSync): string[] {
 	try {
-		return ["./child-context.ts", "./child-safety.ts"]
+		return ["./child-context.ts", "./child-safety.ts", "./promotion-guard.ts"]
 			.map((path) => fileURLToPath(new URL(path, import.meta.url)))
 			.filter(exists);
 	} catch {

@@ -4894,10 +4894,11 @@ test("the widget omits a task whose tool call result is the last timeline entry"
 // gentle-shell#1587: children do not load the gentle-pi package in the
 // isolated Gentle Shell home, so every child receives the child-context
 // extension explicitly through --extension.
-test("children receive context and safety extensions, and missing files are omitted", async () => {
+test("children receive context, safety and promotion-guard extensions, and missing files are omitted", async () => {
 	const expected = join(dirname(fileURLToPath(import.meta.url)), "..", "extensions", "child-context.ts");
 	const safety = join(dirname(fileURLToPath(import.meta.url)), "..", "extensions", "child-safety.ts");
-	assert.deepEqual(childContextExtensionPaths(), [resolve(expected), resolve(safety)]);
+	const promotionGuard = join(dirname(fileURLToPath(import.meta.url)), "..", "extensions", "promotion-guard.ts");
+	assert.deepEqual(childContextExtensionPaths(), [resolve(expected), resolve(safety), resolve(promotionGuard)]);
 	assert.deepEqual(childContextExtensionPaths(() => false), [], "a missing extension file fails safe to no --extension");
 	const extensionArguments = (args: string[]) => args.filter((_, index) => args[index - 1] === "--extension");
 	for (const scenario of ["present", "missing"] as const) {
@@ -4911,7 +4912,7 @@ test("children receive context and safety extensions, and missing files are omit
 			await h.tools.get("subagent_run")!.execute(`child-context-${scenario}`, { agent: "explore", task: "Map", mode: "background" }, undefined, undefined, ctx);
 			await tick();
 			assert.equal(runtime.spawned.length, 1);
-			assert.deepEqual(extensionArguments(runtime.spawned[0]!), scenario === "present" ? [resolve(expected), resolve(safety)] : []);
+			assert.deepEqual(extensionArguments(runtime.spawned[0]!), scenario === "present" ? [resolve(expected), resolve(safety), resolve(promotionGuard)] : []);
 		} finally {
 			await h.fire("session_shutdown", ctx);
 			await tick();

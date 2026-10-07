@@ -28,7 +28,7 @@ Today the verifier is advisory and only runs when the model chooses it; the `dda
 ## Tasks
 - [x] G1 — Contract (ddata-topology-maps): V3 report fields, permission table, skill delegates to the verifier. Route: delegated.
 - [x] G2 — gentle-pi parser V3 + registry keeps candidate identity; plus advisories R3-001/R3-002 from review-b51a718619569811. Route: delegated.
-- [ ] G3 — gentle-pi guard (command classification, block/confirm, tests). Route: delegated.
+- [x] G3 — gentle-pi guard (command classification, block/confirm, tests). Route: delegated.
 - [ ] G4 — gentle-pi auto-invoke injection for DDATA worktrees. Route: delegated.
 
 ## Depends on
@@ -36,9 +36,10 @@ Today the verifier is advisory and only runs when the model chooses it; the `dda
 
 ## Progress
 - 2026-10-07: native review of the prior gentle-pi slice (994c1dbac..0c5f67223: profiles symlink fix, map phase, badge) approved and acknowledged (lineage review-b51a718619569811); reviewed boundary is now 0c5f67223. Advisory R3-001 (assert idle promotion state after a throwing restore) and R3-002 (reject U+2028/U+2029 in phase labels) folded into G2.
+- G3 done (delegated writer + inline child wiring): lib/promotion-guard.ts classifier (wrappers, cd tracking, .firebaserc/firebase-use project resolution, gh dispatch inputs, target SHA via git), extensions/promotion-guard.ts tool_call handler; Stage allow, schema always block, Firebase production only with captured V3 listo-para-decision+APTO+aplicacion+same SHA then ctx.ui.confirm; children always blocked from production — guard added to childContextExtensionPaths (writer's surface lacked gentle-agents.ts; parent did the 2-line mechanical edit, RED observed). Checks: 659/659 pass across guard/agents/child-safety/manifest/report/shell/ai; typecheck no regressions. ~1140 lines (≈400 tests) — above the 400 heuristic because the classifier must handle wrapper/quoting forms. Known bypasses recorded: eval/variables/aliases/Makefiles/written scripts, gh run rerun, numeric workflow ids, curl dispatch, gcloud default project/run deploy, other firebase subcommands, dirty worktree (HEAD only). CI production reviewer remains the real gate.
 - G2 done (delegated writer): parser accepts V3 (exact 9 keys; sha ^[0-9a-f]{40}$, scope aplicacion|esquema, mapDigest sha256:hex; null SHA forbids APTO/listo-para-decision; sin-candidato requires null SHA/scope), V1/V2 still accepted; `PromotionStatusRegistry.latestVerdict(sessionId)` returns a deep-copied {kind, report?, identity?, fromV3} or undefined while idle/evaluating; advisories R3-001 (idle assertion) and R3-002 (reject Zl/Zp) done. Checks: 565/565 pass, typecheck no regressions.
 - G1 done (delegated writer, ddata-topology-maps f257ac3b): verifier V3 (9 fields; candidateSha verified via `git cat-file -e <sha>^{commit}`, null SHA forbids APTO/listo-para-decision), skill sections "Delegación obligatoria" and "Acciones habilitadas por el último reporte", contract test. RED 3/3 → GREEN 3/3; topology 29 pass/1 pre-existing fail; map sha256 unchanged; SKILL.md 77 lines; gga pre-commit review PASSED. Note: verifier is symlinked live, so it emits V3 before G2 lands.
 - 2026-10-07: created after mapping and user approval of the permission table.
 
 ## Next step
-G3 guard writer.
+G4 auto-invoke injection.
