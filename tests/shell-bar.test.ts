@@ -47,6 +47,14 @@ const plainTheme: ShellBarTheme = {
 	},
 };
 
+// The Promoción group is Matrix-Green-only: the gate matches the live theme
+// object's own name (pi Theme's readonly `name`), never settings.json, which
+// can change while the shell runs. The named themes below reuse the plain
+// painters, so only the name differs — exactly what the gate must read.
+const matrixTheme: ShellBarTheme = { ...plainTheme, name: "Matrix-Green" };
+const gentleTheme: ShellBarTheme = { ...plainTheme, name: "Gentle" };
+const cuteTheme: ShellBarTheme = { ...plainTheme, name: "Gentleman-Cute" };
+
 // The card style defaults to float; these assertions pin the outlined (neon)
 // panels unless a test switches the style itself.
 const initialCardStyle = cardStyle();
@@ -363,7 +371,7 @@ test("renderShellSidebarBar paints the Status card frame with border and the tit
 
 test("Status panel boxes the title and splits groups with tee rules", () => {
 	const data = model({ profile: "team", changes: { files: 2, added: 7, deleted: 3 }, statuses: ["MCP connected"] });
-	const lines = renderShellSidebarBar(data, plainTheme, 46);
+	const lines = renderShellSidebarBar(data, matrixTheme, 46);
 	assert.ok(lines.every((line) => visibleWidth(line) === 46));
 	assert.match(lines[1], /^│ ╔═+╗ │$/);
 	assert.match(lines[3], /^│ ╚═+╝ │$/);
@@ -995,7 +1003,7 @@ test("Directorio and Promoción close the Status card after Integrations as divi
 	const data = model({ statuses: ["MCP connected"], directory });
 	for (const style of [CARD_STYLE.NEON, CARD_STYLE.FLOAT]) {
 		useCardStyle(t, style);
-		const lines = renderShellSidebarBar(data, plainTheme, 46);
+		const lines = renderShellSidebarBar(data, matrixTheme, 46);
 		assert.ok(lines.every((line) => visibleWidth(line) === 46), `${style}: every row keeps the card width`);
 		const text = lines.join("\n");
 		assert.ok(text.indexOf("Integrations") < text.indexOf("Directorio"), `${style}: Directorio follows Integrations`);
@@ -1016,7 +1024,7 @@ test("Directorio and Promoción close the Status card after Integrations as divi
 });
 
 test("the promotion group shows the idle phase and no candidate by default", () => {
-	const body = renderShellSidebarBar(model(), plainTheme, 60).map(stripAnsi).join("\n");
+	const body = renderShellSidebarBar(model(), matrixTheme, 60).map(stripAnsi).join("\n");
 	assert.match(body, /Fase +En espera/, "an idle session shows the neutral label, never a stale phase");
 	assert.match(body, /sin candidato/, "no captured evidence shows the explicit no-candidate state");
 	assert.doesNotMatch(body, /Candidato|Paso|Veredicto/, "no candidate id, step or verdict before a completed verifier run");
@@ -1024,7 +1032,7 @@ test("the promotion group shows the idle phase and no candidate by default", () 
 
 test("the promotion group shows phase, candidate, step and verdict once a report is captured", () => {
 	const data = model({ oddPhase: "checking", promotionReport: { candidateId: "lib/shell-bar.ts", step: "validacion-stage", verdict: "APTO" } });
-	const body = renderShellSidebarBar(data, plainTheme, 60).map(stripAnsi).join("\n");
+	const body = renderShellSidebarBar(data, matrixTheme, 60).map(stripAnsi).join("\n");
 	assert.match(body, /Fase +checking…/, "the phase comes from the registry, not prose");
 	assert.match(body, /Candidato +lib\/shell-bar\.ts/);
 	assert.match(body, /Paso +validacion-stage/);
@@ -1036,7 +1044,7 @@ test("the promotion group shows phase, candidate, step and verdict once a report
 
 test("an idle session with a captured report keeps En espera and the captured evidence", () => {
 	const data = model({ promotionReport: { candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "EVIDENCIA INSUFICIENTE" } });
-	const body = flattened(renderShellSidebarBar(data, plainTheme, 60));
+	const body = flattened(renderShellSidebarBar(data, matrixTheme, 60));
 	assert.match(body, /Fase +En espera/);
 	assert.match(body, /Candidato +lib\/x\.ts/);
 	assert.match(body, /Veredicto EVIDENCIA INSUFICIENTE · asesor · no autoriza despliegue/);
@@ -1044,7 +1052,7 @@ test("an idle session with a captured report keeps En espera and the captured ev
 
 test("a captured report without a candidate states so explicitly with its verdict", () => {
 	const data = model({ promotionReport: { candidateId: null, step: "sin-candidato", verdict: "EVIDENCIA INSUFICIENTE" } });
-	const body = flattened(renderShellSidebarBar(data, plainTheme, 60));
+	const body = flattened(renderShellSidebarBar(data, matrixTheme, 60));
 	assert.match(body, /Candidato +sin candidato/);
 	assert.match(body, /Veredicto EVIDENCIA INSUFICIENTE · asesor · no autoriza despliegue/);
 	assert.doesNotMatch(body, /Paso/, "sin-candidato has no step to show");
@@ -1055,18 +1063,56 @@ test("the promotion group follows Directorio in both panel styles and in the nar
 	const data = model({ directory, promotionReport: { candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "APTO" } });
 	for (const style of [CARD_STYLE.NEON, CARD_STYLE.FLOAT]) {
 		useCardStyle(t, style);
-		const body = renderShellSidebarBar(data, plainTheme, 60).map(stripAnsi).join("\n");
+		const body = renderShellSidebarBar(data, matrixTheme, 60).map(stripAnsi).join("\n");
 		assert.ok(body.indexOf("Directorio") < body.indexOf("Promoción"), `${style}: Promoción follows Directorio`);
 		assert.match(body, /Candidato +lib\/x\.ts/);
 	}
 	// Below the boxed-panel minimum the single narrow panel keeps the group.
 	for (const width of [14, 15]) {
-		const rows = renderShellSidebarBar(data, plainTheme, width);
+		const rows = renderShellSidebarBar(data, matrixTheme, width);
 		const narrow = rows.map(stripAnsi).join("\n");
 		assert.match(narrow, /Promoción/);
 		assert.match(narrow, /Candidato/);
 		assert.ok(rows.every((row) => visibleWidth(row) <= width), `width ${width} keeps the frame`);
 	}
 	// The advisory qualifier survives the narrow panel, wrapped on words.
-	assert.match(flattened(renderShellSidebarBar(data, plainTheme, 15)), /APTO · asesor · no autoriza despliegue/, "the advisory qualifier survives the narrow panel");
+	assert.match(flattened(renderShellSidebarBar(data, matrixTheme, 15)), /APTO · asesor · no autoriza despliegue/, "the advisory qualifier survives the narrow panel");
+});
+
+test("only Matrix-Green paints the Promoción group; other themes keep the original Directorio close", (t) => {
+	const directory = directoryLevels("/home/alan/work/repo", "/home/alan", "/home/alan/work/repo");
+	const data = model({ directory, promotionReport: { candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "APTO" } });
+	for (const style of [CARD_STYLE.NEON, CARD_STYLE.FLOAT]) {
+		useCardStyle(t, style);
+		for (const [label, theme] of [["Gentle", gentleTheme], ["Gentleman-Cute", cuteTheme], ["unnamed", plainTheme]] as const) {
+			const rows = renderShellSidebarBar(data, theme, 60);
+			const body = rows.map(stripAnsi).join("\n");
+			assert.doesNotMatch(body, /Promoci|Fase|Candidato|Paso|Veredicto|sin candidato/, `${style}/${label}: no promotion group even with a captured report`);
+			assert.ok(body.indexOf("Integrations") < body.indexOf("Directorio"), `${style}/${label}: Directorio still follows Integrations`);
+			// Directorio closes the card again: its tree rows run into the box close.
+			const bodyLines = body.split("\n");
+			const heading = bodyLines.findIndex((line) => line.includes("Directorio"));
+			assert.match(bodyLines[heading + 1]!, /📁/, `${style}/${label}: the tree is the last group`);
+			assert.match(bodyLines[bodyLines.length - 2]!, /╚═+╝/, `${style}/${label}: the box closes right after the tree`);
+		}
+	}
+	// The narrow single-panel fallback obeys the same gate.
+	const narrow = renderShellSidebarBar(data, gentleTheme, 15).map(stripAnsi).join("\n");
+	assert.doesNotMatch(narrow, /Promoci/, "the narrow fallback hides the group for other themes");
+});
+
+test("the gate matches the exact Matrix-Green name, not a case or prefix variant", () => {
+	const data = model({ promotionReport: { candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "APTO" } });
+	assert.match(renderShellSidebarBar(data, matrixTheme, 60).map(stripAnsi).join("\n"), /Promoci/, "exactly Matrix-Green shows the group");
+	for (const name of ["matrix-green", "Matrix-Green ", " Matrix-Green", "Matrix-Green2", "Matrix"]) {
+		const body = renderShellSidebarBar(data, { ...plainTheme, name }, 60).map(stripAnsi).join("\n");
+		assert.doesNotMatch(body, /Promoci/, `${JSON.stringify(name)} is not Matrix-Green`);
+	}
+});
+
+test("switching the theme between renders moves the Promoción group with the live theme object", () => {
+	const data = model({ promotionReport: { candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "APTO" } });
+	assert.match(renderShellSidebarBar(data, matrixTheme, 60).map(stripAnsi).join("\n"), /Promoci/, "Matrix-Green shows the group");
+	assert.doesNotMatch(renderShellSidebarBar(data, gentleTheme, 60).map(stripAnsi).join("\n"), /Promoci/, "a switch away hides it on the next render");
+	assert.match(renderShellSidebarBar(data, matrixTheme, 60).map(stripAnsi).join("\n"), /Promoci/, "a switch back restores it: the gate reads each render's theme, never settings.json");
 });

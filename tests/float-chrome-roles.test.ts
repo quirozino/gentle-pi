@@ -79,6 +79,19 @@ test("float cards, rail panels, the top bar and the prompt row paint only throug
 	assert.match(status.join("\n"), /║/, "the float Status keeps its double-ruled group box");
 	assertRolesOnly(status, "Status panel");
 	assert.match(status.join("\n"), /Directorio/, "the Directorio section is painted through the same roles");
+	assert.doesNotMatch(status.join("\n"), /Promoci/, "an unnamed theme never paints the Matrix-Green-only promotion group");
+
+	// Matrix-Green-only: the Promoción group paints through the same theme
+	// roles. A theme owns colors, glyphs and text weight — the terminal's
+	// actual font is chosen by the terminal emulator and no theme can set it —
+	// so the gate only decides visibility and the roles do all the painting.
+	const promotion = renderShellSidebarBar(
+		{ ...model(), directory: directoryLevels("/srv/repo/lib", undefined, "/srv/repo"), oddPhase: "checking", promotionReport: { candidateId: "lib/x.ts", step: "validacion-stage", verdict: "APTO" } },
+		{ ...theme, name: "Matrix-Green" },
+		46,
+	);
+	assert.match(promotion.join("\n"), /Promoci/, "Matrix-Green paints the promotion group");
+	assertRolesOnly(promotion, "Matrix-Green promotion group");
 
 	const header = renderShellHeaderChrome(buildShellHeaderModel(model()), theme, 120, "alt+u", undefined, 3);
 	assert.equal(header.headerRow, 1, "the float top bar is in effect");

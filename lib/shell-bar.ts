@@ -112,6 +112,8 @@ export interface ShellHeaderChrome {
 }
 
 export interface ShellBarTheme {
+	/** The live Pi Theme's own name (pi declares it `readonly name?: string`). Read fresh from the theme object each render — never from settings.json, which can change while the shell runs. */
+	readonly name?: string;
 	fg(color: string, text: string): string;
 	bold(text: string): string;
 }
@@ -318,6 +320,27 @@ export interface ShellSidebarCard {
 	embed?: { x: number; y: number; width: number; height: number };
 }
 
+/**
+ * The only theme whose Status card paints the Promoción group, matched on the
+ * live theme object's own name. `Matrix-Green` owns the look the group was
+ * drawn for, so any other theme (Gentle, Gentleman-Cute, an unnamed host
+ * theme) keeps the card's original Directorio close — even when a report is
+ * captured. The name is read from the theme passed to each render, never from
+ * settings.json, because the active theme can switch while the shell runs.
+ *
+ * A Pi theme owns colors, glyphs and text attributes (weight/bold); the
+ * terminal's actual font is chosen by the terminal emulator and no theme can
+ * set it. So this gate only decides visibility: Matrix-Green's supplied roles
+ * (fg label/value/accent/border) and the group's shared typography do all the
+ * painting, with no hardcoded ANSI, hex or font override anywhere.
+ */
+export const PROMOTION_THEME_NAME = "Matrix-Green";
+
+/** True only when this exact theme object is Matrix-Green. */
+export function promotionGroupVisible(theme: ShellBarTheme): boolean {
+	return theme.name === PROMOTION_THEME_NAME;
+}
+
 export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme, width: number, presentation?: Presentation, options: SidebarBarOptions = {}): string[] {
 	return renderShellSidebarCard(model, theme, width, presentation, options).rows;
 }
@@ -363,7 +386,10 @@ export function renderShellSidebarCard(model: ShellBarModel, theme: ShellBarThem
 				const percent = `${Math.round(row.percent)}%`.padStart(4);
 				return `${name} ${paintGauge(row.percent, theme, SIDEBAR_USAGE_METER_CELLS, model.tick)} ${value(percent)}`;
 			});
-	const promotion = promotionSidebarRows(model.promotionReport);
+	// Capture and row-shaping stay theme-independent; only the group's
+	// visibility reads the live theme's name (Matrix-Green-only, see
+	// promotionGroupVisible).
+	const promotion = promotionGroupVisible(theme) ? promotionSidebarRows(model.promotionReport) : undefined;
 	const allGroups: StatusGroup[] = [
 		{
 			title: "Project",
@@ -405,16 +431,19 @@ export function renderShellSidebarCard(model: ShellBarModel, theme: ShellBarThem
 		// The cwd as a tree, sized at render time so long names clip, never wrap.
 		...(model.directory?.length ? [{ title: "Directorio", lines: [], fitted: (lineWidth: number) => renderDirectoryTree(model.directory ?? [], theme, lineWidth) }] : []),
 		// ODD phase + advisory promotion evidence in one group, directly after
-		// Directorio. The verdict is displayed exactly as reported — never dressed
-		// up as deploy authority — and the idle phase is the neutral "En espera".
-		{
-			title: "Promoción",
-			pairs: [
-				["Fase", model.oddPhase ? oddPhaseLabel(model.oddPhase) : "En espera"] as const,
-				...promotion.pairs,
-			],
-			lines: promotion.lines.map((line) => label(line)),
-		},
+		// Directorio — only while Matrix-Green is the live theme. The verdict is
+		// displayed exactly as reported — never dressed up as deploy authority —
+		// and the idle phase is the neutral "En espera".
+		...(promotion
+			? [{
+					title: "Promoción",
+					pairs: [
+						["Fase", model.oddPhase ? oddPhaseLabel(model.oddPhase) : "En espera"] as const,
+						...promotion.pairs,
+					],
+					lines: promotion.lines.map((line) => label(line)),
+				}]
+			: []),
 	];
 	// A group the header dedupe emptied goes whole: no heading over nothing.
 	// Without the header the card keeps its groups exactly as before.
