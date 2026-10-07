@@ -3,8 +3,9 @@
 // Promoción group.
 //
 // The ddata-promotion-verifier child ends its output with a single line
-// `DDATA_PROMOTION_REPORT_V2 {json}` (or the older `_V1`, which carries no map
-// phase). The report is untrusted advisory
+// `DDATA_PROMOTION_REPORT_V3 {json}`, which adds the candidate identity (commit
+// SHA, scope, map digest). The older `_V2` (map phase, no identity) and `_V1`
+// (no phase) still parse for session history. The report is untrusted advisory
 // evidence, never durable proof: nothing here writes, reaches the network, or
 // infers any authority (a deployed candidate, say) from an APTO verdict.
 
@@ -13,6 +14,7 @@ import { SUBAGENT_COMPLETED_EVENT, readSubagentCompletedEvent } from "./subagent
 export const PROMOTION_VERIFIER_AGENT = "ddata-promotion-verifier";
 export const PROMOTION_REPORT_MARKER = "DDATA_PROMOTION_REPORT_V1";
 export const PROMOTION_REPORT_MARKER_V2 = "DDATA_PROMOTION_REPORT_V2";
+export const PROMOTION_REPORT_MARKER_V3 = "DDATA_PROMOTION_REPORT_V3";
 
 /** The subagent tools whose runs and results can carry verifier evaluations. */
 const CAPTURE_TOOLS = new Set(["subagent_run", "subagent_result"]);
@@ -60,10 +62,19 @@ export const PROMOTION_PHASE_ID_PATTERN = /^[a-z0-9_-]{1,32}$/;
 export const PROMOTION_PHASE_TONE_PATTERN = /^[a-z0-9_-]{1,24}$/;
 /** Longest V2 phase label, in code points. */
 export const PROMOTION_PHASE_LABEL_MAX = 48;
-// Control (Cc: C0, DEL, C1) and format (Cf: bidi overrides, zero-width)
-// characters in a decoded label: it is painted as terminal text, so either one
-// is hostile or invisible and fails closed.
-const LABEL_CONTROL = /[\p{Cc}\p{Cf}]/u;
+// Control (Cc: C0, DEL, C1), format (Cf: bidi overrides, zero-width) and
+// line/paragraph separator (Zl U+2028, Zp U+2029) characters in a decoded
+// label: it is painted as one line of terminal text, so any of them is hostile,
+// invisible or a line break, and fails closed.
+const LABEL_CONTROL = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
+
+/** V3 candidate commit: a full lowercase 40-hex SHA. */
+export const PROMOTION_CANDIDATE_SHA_PATTERN = /^[0-9a-f]{40}$/;
+/** V3 scope values, exactly as the contract spells them (no accent). */
+export const PROMOTION_SCOPES = ["aplicacion", "esquema"] as const;
+export type PromotionScope = (typeof PROMOTION_SCOPES)[number];
+/** V3 map digest: sha256 of the workflow JSON, lowercase hex. */
+export const PROMOTION_MAP_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
 
 /** Rendered after every verdict so an APTO never reads as deploy authority. */
 export const PROMOTION_ADVISORY_QUALIFIER = "asesor · no autoriza despliegue";
@@ -79,27 +90,44 @@ export interface PromotionPhase {
 	tone?: string;
 }
 
+/**
+ * The candidate identity a V3 report declares. Each field is null when the
+ * verifier could not establish it: candidateSha when the parent did not
+ * declare a full SHA or git did not find it, scope when it was not declared,
+ * mapDigest when the workflow map could not be read.
+ */
+export interface PromotionIdentity {
+	candidateSha: string | null;
+	scope: PromotionScope | null;
+	mapDigest: string | null;
+}
+
 export interface PromotionReport {
 	candidateId: string | null;
 	step: PromotionStep;
 	verdict: PromotionVerdict;
-	/** Present only for a V2 report whose phase was determined (both fields non-null). */
+	/** Present only for a V2/V3 report whose phase was determined (both fields non-null). */
 	phase?: PromotionPhase;
+	/** Present on every V3 report and never on V1/V2 ones. */
+	identity?: PromotionIdentity;
 }
 
 // One report line, one bounded scan: 1024 columns cover the widest legal
-// report (an 80-character candidate id) many times over, so anything longer is
-// not a report line and is never parsed.
+// compact report (a V3 line with an 80-character candidate id, a 48-character
+// label, SHA and digest is under 600) with room to spare, so anything longer
+// is not a report line and is never parsed.
 const MAX_REPORT_LINE = 1024;
 // Control characters (C0 + DEL) anywhere in the line: the report is plain
 // terminal text, so an escape sequence or stray control byte is hostile.
 const CONTROL = /[\u{0000}-\u{001F}\u{007F}]/u;
-const REPORT_LINE = /^DDATA_PROMOTION_REPORT_V([12]) (\{.*\})$/;
+const REPORT_LINE = /^DDATA_PROMOTION_REPORT_V([123]) (\{.*\})$/;
 // Exact field sets: V1 has no phase fields, V2 always has both and may add the
-// phase tone as its only sixth field.
+// phase tone as its only sixth field, V3 always has all nine.
 const V1_FIELDS = ["candidateId", "step", "verdict"] as const;
 const V2_FIELDS = [...V1_FIELDS, "phaseId", "phaseLabel"] as const;
 const V2_TONED_FIELDS = [...V2_FIELDS, "phaseTone"] as const;
+const V3_FIELDS = [...V2_TONED_FIELDS, "candidateSha", "scope", "mapDigest"] as const;
+const FIELD_SETS: Record<string, ReadonlyArray<readonly string[]>> = { "1": [V1_FIELDS], "2": [V2_FIELDS, V2_TONED_FIELDS], "3": [V3_FIELDS] };
 // Last-line extraction touches at most this tail of the output: a legal report
 // line (≤ MAX_REPORT_LINE) plus trailing whitespace up to the same bound is
 // always inside; a report hidden beyond it fails closed instead of paying an
@@ -145,6 +173,16 @@ function parsePhase(phaseId: unknown, phaseLabel: unknown): PromotionPhase | nul
 	return { id: phaseId, label: phaseLabel };
 }
 
+/** A V3 identity triple, or undefined when any field is malformed (the report fails). */
+function parseIdentity(fields: Record<string, unknown>): PromotionIdentity | undefined {
+	const nullableMatch = (value: unknown, valid: (text: string) => boolean): value is string | null => value === null || (typeof value === "string" && valid(value));
+	const { candidateSha, scope, mapDigest } = fields;
+	if (!nullableMatch(candidateSha, (text) => PROMOTION_CANDIDATE_SHA_PATTERN.test(text))) return undefined;
+	if (!nullableMatch(scope, (text) => (PROMOTION_SCOPES as readonly string[]).includes(text))) return undefined;
+	if (!nullableMatch(mapDigest, (text) => PROMOTION_MAP_DIGEST_PATTERN.test(text))) return undefined;
+	return { candidateSha, scope: scope as PromotionScope | null, mapDigest };
+}
+
 /**
  * Parses the last line of a verifier child's output into its advisory report,
  * or undefined when the output does not end with a well-formed one. Last line
@@ -156,7 +194,12 @@ function parsePhase(phaseId: unknown, phaseLabel: unknown): PromotionPhase | nul
  * whose phase pair is both null (undetermined, and always with sin-candidato)
  * or a valid id and label; a determined phase is returned as `phase`. V2 may
  * add `phaseTone` as a sixth field: null, or a slug that requires a determined
- * phase and is returned as `phase.tone`.
+ * phase and is returned as `phase.tone`. V3 has exactly nine fields — the V2
+ * six (tone always present) plus `candidateSha` (null or 40 lowercase hex),
+ * `scope` (null, "aplicacion" or "esquema") and `mapDigest` (null or
+ * `sha256:` + 64 lowercase hex) — returned as `identity`. A null candidateSha
+ * can be neither APTO nor listo-para-decision, and sin-candidato carries a
+ * null candidateSha and scope (the map digest may still be set).
  */
 export function parsePromotionReport(output: string | undefined): PromotionReport | undefined {
 	if (typeof output !== "string") return undefined;
@@ -164,7 +207,7 @@ export function parsePromotionReport(output: string | undefined): PromotionRepor
 	if (last.length === 0 || last.length > MAX_REPORT_LINE || CONTROL.test(last)) return undefined;
 	const match = REPORT_LINE.exec(last);
 	if (!match) return undefined;
-	const isV2 = match[1] === "2";
+	const version = match[1]!;
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(match[2]!);
@@ -173,8 +216,7 @@ export function parsePromotionReport(output: string | undefined): PromotionRepor
 	}
 	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
 	const fields = parsed as Record<string, unknown>;
-	const fieldSets = isV2 ? [V2_FIELDS, V2_TONED_FIELDS] : [V1_FIELDS];
-	if (!fieldSets.some((expected) => hasExactFields(fields, expected))) return undefined;
+	if (!FIELD_SETS[version]!.some((expected) => hasExactFields(fields, expected))) return undefined;
 	if (!isPromotionStep(fields.step) || !isPromotionVerdict(fields.verdict)) return undefined;
 	// A non-null candidate must be a plain path-ish id; the explicit typed
 	// variable keeps the narrowing for the consistency check and the return.
@@ -188,18 +230,26 @@ export function parsePromotionReport(output: string | undefined): PromotionRepor
 	// Consistency: a null candidate is the sin-candidato step, nothing else.
 	if ((candidateId === null) !== (step === "sin-candidato")) return undefined;
 	if (contradictsContract(step, verdict)) return undefined;
-	if (!isV2) return { candidateId, step, verdict };
+	if (version === "1") return { candidateId, step, verdict };
 	const phase = parsePhase(fields.phaseId, fields.phaseLabel);
 	if (phase === undefined) return undefined;
 	// No candidate has no place on the map.
 	if (phase !== null && step === "sin-candidato") return undefined;
-	// The tone is absent (five fields) or null, or a slug for a determined phase.
+	// The tone is absent (five-field V2) or null, or a slug for a determined phase.
 	const tone = fields.phaseTone;
+	let report: PromotionReport = phase === null ? { candidateId, step, verdict } : { candidateId, step, verdict, phase };
 	if (tone !== undefined && tone !== null) {
 		if (phase === null || typeof tone !== "string" || !PROMOTION_PHASE_TONE_PATTERN.test(tone)) return undefined;
-		return { candidateId, step, verdict, phase: { ...phase, tone } };
+		report = { candidateId, step, verdict, phase: { ...phase, tone } };
 	}
-	return phase === null ? { candidateId, step, verdict } : { candidateId, step, verdict, phase };
+	if (version === "2") return report;
+	const identity = parseIdentity(fields);
+	if (identity === undefined) return undefined;
+	// No candidate has no candidate identity.
+	if (step === "sin-candidato" && (identity.candidateSha !== null || identity.scope !== null)) return undefined;
+	// Without a verified commit there is no decision to make.
+	if (identity.candidateSha === null && (verdict === "APTO" || step === "listo-para-decision")) return undefined;
+	return { ...report, identity };
 }
 
 /**
@@ -399,6 +449,20 @@ export type PromotionState = { kind: "idle" } | { kind: "evaluating" } | Promoti
 
 const IDLE: PromotionState = { kind: "idle" };
 
+/**
+ * The latest settled verifier outcome for a session, as a read-only snapshot
+ * for a consumer that must decide from it (the promotion guard). `report` and
+ * `identity` are set only for a captured report, and `identity` only when that
+ * report was V3; `fromV3` says exactly that, so an older report (V1/V2, no
+ * identity) is never mistaken for one naming a candidate commit.
+ */
+export interface LatestPromotionVerdict {
+	kind: PromotionOutcome["kind"];
+	report?: PromotionReport;
+	identity?: PromotionIdentity;
+	fromV3: boolean;
+}
+
 interface Evaluation {
 	toolCallId: string;
 	taskId?: string;
@@ -529,6 +593,21 @@ export class PromotionStatusRegistry {
 	get(sessionId: string | undefined): PromotionReport | undefined {
 		const state = this.state(sessionId);
 		return state.kind === "captured" ? state.report : undefined;
+	}
+
+	/**
+	 * The session's latest settled outcome (captured, invalid or failed), or
+	 * undefined when there is none to decide from: no session, no verifier run
+	 * yet (idle), or the latest run still evaluating — a newer evaluation hides
+	 * the previous verdict until it settles. Pure read: the snapshot is a deep copy,
+	 * so mutating it never changes the registry.
+	 */
+	latestVerdict(sessionId: string | undefined): LatestPromotionVerdict | undefined {
+		const state = this.state(sessionId);
+		if (state.kind === "idle" || state.kind === "evaluating") return undefined;
+		if (state.kind !== "captured") return { kind: state.kind, fromV3: false };
+		const report = structuredClone(state.report);
+		return report.identity ? { kind: "captured", report, identity: report.identity, fromV3: true } : { kind: "captured", report, fromV3: false };
 	}
 
 	/** Drops a session's capture (session switch or shutdown). */

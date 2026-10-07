@@ -5,6 +5,7 @@ import {
 	PROMOTION_CANDIDATE_PATTERN,
 	PROMOTION_REPORT_MARKER,
 	PROMOTION_REPORT_MARKER_V2,
+	PROMOTION_REPORT_MARKER_V3,
 	PROMOTION_STEPS,
 	PROMOTION_VERIFIER_AGENT,
 	PROMOTION_VERDICTS,
@@ -513,7 +514,7 @@ test("parsePromotionReport rejects malformed V2 phase fields", () => {
 	for (const bad of ["", "Validar", "val idar", "validar!", "a".repeat(33), "fase/1", 7, true, {}]) {
 		assert.equal(parsePromotionReport(ok(bad, "Validar en Stage")), undefined, `phaseId ${JSON.stringify(bad)} must be rejected`);
 	}
-	for (const bad of ["", "L".repeat(49), "a\tb", "a\nb", "\u001b[31mx", "a\u0085b", "a\u202eb", 7, false, []]) {
+	for (const bad of ["", "L".repeat(49), "a\tb", "a\nb", "\u001b[31mx", "a\u0085b", "a\u202eb", "a\u2028b", "a\u2029b", 7, false, []]) {
 		assert.equal(parsePromotionReport(ok("validar", bad)), undefined, `phaseLabel ${JSON.stringify(bad)} must be rejected`);
 	}
 	// sin-candidato has no place on the map: its phase must be null.
@@ -537,7 +538,8 @@ test("parsePromotionReport keeps each version's exact field set", () => {
 	// V1 is still accepted, with no phase.
 	assert.deepEqual(parsePromotionReport(line(base)), { candidateId: "lib/x.ts", step: "validacion-stage", verdict: "EVIDENCIA INSUFICIENTE" });
 	// Unknown versions are not reports.
-	assert.equal(parsePromotionReport(`DDATA_PROMOTION_REPORT_V3 ${JSON.stringify(v2("lib/x.ts", "validacion-stage", "EVIDENCIA INSUFICIENTE", "validar", "Validar en Stage"))}`), undefined, "V3");
+	assert.equal(parsePromotionReport(`DDATA_PROMOTION_REPORT_V3 ${JSON.stringify(v2("lib/x.ts", "validacion-stage", "EVIDENCIA INSUFICIENTE", "validar", "Validar en Stage"))}`), undefined, "V3 with only V2 fields");
+	assert.equal(parsePromotionReport(`DDATA_PROMOTION_REPORT_V4 ${JSON.stringify(v2("lib/x.ts", "validacion-stage", "EVIDENCIA INSUFICIENTE", "validar", "Validar en Stage"))}`), undefined, "V4");
 });
 
 // --- Report V2 phaseTone: an optional sixth field, presentation only ---
@@ -640,4 +642,172 @@ test("promotionSidebarRows adds a Fase row after Candidato only when the report 
 	assert.deepEqual(promotionSidebarRows({ kind: "captured", report: withoutPhase }), {
 		pairs: [["Candidato", "lib/x.ts"], ["Paso", "validacion-stage"], ["Veredicto", qualified("EVIDENCIA INSUFICIENTE")]],
 	}, "no phase, no Fase row");
+});
+
+// --- Report V3: candidate identity (commit SHA, scope, map digest) ---
+// V3 always carries all nine fields; identity fields are null when the
+// verifier could not establish them. A null candidateSha can never be APTO or
+// listo-para-decision. V1/V2 reports carry no identity at all.
+
+const SHA = "0123456789abcdef0123456789abcdef01234567";
+const DIGEST = `sha256:${"ab".repeat(32)}`;
+const lineV3 = (fields: Record<string, unknown>): string => `${PROMOTION_REPORT_MARKER_V3} ${JSON.stringify(fields)}`;
+const v3 = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+	candidateId: "lib/x.ts",
+	step: "listo-para-decision",
+	verdict: "APTO",
+	phaseId: "aprobar",
+	phaseLabel: "Aprobación",
+	phaseTone: "accent",
+	candidateSha: SHA,
+	scope: "aplicacion",
+	mapDigest: DIGEST,
+	...overrides,
+});
+const v3NoCandidate = (overrides: Record<string, unknown> = {}): Record<string, unknown> =>
+	v3({ candidateId: null, step: "sin-candidato", verdict: "EVIDENCIA INSUFICIENTE", phaseId: null, phaseLabel: null, phaseTone: null, candidateSha: null, scope: null, ...overrides });
+
+test("parsePromotionReport accepts a V3 report and carries its candidate identity", () => {
+	assert.equal(PROMOTION_REPORT_MARKER_V3, "DDATA_PROMOTION_REPORT_V3");
+	assert.deepEqual(parsePromotionReport(`done\n${lineV3(v3())}`), {
+		candidateId: "lib/x.ts",
+		step: "listo-para-decision",
+		verdict: "APTO",
+		phase: { id: "aprobar", label: "Aprobación", tone: "accent" },
+		identity: { candidateSha: SHA, scope: "aplicacion", mapDigest: DIGEST },
+	});
+	assert.deepEqual(parsePromotionReport(lineV3(v3({ scope: "esquema", phaseTone: null })))?.identity, { candidateSha: SHA, scope: "esquema", mapDigest: DIGEST });
+	// Identity fields are null when not established; the gap keeps the step short of a decision.
+	assert.deepEqual(parsePromotionReport(lineV3(v3({ step: "validacion-stage", verdict: "EVIDENCIA INSUFICIENTE", phaseId: null, phaseLabel: null, phaseTone: null, candidateSha: null, scope: null, mapDigest: null }))), {
+		candidateId: "lib/x.ts",
+		step: "validacion-stage",
+		verdict: "EVIDENCIA INSUFICIENTE",
+		identity: { candidateSha: null, scope: null, mapDigest: null },
+	});
+	// A known negative without a SHA is still BLOQUEADO.
+	assert.equal(parsePromotionReport(lineV3(v3({ step: "bloqueado", verdict: "BLOQUEADO", candidateSha: null })))?.verdict, "BLOQUEADO");
+	// sin-candidato still names the map version it was judged against.
+	assert.deepEqual(parsePromotionReport(lineV3(v3NoCandidate())), {
+		candidateId: null,
+		step: "sin-candidato",
+		verdict: "EVIDENCIA INSUFICIENTE",
+		identity: { candidateSha: null, scope: null, mapDigest: DIGEST },
+	});
+	assert.deepEqual(parsePromotionReport(lineV3(v3NoCandidate({ mapDigest: null })))?.identity, { candidateSha: null, scope: null, mapDigest: null });
+});
+
+test("parsePromotionReport requires exactly the nine V3 fields", () => {
+	for (const key of Object.keys(v3())) {
+		const fields = v3();
+		delete fields[key];
+		assert.equal(parsePromotionReport(lineV3(fields)), undefined, `V3 missing ${key}`);
+	}
+	assert.equal(parsePromotionReport(lineV3({ ...v3(), extra: null })), undefined, "V3 with an extra field");
+	const { mapDigest: _digest, ...eight } = v3();
+	assert.equal(parsePromotionReport(lineV3({ ...eight, digest: DIGEST })), undefined, "nine fields with a misnamed one");
+	// V3 fields on an older marker are not that version's report.
+	assert.equal(parsePromotionReport(lineV2(v3())), undefined, "V2 carrying identity fields");
+	assert.equal(parsePromotionReport(line(v3())), undefined, "V1 carrying identity fields");
+});
+
+test("parsePromotionReport rejects malformed V3 identity fields", () => {
+	for (const bad of ["", "abc", SHA.slice(1), `${SHA}0`, SHA.toUpperCase(), `${SHA.slice(0, 39)}A`, "g".repeat(40), ` ${SHA.slice(1)}`, 7, true, {}, []]) {
+		assert.equal(parsePromotionReport(lineV3(v3({ candidateSha: bad }))), undefined, `candidateSha ${JSON.stringify(bad)} must be rejected`);
+	}
+	for (const bad of ["", "aplicación", "Aplicacion", "ESQUEMA", "app", "aplicacion ", "esquema\u0000", 1, false, {}]) {
+		assert.equal(parsePromotionReport(lineV3(v3({ scope: bad }))), undefined, `scope ${JSON.stringify(bad)} must be rejected`);
+	}
+	for (const bad of ["", "sha256:", `sha256:${"a".repeat(63)}`, `sha256:${"a".repeat(65)}`, `sha256:${"A".repeat(64)}`, `SHA256:${"a".repeat(64)}`, `sha1:${"a".repeat(64)}`, "a".repeat(64), `sha256:${"g".repeat(64)}`, 5, []]) {
+		assert.equal(parsePromotionReport(lineV3(v3({ mapDigest: bad }))), undefined, `mapDigest ${JSON.stringify(bad)} must be rejected`);
+	}
+});
+
+test("parsePromotionReport enforces the V3 identity contract rules", () => {
+	// No verified SHA: never APTO, never listo-para-decision.
+	assert.equal(parsePromotionReport(lineV3(v3({ candidateSha: null }))), undefined, "APTO with a null SHA");
+	assert.equal(parsePromotionReport(lineV3(v3({ verdict: "EVIDENCIA INSUFICIENTE", candidateSha: null }))), undefined, "listo-para-decision with a null SHA");
+	assert.ok(parsePromotionReport(lineV3(v3({ verdict: "EVIDENCIA INSUFICIENTE" }))), "sanity: listo-para-decision with a SHA parses");
+	// sin-candidato carries no candidate identity (the map digest is allowed).
+	assert.equal(parsePromotionReport(lineV3(v3NoCandidate({ candidateSha: SHA }))), undefined, "sin-candidato with a SHA");
+	assert.equal(parsePromotionReport(lineV3(v3NoCandidate({ scope: "aplicacion" }))), undefined, "sin-candidato with a scope");
+	assert.equal(parsePromotionReport(lineV3(v3NoCandidate({ phaseId: "validar", phaseLabel: "Validar en Stage" }))), undefined, "sin-candidato with a phase");
+	// The V2 rules still hold.
+	assert.equal(parsePromotionReport(lineV3(v3({ phaseId: null, phaseLabel: null }))), undefined, "a tone requires a phase");
+	assert.equal(parsePromotionReport(lineV3(v3({ phaseLabel: "a\u2028b" }))), undefined, "line separator in the label");
+	assert.equal(parsePromotionReport(lineV3(v3({ step: "bloqueado" }))), undefined, "contradictory step/verdict");
+	assert.equal(parsePromotionReport(lineV3(v3({ candidateId: null }))), undefined, "null candidate with a real step");
+});
+
+test("V1 and V2 reports still parse and carry no identity", () => {
+	const v1 = parsePromotionReport(line(report("lib/x.ts", "listo-para-decision", "APTO")));
+	assert.ok(v1 && !("identity" in v1));
+	const v2Report = parsePromotionReport(lineV2({ ...v2("lib/x.ts", "listo-para-decision", "APTO", "aprobar", "Aprobación"), phaseTone: "accent" }));
+	assert.ok(v2Report && !("identity" in v2Report));
+	assert.deepEqual(v2Report.phase, { id: "aprobar", label: "Aprobación", tone: "accent" });
+});
+
+test("a V3 identity travels through every capture path and the history restore", () => {
+	const good = lineV3(v3());
+	const expected = parsePromotionReport(good);
+	assert.ok(expected?.identity);
+	const registry = new PromotionStatusRegistry();
+	const handlers: Array<(data: unknown) => void> = [];
+	installPromotionCompletionCapture({ on(_channel: string, handler: (data: unknown) => void) { handlers.push(handler); return () => {}; } }, () => "s", () => {}, registry);
+	registry.beginEvaluation("s", "call-1");
+	registry.correlate("s", "call-1", "task-1");
+	for (const handler of handlers) handler({ schema: SUBAGENT_COMPLETED_EVENT, parentSessionId: "s", taskId: "task-1", agent: PROMOTION_VERIFIER_AGENT, status: "completed", mode: "background", result: `ok\n${good}` });
+	assert.deepEqual(registry.get("s"), expected);
+	const settled = settledVerifierResult({ toolName: "subagent_run", toolCallId: "call-2", isError: false, content: [{ type: "text", text: `ok\n${good}` }], details: { gentleAgents: { taskId: "task-2", agent: PROMOTION_VERIFIER_AGENT, status: "completed" } } });
+	assert.ok(settled);
+	assert.deepEqual(settledOutcome(settled), { kind: "captured", report: expected });
+	const message = settledVerifierMessage({ customType: "gentle-agents.result", content: `ok\n${good}`, details: { gentleAgents: { taskId: "task-3", agent: PROMOTION_VERIFIER_AGENT, status: "completed" } } });
+	assert.ok(message);
+	assert.deepEqual(settledOutcome(message), { kind: "captured", report: expected });
+	const restored = new PromotionStatusRegistry();
+	restorePromotionState(restored, "s", [
+		{ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "subagent_run", arguments: { agent: PROMOTION_VERIFIER_AGENT, task: "evalua" } }] } },
+		{ type: "message", message: { role: "toolResult", toolCallId: "call-1", toolName: "subagent_run", isError: false, content: [{ type: "text", text: `ok\n${good}` }], details: { gentleAgents: { taskId: "task-1", agent: PROMOTION_VERIFIER_AGENT, status: "completed" } } } },
+	]);
+	assert.deepEqual(restored.get("s"), expected);
+});
+
+test("latestVerdict exposes the latest settled outcome, its identity and whether it came from V3", () => {
+	const registry = new PromotionStatusRegistry();
+	assert.equal(registry.latestVerdict(undefined), undefined, "no session");
+	assert.equal(registry.latestVerdict("s"), undefined, "idle: nothing settled yet");
+	registry.beginEvaluation("s", "call-1");
+	assert.equal(registry.latestVerdict("s"), undefined, "evaluating: the latest evaluation has not settled");
+
+	const v3Report = parsePromotionReport(lineV3(v3()));
+	assert.ok(v3Report);
+	registry.settle("s", { toolCallId: "call-1" }, { kind: "captured", report: v3Report });
+	assert.deepEqual(registry.latestVerdict("s"), { kind: "captured", report: v3Report, identity: { candidateSha: SHA, scope: "aplicacion", mapDigest: DIGEST }, fromV3: true });
+	assert.equal(registry.latestVerdict("other"), undefined, "session-scoped");
+
+	// A fresh evaluation supersedes the verdict until it settles.
+	registry.beginEvaluation("s", "call-2");
+	assert.equal(registry.latestVerdict("s"), undefined);
+	const v2Report = parsePromotionReport(lineV2(v2("lib/x.ts", "listo-para-decision", "APTO", "aprobar", "Aprobación")));
+	assert.ok(v2Report);
+	registry.settle("s", { toolCallId: "call-2" }, { kind: "captured", report: v2Report });
+	assert.deepEqual(registry.latestVerdict("s"), { kind: "captured", report: v2Report, fromV3: false }, "an older report has no identity");
+
+	registry.beginEvaluation("s", "call-3");
+	registry.settle("s", { toolCallId: "call-3" }, { kind: "invalid" });
+	assert.deepEqual(registry.latestVerdict("s"), { kind: "invalid", fromV3: false });
+	registry.beginEvaluation("s", "call-4");
+	registry.settle("s", { toolCallId: "call-4" }, { kind: "failed" });
+	assert.deepEqual(registry.latestVerdict("s"), { kind: "failed", fromV3: false });
+
+	// The snapshot is a copy: mutating it never changes the registry.
+	registry.beginEvaluation("s", "call-5");
+	registry.settle("s", { toolCallId: "call-5" }, { kind: "captured", report: v3Report });
+	const snapshot = registry.latestVerdict("s");
+	assert.ok(snapshot?.identity);
+	(snapshot.identity as { candidateSha: string | null }).candidateSha = null;
+	(snapshot.report as { verdict: string }).verdict = "BLOQUEADO";
+	assert.equal(registry.latestVerdict("s")?.identity?.candidateSha, SHA);
+	assert.equal(registry.get("s")?.verdict, "APTO");
+	registry.clear("s");
+	assert.equal(registry.latestVerdict("s"), undefined, "cleared");
 });

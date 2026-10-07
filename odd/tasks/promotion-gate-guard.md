@@ -26,8 +26,8 @@ Today the verifier is advisory and only runs when the model chooses it; the `dda
 - Pitfall: gate on step/verdict, never on phaseId alone (`rechazo` node sits in phase `aprobar`).
 
 ## Tasks
-- [ ] G1 — Contract (ddata-topology-maps): V3 report fields, permission table, skill delegates to the verifier. Route: delegated.
-- [ ] G2 — gentle-pi parser V3 + registry keeps candidate identity. Route: delegated.
+- [x] G1 — Contract (ddata-topology-maps): V3 report fields, permission table, skill delegates to the verifier. Route: delegated.
+- [x] G2 — gentle-pi parser V3 + registry keeps candidate identity; plus advisories R3-001/R3-002 from review-b51a718619569811. Route: delegated.
 - [ ] G3 — gentle-pi guard (command classification, block/confirm, tests). Route: delegated.
 - [ ] G4 — gentle-pi auto-invoke injection for DDATA worktrees. Route: delegated.
 
@@ -35,7 +35,10 @@ Today the verifier is advisory and only runs when the model chooses it; the `dda
 `odd/tasks/promotion-map-phase.md` P3 (same files) must land first.
 
 ## Progress
+- 2026-10-07: native review of the prior gentle-pi slice (994c1dbac..0c5f67223: profiles symlink fix, map phase, badge) approved and acknowledged (lineage review-b51a718619569811); reviewed boundary is now 0c5f67223. Advisory R3-001 (assert idle promotion state after a throwing restore) and R3-002 (reject U+2028/U+2029 in phase labels) folded into G2.
+- G2 done (delegated writer): parser accepts V3 (exact 9 keys; sha ^[0-9a-f]{40}$, scope aplicacion|esquema, mapDigest sha256:hex; null SHA forbids APTO/listo-para-decision; sin-candidato requires null SHA/scope), V1/V2 still accepted; `PromotionStatusRegistry.latestVerdict(sessionId)` returns a deep-copied {kind, report?, identity?, fromV3} or undefined while idle/evaluating; advisories R3-001 (idle assertion) and R3-002 (reject Zl/Zp) done. Checks: 565/565 pass, typecheck no regressions.
+- G1 done (delegated writer, ddata-topology-maps f257ac3b): verifier V3 (9 fields; candidateSha verified via `git cat-file -e <sha>^{commit}`, null SHA forbids APTO/listo-para-decision), skill sections "Delegación obligatoria" and "Acciones habilitadas por el último reporte", contract test. RED 3/3 → GREEN 3/3; topology 29 pass/1 pre-existing fail; map sha256 unchanged; SKILL.md 77 lines; gga pre-commit review PASSED. Note: verifier is symlinked live, so it emits V3 before G2 lands.
 - 2026-10-07: created after mapping and user approval of the permission table.
 
 ## Next step
-Wait for P3, then G1+G2 writer.
+G3 guard writer.

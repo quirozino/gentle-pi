@@ -316,12 +316,18 @@ test("an unreadable session history still installs the footer and releases held 
 	gentleShell(pi, {});
 	const { ctx, ui } = fakeContext();
 	(ctx.sessionManager as { getBranch: () => unknown[] }).getBranch = () => { throw new Error("corrupt branch"); };
+	// A stale evaluation left from before must not survive an unreadable history.
+	promotionStatusRegistry.beginEvaluation("shell-session", "stale-call");
+	assert.equal(promotionStatusRegistry.state("shell-session").kind, "evaluating");
 	let published = 0;
 	afterShellChrome(pi, () => { published += 1; });
 	await fire(handlers, "session_start", ctx);
 	await Promise.resolve();
 	assert.equal(typeof ui.footerFactory, "function");
 	assert.equal(published, 1);
+	const footerData = { getGitBranch: () => null, getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} };
+	assert.deepEqual(buildShellBarModel(pi, ctx, footerData).promotion, { kind: "idle" }, "the promotion panel fails closed to idle");
+	assert.equal(promotionStatusRegistry.latestVerdict("shell-session"), undefined);
 });
 
 test("gentleShell installs the footer on session_start when a UI exists", () => {
