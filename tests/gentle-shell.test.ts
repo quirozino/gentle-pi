@@ -311,6 +311,19 @@ test("without a UI the shell releases held statuses instead of holding them fore
 	assert.equal(published, 1);
 });
 
+test("an unreadable session history still installs the footer and releases held statuses", async () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui } = fakeContext();
+	(ctx.sessionManager as { getBranch: () => unknown[] }).getBranch = () => { throw new Error("corrupt branch"); };
+	let published = 0;
+	afterShellChrome(pi, () => { published += 1; });
+	await fire(handlers, "session_start", ctx);
+	await Promise.resolve();
+	assert.equal(typeof ui.footerFactory, "function");
+	assert.equal(published, 1);
+});
+
 test("gentleShell installs the footer on session_start when a UI exists", () => {
 	const { pi, handlers } = fakePi();
 	gentleShell(pi, {});

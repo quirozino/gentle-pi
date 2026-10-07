@@ -2372,11 +2372,18 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		// rebuilds its own latest verifier outcome from its current branch,
 		// through the same fail-closed rules as the live events. Interactive UI
 		// only, like the live capture.
-		const sessionId = ctx.sessionManager.getSessionId();
-		if (ctx.hasUI && isInteractiveMode(ctx.mode)) restorePromotionState(promotionStatusRegistry, sessionId, sessionBranch(ctx));
-		else promotionStatusRegistry.clear(sessionId);
 		// Backstop: a throw before setFooter must never hold statuses back forever.
-		try { await startShellSession(ctx); } finally { shellChrome.ready(); }
+		try {
+			const sessionId = ctx.sessionManager.getSessionId();
+			// An unreadable history fails closed to an empty panel, never a stuck shell.
+			try {
+				if (ctx.hasUI && isInteractiveMode(ctx.mode)) restorePromotionState(promotionStatusRegistry, sessionId, sessionBranch(ctx));
+				else promotionStatusRegistry.clear(sessionId);
+			} catch {
+				promotionStatusRegistry.clear(sessionId);
+			}
+			await startShellSession(ctx);
+		} finally { shellChrome.ready(); }
 	});
 	// Leaving a session drops its capture; the session switched to restores its
 	// own history on session_start.
