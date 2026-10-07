@@ -116,7 +116,9 @@ export function createPromotionGuardExtension(options: PromotionGuardOptions = {
 				} else actions = [];
 			} catch (error) {
 				// Last-resort fail-closed check, matched against the classifier's own keyword source.
-				const subject = command ?? (typeof toolName === "string" ? toolName : "");
+				// Non-bash tools are matched on their name plus a bounded view of their
+				// input, so a generic `mcp` proxy naming apply_migration still fails closed.
+				const subject = command ?? `${typeof toolName === "string" ? toolName : ""} ${fallbackInputText(input)}`;
 				return PROMOTION_KEYWORDS.test(subject)
 					? blocked(`Guarda de promoción DDATA: no se pudo clasificar el comando (${errorText(error)}); se bloquea por precaución. ${PROMOTION_VERIFIER_HINT}`)
 					: undefined;
@@ -151,4 +153,13 @@ export function createPromotionGuardExtension(options: PromotionGuardOptions = {
 
 export default function promotionGuardExtension(pi: ExtensionAPI): void {
 	createPromotionGuardExtension()(pi);
+}
+
+// Bounded, never-throwing text view of a tool input for the crash fallback.
+function fallbackInputText(input: unknown): string {
+	try {
+		return (JSON.stringify(input) ?? "").slice(0, 4096);
+	} catch {
+		return "";
+	}
 }

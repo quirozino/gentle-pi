@@ -500,6 +500,17 @@ test("the crash fallback blocks every mutating firebase subcommand the classifie
 	assert.equal(await handler(bash("cd ~ && ls"), ctx), undefined, "non-promotion commands survive a crash");
 });
 
+test("the crash fallback also inspects a generic mcp proxy call's inner tool", async () => {
+	const exploding = new Proxy({}, { get: () => { throw new Error("deps exploded"); } }) as PromotionGuardDeps;
+	const { handler } = harness({ deps: exploding });
+	const { ctx } = context({ cwd: WS });
+	for (const tool of ["apply_migration", "deploy_edge_function"]) {
+		const result = await handler({ toolName: "mcp", input: { tool, args: { query: "select 1" } } }, ctx) as { block?: boolean; reason?: string } | undefined;
+		assert.equal(result?.block, true, tool);
+	}
+	assert.equal(await handler({ toolName: "mcp", input: { tool: "list_tables", args: {} } }, ctx), undefined, "harmless proxy calls survive a crash");
+});
+
 // --- G4 automatic verifier invocation rule ----------------------------------
 
 type BeforeAgentStartHandler = (event: { systemPromptOptions?: { appendSystemPrompt: string }; agentName?: string }, ctx: ExtensionContext) => unknown;
