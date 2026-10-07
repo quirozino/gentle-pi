@@ -537,7 +537,7 @@ test("parsePromotionReport keeps each version's exact field set", () => {
 	assert.equal(parsePromotionReport(line({ ...base, phaseId: null, phaseLabel: null })), undefined, "V1 carrying null phase fields");
 	// V1 is still accepted, with no phase.
 	assert.deepEqual(parsePromotionReport(line(base)), { candidateId: "lib/x.ts", step: "validacion-stage", verdict: "EVIDENCIA INSUFICIENTE" });
-	// Unknown versions are not reports.
+	// A V3 line needs all nine V3 fields (V2 fields alone are not V3), and unknown versions are not reports.
 	assert.equal(parsePromotionReport(`DDATA_PROMOTION_REPORT_V3 ${JSON.stringify(v2("lib/x.ts", "validacion-stage", "EVIDENCIA INSUFICIENTE", "validar", "Validar en Stage"))}`), undefined, "V3 with only V2 fields");
 	assert.equal(parsePromotionReport(`DDATA_PROMOTION_REPORT_V4 ${JSON.stringify(v2("lib/x.ts", "validacion-stage", "EVIDENCIA INSUFICIENTE", "validar", "Validar en Stage"))}`), undefined, "V4");
 });

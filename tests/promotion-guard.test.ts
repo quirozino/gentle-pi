@@ -370,9 +370,9 @@ test("Stage, read-only and unrelated tool calls pass untouched", async () => {
 	assert.equal(prompts.length, 0);
 });
 
-test("MCP schema tools are always blocked", async () => {
+test("MCP schema tools on DDATA are always blocked, even with an approving report", async () => {
 	const { handler } = harness({ verdict: captured("listo-para-decision", "APTO") });
-	const { ctx } = context();
+	const { ctx } = context({ cwd: DDATA });
 	for (const event of [
 		{ toolName: "mcp__supabase__apply_migration", input: { name: "x", query: "select 1" } },
 		{ toolName: "supabase_deploy_edge_function", input: {} },
@@ -411,4 +411,89 @@ test("the handler never throws and fails closed on internal errors", async () =>
 	]) assert.equal(await handler(event, ctx), undefined);
 	const noSession = { cwd: DDATA, hasUI: true, ui: { confirm: async () => true } } as unknown as ExtensionContext;
 	assert.equal(((await handler(bash(prodCommand), noSession)) as { block?: boolean }).block, true, "no session id means no verdict");
+});
+
+// --- G3b hardening ---------------------------------------------------------
+
+const COMMON_DIR = ["rev-parse", "--path-format=absolute", "--git-common-dir"];
+
+test("the git cache never keeps failures and expires positive answers", () => {
+	let answer: string | undefined;
+	let throws = false;
+	let count = 0;
+	let now = 0;
+	const git = createCachedGit(() => {
+		count++;
+		if (throws) throw new Error("spawn git ENOENT");
+		return answer;
+	}, { ttlMs: 60_000, now: () => now });
+	assert.equal(git(DDATA, COMMON_DIR), undefined);
+	answer = "/srv/git/ddata.git";
+	assert.equal(git(DDATA, COMMON_DIR), "/srv/git/ddata.git", "a failed lookup is retried, not cached");
+	answer = "/home/u/other/.git";
+	assert.equal(git(DDATA, COMMON_DIR), "/srv/git/ddata.git", "a positive answer is cached within the TTL");
+	now = 60_001;
+	assert.equal(git(DDATA, COMMON_DIR), "/home/u/other/.git", "a positive answer expires after the TTL");
+	throws = true;
+	now = 200_000;
+	assert.throws(() => git(OTHER, COMMON_DIR), /ENOENT/);
+	throws = false;
+	answer = `${OTHER}/.git`;
+	assert.equal(git(OTHER, COMMON_DIR), `${OTHER}/.git`, "a thrown lookup is retried");
+	assert.equal(count, 5);
+});
+
+const DDATA_SUPABASE_REF = "tlkfgroaswzmuozodtjn";
+const FOREIGN_REF = "abcdefghijklmnopqrst";
+
+test("MCP schema tools block DDATA targets only", () => {
+	const deps = fakeDeps();
+	const kind = (toolName: string, input: unknown, cwd: string | undefined, d: PromotionGuardDeps = deps) => classifyPromotionTool(toolName, input, cwd, d)?.kind;
+	const migration = "mcp__claude_ai_Supabase__apply_migration";
+	const edge = "mcp__claude_ai_Supabase__deploy_edge_function";
+	assert.equal(kind(migration, { project_id: DDATA_SUPABASE_REF }, OTHER), "production-schema", "known DDATA ref, foreign cwd");
+	assert.equal(kind(edge, { project_id: DDATA_SUPABASE_REF }, OTHER), "production-schema");
+	assert.equal(kind(migration, { project_ref: "ddata-prod" }, OTHER), "production-schema", "a ref naming DDATA");
+	assert.equal(kind(migration, { project_id: FOREIGN_REF }, DDATA), undefined, "non-DDATA ref is allowed even from a DDATA worktree");
+	assert.equal(kind(edge, { project_id: FOREIGN_REF }, OTHER), undefined);
+	assert.equal(kind(migration, { name: "x", query: "select 1" }, OTHER), undefined, "no ref outside DDATA");
+	assert.equal(kind(migration, { name: "x", query: "select 1" }, DDATA), "production-schema", "no ref inside DDATA");
+	assert.equal(kind(migration, {}, undefined), "production-schema", "no ref and no cwd fails closed");
+	assert.equal(kind(migration, {}, OTHER, fakeDeps({ gitThrows: () => true })), "production-schema", "git failure fails closed");
+	assert.equal(kind("mcp", { tool: "supabase_apply_migration", args: { project_ref: FOREIGN_REF } }, DDATA), undefined, "proxy call with a foreign ref");
+	assert.equal(kind("mcp", { tool: "supabase_apply_migration", args: JSON.stringify({ project_id: DDATA_SUPABASE_REF }) }, OTHER), "production-schema", "proxy call with JSON-string args");
+	assert.equal(kind("mcp", { tool: "supabase_deploy_edge_function" }, DDATA), "production-schema");
+	assert.equal(kind("mcp__supabase__list_migrations", { project_id: DDATA_SUPABASE_REF }, DDATA), undefined, "read tools never classify");
+});
+
+test("the handler scopes MCP schema tools by ref and cwd", async () => {
+	const { handler } = harness();
+	const call = (input: unknown) => ({ toolName: "mcp__supabase__apply_migration", input });
+	assert.equal(await handler(call({ project_id: FOREIGN_REF }), context({ cwd: DDATA }).ctx), undefined);
+	assert.equal(await handler(call({}), context({ cwd: OTHER }).ctx), undefined);
+	assert.equal(((await handler(call({}), context({ cwd: DDATA }).ctx)) as { block?: boolean }).block, true);
+	assert.equal(((await handler(call({ project_id: DDATA_SUPABASE_REF }), context({ cwd: OTHER }).ctx)) as { block?: boolean }).block, true);
+});
+
+test("over-deep nesting fails closed when the inner text looks like a promotion action", () => {
+	const nest = (inner: string) => `${"pwsh -Command ".repeat(7)}${inner}`;
+	const [action, ...more] = classifyPromotionBash(nest("firebase deploy --project ddata-f6721"), DDATA, fakeDeps());
+	assert.equal(more.length, 0);
+	assert.equal(action?.kind, "production-firebase");
+	assert.match(action?.targetError ?? "", /anidamiento/);
+	assert.equal(classifyPromotionBash(nest("firebase functions:delete notify"), DDATA, fakeDeps())[0]?.kind, "production-firebase");
+	assert.deepEqual(classifyPromotionBash(nest("ls -la"), DDATA, fakeDeps()), [], "harmless deep nesting stays untouched");
+	assert.deepEqual(kinds(`${"pwsh -Command ".repeat(4)}firebase deploy --project ddata-staging-iso`), ["stage"], "nesting within the limit is still classified");
+});
+
+test("the crash fallback blocks every mutating firebase subcommand the classifier knows", async () => {
+	const exploding = new Proxy({}, { get: () => { throw new Error("deps exploded"); } }) as PromotionGuardDeps;
+	const { handler } = harness({ deps: exploding });
+	const { ctx } = context({ cwd: WS });
+	for (const command of ["cd ~ && firebase functions:delete notify", "cd ~ && firebase hosting:disable", "cd ~ && firebase deploy"]) {
+		const result = await handler(bash(command), ctx) as { block?: boolean; reason?: string } | undefined;
+		assert.equal(result?.block, true, command);
+		assert.match(result?.reason ?? "", /deps exploded/);
+	}
+	assert.equal(await handler(bash("cd ~ && ls"), ctx), undefined, "non-promotion commands survive a crash");
 });

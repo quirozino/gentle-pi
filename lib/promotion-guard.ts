@@ -10,8 +10,41 @@ import type { LatestPromotionVerdict } from "./promotion-report.ts";
 
 export const DDATA_GIT_COMMON_DIR = "/srv/git/ddata.git";
 export const DDATA_TOPOLOGY_ROOT = "/srv/workspaces/ddata-topology-maps";
+// The only Stage Firebase project is DDATA_STAGE_PROJECT. Any other DDATA
+// project (named `ddata*` or resolved from a DDATA worktree) counts as
+// production; DDATA_PRODUCTION_PROJECT is the known one and only labels block
+// messages, it never narrows what is treated as production.
 export const DDATA_PRODUCTION_PROJECT = "ddata-f6721";
 export const DDATA_STAGE_PROJECT = "ddata-staging-iso";
+/**
+ * Hosted Supabase projects that belong to DDATA (the one its n8n workflows
+ * use). Stage Supabase is self-hosted and has no hosted ref; hosted production
+ * Supabase does not exist yet, so any ref naming DDATA also counts.
+ */
+export const DDATA_SUPABASE_PROJECT_REFS: readonly string[] = ["tlkfgroaswzmuozodtjn"];
+
+// --- Promotion keywords (single source) -------------------------------------
+// The classifier dispatches on these lists and the extension's crash fallback
+// matches PROMOTION_KEYWORDS, so the two cannot drift apart.
+
+export const FIREBASE_MUTATING_SUBCOMMANDS: readonly string[] = ["deploy", "functions:delete", "hosting:disable"];
+export const GCLOUD_FUNCTIONS_MUTATIONS: readonly string[] = ["deploy", "delete"];
+export const SUPABASE_MUTATING_ACTIONS: readonly string[] = ["db push", "migration up", "functions deploy"];
+export const MCP_SCHEMA_TOOL_SUFFIXES: readonly string[] = ["apply_migration", "deploy_edge_function"];
+const PRODUCTION_SCRIPT_NAMES: readonly string[] = ["safe-deploy", "deploy-production", "prod-deploy"];
+
+const keywordPattern = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/ /g, "\\s+");
+/** Text that looks like a promotion action; used to fail closed when classification is impossible. */
+export const PROMOTION_KEYWORDS = new RegExp(`(?<![A-Za-z0-9])(?:${[
+	...FIREBASE_MUTATING_SUBCOMMANDS,
+	...GCLOUD_FUNCTIONS_MUTATIONS.map((verb) => `functions ${verb}`),
+	...SUPABASE_MUTATING_ACTIONS,
+	...MCP_SCHEMA_TOOL_SUFFIXES,
+	...PRODUCTION_SCRIPT_NAMES,
+	"dispatches",
+].map(keywordPattern).join("|")})(?![A-Za-z0-9])`);
+
+export const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
 
 /**
  * Runs git in `cwd`: the trimmed stdout, undefined on a non-zero exit (not a
@@ -48,17 +81,37 @@ const COMMON_DIR_ARGS = ["rev-parse", "--path-format=absolute", "--git-common-di
 const REMOTE_ARGS = ["remote", "get-url", "origin"] as const;
 const FULL_SHA = /^[0-9a-f]{40}$/i;
 
-/** Caches the per-directory repository lookups; HEAD and refs are always read fresh. */
-export function createCachedGit(git: GitRun): GitRun {
-	const cache = new Map<string, string | undefined>();
+export const GIT_CACHE_TTL_MS = 60_000;
+
+/**
+ * Caches the per-directory repository lookups (common dir, origin) for a short
+ * TTL so a moved or re-cloned directory is noticed. Only successful answers are
+ * cached: a non-zero exit or a thrown error is retried on the next call. HEAD
+ * and refs are always read fresh.
+ */
+export function createCachedGit(git: GitRun, options: { ttlMs?: number; now?: () => number } = {}): GitRun {
+	const ttlMs = options.ttlMs ?? GIT_CACHE_TTL_MS;
+	const now = options.now ?? Date.now;
+	const cache = new Map<string, { value: string; expires: number }>();
 	return (cwd, args) => {
 		const key = args.join(" ");
 		if (key !== COMMON_DIR_ARGS.join(" ") && key !== REMOTE_ARGS.join(" ")) return git(cwd, args);
 		const cacheKey = `${cwd}\0${key}`;
-		if (!cache.has(cacheKey)) cache.set(cacheKey, git(cwd, args));
-		return cache.get(cacheKey);
+		const hit = cache.get(cacheKey);
+		if (hit && hit.expires > now()) return hit.value;
+		cache.delete(cacheKey);
+		const value = git(cwd, args);
+		if (value !== undefined) cache.set(cacheKey, { value, expires: now() + ttlMs });
+		return value;
 	};
 }
+
+/**
+ * Maximum `bash -c` / `pwsh -Command` nesting the classifier follows. Deeper
+ * text is not parsed: when it looks like a promotion action it becomes an
+ * unresolved production action (blocked), otherwise it is left alone.
+ */
+export const MAX_NESTING_DEPTH = 4;
 
 // --- Tokenizer -------------------------------------------------------------
 
@@ -178,18 +231,24 @@ class Classifier {
 		}
 	}
 
+	/** Where refs resolve: the cwd when it is a DDATA worktree, else the DDATA topology checkout. */
+	refDir(cwd: string | undefined): string {
+		return cwd !== undefined && this.isDdataDir(cwd) ? cwd : this.deps.topologyRoot ?? DDATA_TOPOLOGY_ROOT;
+	}
+
 	/** Target of a local deploy: an explicit `--sha`/`-Sha` argument, else the worktree HEAD. */
 	localTarget(args: readonly string[], cwd: string | undefined): () => string {
 		const explicit = flagValue(args, ["--sha", "-sha", "-Sha", "-SHA"]);
-		return () => {
-			if (explicit === undefined) return this.localHead(cwd);
-			const dir = cwd !== undefined && this.isDdataDir(cwd) ? cwd : this.deps.topologyRoot ?? DDATA_TOPOLOGY_ROOT;
-			return this.resolveRef(explicit, dir);
-		};
+		return () => explicit === undefined ? this.localHead(cwd) : this.resolveRef(explicit, this.refDir(cwd));
 	}
 
 	command(command: string, state: State, depth: number): PromotionAction[] {
-		if (depth > 4) return [];
+		if (depth > MAX_NESTING_DEPTH) {
+			if (!PROMOTION_KEYWORDS.test(command)) return [];
+			const scope = this.scope(state.cwd, command);
+			if (!scope.ddata) return [];
+			return [{ kind: "production-firebase", summary: "comando anidado", targetError: `anidamiento de shell demasiado profundo (más de ${MAX_NESTING_DEPTH} niveles) para verificar la acción` }];
+		}
 		const actions: PromotionAction[] = [];
 		for (const words of segments(command)) actions.push(...this.segment(words, state, depth));
 		return actions;
@@ -377,7 +436,7 @@ class Classifier {
 			const scope = this.scope(cwd, text);
 			return scope.ddata && !scope.error ? [{ kind: "read-only", summary }] : [];
 		}
-		if (!["deploy", "functions:delete", "hosting:disable"].includes(sub)) return [];
+		if (!FIREBASE_MUTATING_SUBCOMMANDS.includes(sub)) return [];
 		let project: string | undefined;
 		try {
 			project = this.firebaseProject(args, cwd);
@@ -389,24 +448,24 @@ class Classifier {
 		const scope = project?.startsWith("ddata") ? { ddata: true } : this.scope(cwd, text);
 		if (!scope.ddata) return [];
 		if (dryRun) return [{ kind: "read-only", summary }];
-		return [this.production(`${summary} (${project ?? "proyecto desconocido"})`, scope.error, this.localTarget(args, cwd))];
+		return [this.production(`${summary} (${projectLabel(project)})`, scope.error, this.localTarget(args, cwd))];
 	}
 
 	gcloud(args: readonly string[], cwd: string | undefined, text: string): PromotionAction[] {
 		const words = positional(args, ["--project", "--region", "--account", "--configuration"]).filter((word) => word !== "alpha" && word !== "beta");
-		if (words[0] !== "functions" || !["deploy", "delete"].includes(words[1])) return [];
+		if (words[0] !== "functions" || !GCLOUD_FUNCTIONS_MUTATIONS.includes(words[1])) return [];
 		const project = flagValue(args, ["--project"]);
 		const summary = `gcloud functions ${words[1]}`;
 		if (project === DDATA_STAGE_PROJECT) return [{ kind: "stage", summary }];
 		const scope = project?.startsWith("ddata") ? { ddata: true } : this.scope(cwd, text);
 		if (!scope.ddata) return [];
-		return [this.production(`${summary} (${project ?? "proyecto desconocido"})`, scope.error, this.localTarget(args, cwd))];
+		return [this.production(`${summary} (${projectLabel(project)})`, scope.error, this.localTarget(args, cwd))];
 	}
 
 	supabase(args: readonly string[], cwd: string | undefined, text: string): PromotionAction[] {
 		const words = positional(args, ["--workdir", "--project-ref", "--db-url", "--profile", "--output", "-o"]);
 		const action = `${words[0]} ${words[1]}`;
-		if (!["db push", "migration up", "functions deploy"].includes(action)) return [];
+		if (!SUPABASE_MUTATING_ACTIONS.includes(action)) return [];
 		const scope = this.scope(cwd, text);
 		if (!scope.ddata) return [];
 		return [{ kind: args.includes("--dry-run") ? "read-only" : "production-schema", summary: `supabase ${action}` }];
@@ -468,7 +527,7 @@ class Classifier {
 		return [this.production("prod-deploy.yml", scope.error, () => {
 			const refs = ["owner_approved_sha", "sha", "tag"].map((key) => fields.get(key)).filter((value): value is string => value !== undefined && value !== "");
 			if (refs.length === 0) throw new Error("el comando no declara un SHA objetivo (owner_approved_sha o sha) ni un tag release-*");
-			const dir = cwd !== undefined && this.isDdataDir(cwd) ? cwd : this.deps.topologyRoot ?? DDATA_TOPOLOGY_ROOT;
+			const dir = this.refDir(cwd);
 			const shas = new Set(refs.map((ref) => this.resolveRef(ref, dir)));
 			if (shas.size !== 1) throw new Error(`los objetivos del comando apuntan a commits distintos (${[...shas].join(", ")})`);
 			return [...shas][0];
@@ -488,6 +547,12 @@ class Classifier {
 			return knownWorkflow ? { ddata: true, error: `no se pudo verificar el repositorio de ${cwd}: ${errorText(error)}` } : { ddata: false };
 		}
 	}
+}
+
+/** Block-message label for a Firebase/gcloud project; any non-Stage DDATA project is production. */
+function projectLabel(project: string | undefined): string {
+	if (project === undefined) return "proyecto desconocido";
+	return project === DDATA_PRODUCTION_PROJECT ? `${project}, producción` : project;
 }
 
 function workflowId(workflow: string | undefined): "stage" | "production" | undefined {
@@ -540,23 +605,52 @@ function positional(args: readonly string[], valueFlags: readonly string[]): str
 	return words;
 }
 
-const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
-
 /** Promotion actions in a bash command run from `cwd`; empty when it is not a DDATA promotion action. */
 export function classifyPromotionBash(command: string, cwd: string, deps: PromotionGuardDeps): PromotionAction[] {
 	return new Classifier(deps).command(command, { cwd }, 0);
 }
 
+const PROJECT_REF_KEYS = ["project_id", "project_ref", "projectId", "projectRef"] as const;
+
+/** Supabase project ref of an MCP call's arguments; proxy `args`/`arguments` may be an object or a JSON string. */
+function mcpProjectRef(params: unknown): string | undefined {
+	if (typeof params === "string") {
+		try {
+			params = JSON.parse(params);
+		} catch {
+			return undefined;
+		}
+	}
+	if (!params || typeof params !== "object") return undefined;
+	for (const key of PROJECT_REF_KEYS) {
+		const value = (params as Record<string, unknown>)[key];
+		if (typeof value === "string" && value !== "") return value;
+	}
+	return undefined;
+}
+
 /**
  * Promotion action of a non-bash tool call: MCP Supabase schema and edge
  * function deploys (any namespace, including a generic `mcp` proxy call).
- * There is no reliable Stage identity for them, so they are never Stage.
+ * Schema mutations on DDATA are never Stage (Stage migrations go through its
+ * scripts), so they are production-schema when the call targets DDATA: a
+ * known DDATA ref, or no ref while `cwd` is DDATA or cannot be verified.
+ * A call that names a non-DDATA ref targets another project and is allowed.
  */
-export function classifyPromotionTool(toolName: string, input: unknown): PromotionAction | undefined {
+export function classifyPromotionTool(toolName: string, input: unknown, cwd?: string, deps?: PromotionGuardDeps): PromotionAction | undefined {
 	let name = toolName;
-	if (toolName === "mcp" && input && typeof input === "object" && typeof (input as { tool?: unknown }).tool === "string") name = (input as { tool: string }).tool;
-	if (/apply_migration$/.test(name) || /deploy_edge_function$/.test(name)) return { kind: "production-schema", summary: name };
-	return undefined;
+	let params = input;
+	if (toolName === "mcp" && input && typeof input === "object" && typeof (input as { tool?: unknown }).tool === "string") {
+		name = (input as { tool: string }).tool;
+		const proxy = input as { args?: unknown; arguments?: unknown };
+		params = proxy.args ?? proxy.arguments;
+	}
+	if (!MCP_SCHEMA_TOOL_SUFFIXES.some((suffix) => name.endsWith(suffix))) return undefined;
+	const action: PromotionAction = { kind: "production-schema", summary: name };
+	const ref = mcpProjectRef(params);
+	if (ref !== undefined) return DDATA_SUPABASE_PROJECT_REFS.includes(ref) || /ddata/i.test(ref) ? action : undefined;
+	if (cwd === undefined || deps === undefined) return action;
+	return new Classifier(deps).scope(cwd, name).ddata ? action : undefined;
 }
 
 export const PROMOTION_VERIFIER_HINT =

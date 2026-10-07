@@ -7,6 +7,8 @@ import {
 	classifyPromotionTool,
 	createCachedGit,
 	decidePromotion,
+	errorText,
+	PROMOTION_KEYWORDS,
 	PROMOTION_VERIFIER_HINT,
 	type GitRun,
 	type PromotionAction,
@@ -54,11 +56,7 @@ export function defaultPromotionGuardDeps(): PromotionGuardDeps {
 	};
 }
 
-// Last-resort fail-closed check when classification itself crashed.
-const LOOKS_PRODUCTION = /\b(?:deploy|db\s+push|migration\s+up|prod-deploy|safe-deploy|apply_migration|deploy_edge_function)\b/;
-
 const blocked = (reason: string): ToolCallEventResult => ({ block: true, reason });
-const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
 
 export function createPromotionGuardExtension(options: PromotionGuardOptions = {}): (pi: ExtensionAPI) => void {
 	return (pi) => {
@@ -76,12 +74,13 @@ export function createPromotionGuardExtension(options: PromotionGuardOptions = {
 			try {
 				if (toolName === "bash") actions = command === undefined ? [] : classifyPromotionBash(command, ctx.cwd, deps);
 				else if (typeof toolName === "string") {
-					const action = classifyPromotionTool(toolName, input);
+					const action = classifyPromotionTool(toolName, input, ctx.cwd, deps);
 					actions = action ? [action] : [];
 				} else actions = [];
 			} catch (error) {
+				// Last-resort fail-closed check, matched against the classifier's own keyword source.
 				const subject = command ?? (typeof toolName === "string" ? toolName : "");
-				return LOOKS_PRODUCTION.test(subject)
+				return PROMOTION_KEYWORDS.test(subject)
 					? blocked(`Guarda de promoción DDATA: no se pudo clasificar el comando (${errorText(error)}); se bloquea por precaución. ${PROMOTION_VERIFIER_HINT}`)
 					: undefined;
 			}
