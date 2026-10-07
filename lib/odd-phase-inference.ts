@@ -5,7 +5,8 @@
 //
 // The mapping is deliberately conservative: an unknown tool, unknown subagent
 // role, or an ambiguous shell command returns undefined so the caller leaves
-// the current label unchanged. This module is pure (no Pi or registry
+// the current label unchanged. A shell command that clearly writes (files,
+// the git index, dependencies) is implementing work, as an edit tool is. This module is pure (no Pi or registry
 // imports); precedence against explicit reports lives in OddPhaseRegistry.
 
 import type { OddPhase } from "./odd-phase.ts";
@@ -47,6 +48,20 @@ const CHECKING_COMMANDS: readonly RegExp[] = [
 	// Waiting on or reading CI results verifies work; it is not exploration.
 	/^gh\s+pr\s+checks\b/,
 	/^gh\s+run\s+(view|watch|list)\b/,
+];
+
+// Clear mutations: file writes, git index/worktree changes, patches, and
+// dependency installs. Matched per shell segment. Branch switches, pulls,
+// pushes, tags, and config changes are not here: they are delivery or
+// coordination, not implementation, and stay ambiguous.
+const IMPLEMENTING_COMMANDS: readonly RegExp[] = [
+	/^git\s+(add|commit|mv|rm|restore|apply|am|cherry-pick)\b/,
+	/^git\s+checkout\b(.*\s)?--(\s|$)/,
+	/^(mv|cp|rm|rmdir|mkdir|touch|ln|patch)\b/,
+	/^sed\b.*\s(-[a-zA-Z]*i|--in-place)\b/,
+	/^sort\b.*\s(-o|--output)\b/,
+	/^tee(\s+-\S+)*\s+(?!\/dev\/null(\s|$))[^-\s]/,
+	/^(pnpm|npm|yarn|bun)\s+(install|i|add|ci|remove|rm|uninstall|update|up|upgrade)\b/,
 ];
 
 // Git listing flags that may take one non-flag argument (`--contains <rev>`)
@@ -115,9 +130,10 @@ function isOddTaskPath(path: string | undefined): boolean {
 }
 
 /**
- * A command checks when any segment runs a checker; it explores only when
- * every segment is read-only inspection (or neutral like `cd`). Anything
- * else — a mutation, an install, an unknown program — is ambiguous.
+ * A command checks when any segment runs a checker; otherwise it implements
+ * when any segment clearly writes; it explores only when every segment is
+ * read-only inspection (or neutral like `cd`). Anything else — an unknown
+ * program, a push, a branch switch — is ambiguous.
  */
 function inferShellPhase(command: string | undefined): OddPhase | undefined {
 	if (command === undefined) return undefined;
@@ -126,6 +142,7 @@ function inferShellPhase(command: string | undefined): OddPhase | undefined {
 		.filter((segment) => segment.length > 0 && !isNeutral(segment));
 	if (segments.length === 0) return undefined;
 	if (segments.some((segment) => matchesAny(CHECKING_COMMANDS, segment))) return "checking";
+	if (segments.some(isMutation)) return "implementing";
 	return segments.every(isReadOnlyInspection) ? "exploring" : undefined;
 }
 
@@ -133,13 +150,15 @@ function inferShellPhase(command: string | undefined): OddPhase | undefined {
  * Splits a shell command into simple commands. Top-level `&&`, `||`, `;`,
  * `|`, `&`, and newlines separate them; quoted text never does; and every
  * `$(...)` substitution contributes its own commands, leaving a `$_`
- * placeholder behind. Not a full shell parser: whatever it cannot follow
+ * placeholder behind. Heredoc bodies are data, not commands: they are
+ * skipped up to their delimiter line. Not a full shell parser: whatever it cannot follow
  * lands in a segment that matches no pattern, so the label stays unchanged.
  */
 function splitShellCommands(command: string): string[] {
 	const commands: string[] = [];
 	let current = "";
 	let quote: "'" | '"' | undefined;
+	const heredocs: Array<{ delimiter: string; stripTabs: boolean }> = [];
 	for (let i = 0; i < command.length; i++) {
 		const char = command[i];
 		if (quote === "'") {
@@ -160,6 +179,15 @@ function splitShellCommands(command: string): string[] {
 		} else if (char === "'" || char === '"') {
 			quote = char;
 			current += char;
+		} else if (char === "<" && command.startsWith("<<", i) && command[i + 2] !== "<" && command[i - 1] !== "<") {
+			const heredoc = /^<<(-?)\s*(?:'([^']*)'|"([^"]*)"|\\?([A-Za-z0-9_]+))/.exec(command.slice(i));
+			if (heredoc) heredocs.push({ delimiter: heredoc[2] ?? heredoc[3] ?? heredoc[4] ?? "", stripTabs: heredoc[1] === "-" });
+			current += "<<";
+			i++;
+		} else if (char === "\n" && heredocs.length > 0) {
+			commands.push(current);
+			current = "";
+			i = skipHeredocBodies(command, i + 1, heredocs.splice(0)) - 1;
 		} else if (isSeparator(command, i)) {
 			commands.push(current);
 			current = "";
@@ -170,6 +198,21 @@ function splitShellCommands(command: string): string[] {
 	}
 	commands.push(current);
 	return commands;
+}
+
+// Index just past the last body line of the given heredocs, which start at
+// `start`; the end of the command when a delimiter never appears.
+function skipHeredocBodies(command: string, start: number, heredocs: ReadonlyArray<{ delimiter: string; stripTabs: boolean }>): number {
+	let i = start;
+	for (const { delimiter, stripTabs } of heredocs) {
+		while (i < command.length) {
+			const lineEnd = command.indexOf("\n", i);
+			const line = command.slice(i, lineEnd < 0 ? command.length : lineEnd);
+			i = lineEnd < 0 ? command.length : lineEnd + 1;
+			if ((stripTabs ? line.replace(/^\t+/, "") : line) === delimiter) break;
+		}
+	}
+	return i;
 }
 
 // `&` inside a redirection (`2>&1`, `&>/dev/null`) is not a separator.
@@ -213,6 +256,10 @@ function isNeutral(segment: string): boolean {
 	return !writesFile(segment) && matchesAny(NEUTRAL_COMMANDS, segment);
 }
 
+function isMutation(segment: string): boolean {
+	return writesFile(segment) || matchesAny(IMPLEMENTING_COMMANDS, segment);
+}
+
 function isReadOnlyInspection(segment: string): boolean {
 	return !writesFile(segment) && matchesAny(EXPLORING_COMMANDS, segment);
 }
@@ -220,10 +267,16 @@ function isReadOnlyInspection(segment: string): boolean {
 // Stream merges and discarded output; neither writes a file.
 const HARMLESS_REDIRECTS = /\s*(\d?>&\d|&?\d?>\s*\/dev\/null)/g;
 
-// Output redirection to a file is a write. Deliberately naive: a `>` inside
-// quoted text also counts, which only ever leaves the label unchanged.
+// Output redirection to a file is a write. Quoted text and escaped
+// characters are data, so a `>` there is not a redirection; neither is the
+// string comparison inside `[[ ... ]]`.
 function writesFile(segment: string): boolean {
-	return segment.replace(HARMLESS_REDIRECTS, "").includes(">");
+	if (/^\[\[\s/.test(segment)) return false;
+	return segment
+		.replace(/\\./g, "")
+		.replace(/'[^']*'|"(?:\\.|[^"\\])*"/g, "")
+		.replace(HARMLESS_REDIRECTS, "")
+		.includes(">");
 }
 
 function matchesAny(patterns: readonly RegExp[], segment: string): boolean {

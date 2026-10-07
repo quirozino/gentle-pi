@@ -1022,6 +1022,40 @@ const backgroundCompletion = (overrides: Record<string, unknown> = {}, report: R
 	},
 });
 
+// The Promoción panel repaints as soon as an evaluation opens ("evaluando")
+// and as soon as it settles, without waiting for an incidental render.
+test("a verifier evaluation requests a sidebar redraw when it begins and when it settles", async (t) => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui } = fakeContext();
+	for (const handler of handlers.get("session_start") ?? []) await handler({}, ctx);
+	const tui = { terminal: { rows: 40, columns: 160 }, requestRender: t.mock.fn() };
+	const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, data: unknown) => { dispose(): void };
+	const component = factory(tui, plainTheme, emptyFooterData);
+	const renders = () => tui.requestRender.mock.callCount();
+	try {
+		let before = renders();
+		await fireExecutionStart(handlers, verifierStart("call-1"), ctx);
+		assert.equal(promotionStatusRegistry.state("shell-session")?.kind, "evaluating");
+		assert.ok(renders() > before, "beginning an evaluation redraws");
+		before = renders();
+		await fireToolResult(handlers, promotionEvent(), ctx);
+		assert.equal(promotionStatusRegistry.state("shell-session")?.kind, "captured");
+		assert.ok(renders() > before, "a settled tool_result redraws");
+		// A background run settles through its completion message instead.
+		await fireExecutionStart(handlers, verifierStart("call-2"), ctx);
+		await fireToolResult(handlers, promotionEvent({ toolCallId: "call-2", details: { gentleAgents: { taskId: "task-2", agent: "ddata-promotion-verifier", status: "queued" } } }), ctx);
+		assert.equal(promotionStatusRegistry.state("shell-session")?.kind, "evaluating");
+		before = renders();
+		await fireMessageEnd(handlers, backgroundCompletion({ content: `Subagent ddata-promotion-verifier (task task-2, "evalúa") finished.\n\n${PROMOTION_REPORT_MARKER} ${JSON.stringify({ candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "APTO" })}`, details: { gentleAgents: { taskId: "task-2", agent: "ddata-promotion-verifier", status: "completed", mode: "background" } } }), ctx);
+		assert.equal(promotionStatusRegistry.state("shell-session")?.kind, "captured");
+		assert.ok(renders() > before, "a settled completion message redraws");
+	} finally {
+		component.dispose();
+		promotionStatusRegistry.clear("shell-session");
+	}
+});
+
 test("a background verifier's completion message is captured when its task id correlates to the latest evaluation", async () => {
 	const { pi, handlers } = fakePi();
 	gentleShell(pi, {});

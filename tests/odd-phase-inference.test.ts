@@ -125,26 +125,97 @@ test("real compound read-only shell commands infer exploring", () => {
 	}
 });
 
-test("compound commands that mutate anything leave the label unchanged", () => {
+// A command that clearly changes files, the index, or dependencies is work in
+// progress: implementing, even when it also inspects (one write is enough).
+test("clearly mutating shell commands infer implementing", () => {
 	for (const command of [
-		"git switch main 2>&1 && git pull --ff-only 2>&1 | tail -3",
-		"sed -i '' 's/a/b/' odd/tasks/f.md && grep -n x odd/tasks/f.md",
-		"ln -s ~/a node_modules && echo linked",
+		"git commit -m 'feat: x'",
 		`git add f && git commit -q -m "x" && git log --oneline -3`,
+		"git add -A",
+		"git mv a.ts b.ts",
+		"git rm --cached f",
+		"git restore --staged f",
+		"git checkout -- lib/a.ts",
+		"git checkout HEAD -- lib/a.ts",
+		"git apply fix.patch",
+		"patch -p1 < fix.patch",
+		"sed -i '' 's/a/b/' odd/tasks/f.md && grep -n x odd/tasks/f.md",
+		"sed --in-place 's/a/b/' f",
+		"ln -s ~/a node_modules && echo linked",
+		"mv a b",
+		"cp -r a b",
+		"rm -rf dist",
+		"ls && rm -rf dist",
+		"mkdir -p lib/x",
+		"touch marker",
+		"echo hi | tee out.txt",
+		"echo hi > out.txt",
+		"echo hi >> out.txt",
+		"git diff 2>&1 > out.diff",
+		"sort -o out.txt in.txt",
 		"cat >> f.md <<'EOF'\nhello\nEOF",
 		"x=$(rm -rf dist); echo $x",
 		`for f in *.ts; do grep -l x "$f" && rm "$f"; done`,
-		"echo hi > out.txt",
-		"sort -o out.txt in.txt",
+		"ls $(touch marker)",
+		"pnpm install",
+		"npm i -D typescript",
+		"pnpm add zod",
+		"yarn install --frozen-lockfile",
+		"npm ci",
+	]) {
+		assert.equal(inferOddPhase("bash", { command }), "implementing", command);
+	}
+});
+
+test("a checking segment still wins over a mutating segment", () => {
+	assert.equal(inferOddPhase("bash", { command: "pnpm install && pnpm test" }), "checking");
+	assert.equal(inferOddPhase("bash", { command: "rm -rf dist && npm run build" }), "checking");
+	assert.equal(inferOddPhase("bash", { command: "node --test tests/a.test.ts > out.log" }), "checking");
+});
+
+// Redirections that write nothing, a `>` inside quoted text, here-strings,
+// and heredoc bodies are not writes: they must not read as implementing.
+test("harmless redirections, quoted text, here-strings and heredoc bodies are not writes", () => {
+	for (const command of [
+		"ls 2>&1",
+		"cat f >/dev/null",
+		"cat f > /dev/null 2>&1",
+		"grep x f &>/dev/null",
+		"echo err >&2 && ls",
+		"grep '>' f",
+		`grep ">" f`,
+		"grep -c \\> f",
+		"git log --format='%h > %s' -3",
+		`cat <<< "a > b"`,
+		`grep -c x <<< "$v"`,
+		"cat <<'EOF' | grep x\nrm -rf dist > out\nEOF",
+		"cat <<-EOF | head -1\n\ttouch x\n\tEOF",
+		"[[ a > b ]] && ls",
+	]) {
+		assert.equal(inferOddPhase("bash", { command }), "exploring", command);
+	}
+	assert.equal(inferOddPhase("bash", { command: `echo "a > b"` }), undefined, "a quoted > in a no-op stays a no-op");
+});
+
+test("ambiguous shell commands that are not clear writes leave the label unchanged", () => {
+	for (const command of [
+		"git switch main 2>&1 && git pull --ff-only 2>&1 | tail -3",
+		"git push",
 		"git tag v1.0",
 		"git branch new-branch",
 		"git remote add origin https://example.com/r.git",
 		"git config user.name someone",
-		"ls $(touch marker)",
+		"git checkout main",
 		"grep x f | xargs rm",
+		"curl https://example.com",
+		"echo hello",
+		"",
 	]) {
 		assert.equal(inferOddPhase("bash", { command }), undefined, command);
 	}
+	assert.equal(inferOddPhase("bash", {}), undefined);
+	assert.equal(inferOddPhase("bash", { command: 42 }), undefined);
+	assert.equal(inferOddPhase("bash", undefined), undefined);
 });
 
 // Inference runs synchronously on tool_execution_start, so a pathological
@@ -161,24 +232,6 @@ test("no-op-only commands leave the label unchanged", () => {
 	for (const command of ["sleep 4", "echo ===", "cd /repo && echo done", "true"]) {
 		assert.equal(inferOddPhase("bash", { command }), undefined, command);
 	}
-});
-
-test("ambiguous or mutating shell commands leave the label unchanged", () => {
-	for (const command of [
-		"git commit -m 'feat: x'",
-		"git push",
-		"rm -rf dist",
-		"echo hello",
-		"pnpm install",
-		"curl https://example.com",
-		"ls && rm -rf dist",
-		"",
-	]) {
-		assert.equal(inferOddPhase("bash", { command }), undefined, command);
-	}
-	assert.equal(inferOddPhase("bash", {}), undefined);
-	assert.equal(inferOddPhase("bash", { command: 42 }), undefined);
-	assert.equal(inferOddPhase("bash", undefined), undefined);
 });
 
 test("known delegated agents infer the parent work phase in foreground and background", () => {

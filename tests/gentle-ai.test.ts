@@ -3061,3 +3061,20 @@ test("switchLiveOrchestrator returns note when setModel fails", async () => {
 	const result = await __testing.switchLiveOrchestrator(ctx, live, entry);
 	assert.equal(result, "\nno authentication is configured for openai; this session keeps its current model.");
 });
+
+test("the orchestrator prompt asks the primary session to report every ODD transition", () => {
+	for (const persona of ["gentleman", "neutral"] as const) {
+		const prompt = __testing.buildGentlePrompt(persona);
+		const start = prompt.indexOf("Phase reporting:");
+		assert.ok(start >= 0, `[${persona}] phase reporting section present`);
+		const section = prompt.slice(start, prompt.indexOf("\n", start));
+		for (const clause of [
+			"report every ODD transition of the primary session",
+			"`authorizing` → `exploring` → `researching` or `deciding` → `planning` → `implementing` → `checking` → `closing`",
+			"writing shell commands `implementing`",
+			"call `gentle_odd_phase` only when the primary session's ODD phase actually changes",
+			"never per tool call",
+			"never from a subagent",
+		]) assert.ok(section.includes(clause), `[${persona}] missing: ${clause}`);
+	}
+});

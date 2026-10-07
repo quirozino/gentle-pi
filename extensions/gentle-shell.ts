@@ -2886,7 +2886,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		// cleared) while it runs, and only this latest evaluation may settle.
 		if (!ctx.hasUI || !isInteractiveMode(ctx.mode)) return;
 		const start = verifierRunStart(event);
-		if (start) promotionStatusRegistry.beginEvaluation(ctx.sessionManager.getSessionId(), start.toolCallId);
+		if (!start) return;
+		promotionStatusRegistry.beginEvaluation(ctx.sessionManager.getSessionId(), start.toolCallId);
+		// Repaint now so "evaluando" shows while the verifier runs.
+		redrawReview();
 	});
 	pi.on("tool_result", (event, ctx) => {
 		// Advisory DDATA promotion capture: the sidebar reflects a completed
@@ -2908,7 +2911,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		const settled = settledVerifierResult(event);
 		if (settled?.refused) {
 			if (promotionStatusRegistry.withdraw(ctx.sessionManager.getSessionId(), settled.toolCallId)) redrawReview();
-		} else if (settled) promotionStatusRegistry.settle(ctx.sessionManager.getSessionId(), { toolCallId: settled.toolCallId, taskId: settled.taskId }, settledOutcome(settled));
+		} else if (settled && promotionStatusRegistry.settle(ctx.sessionManager.getSessionId(), { toolCallId: settled.toolCallId, taskId: settled.taskId }, settledOutcome(settled))) redrawReview();
 	});
 	pi.on("message_end", (event, ctx) => {
 		// A background verifier's completion arrives as a gentle-agents result
@@ -2924,7 +2927,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		const message = (event as { message?: unknown }).message;
 		if (typeof message !== "object" || message === null) return;
 		const settled = settledVerifierMessage(message);
-		if (settled) promotionStatusRegistry.settle(ctx.sessionManager.getSessionId(), { taskId: settled.taskId }, settledOutcome(settled));
+		if (settled && promotionStatusRegistry.settle(ctx.sessionManager.getSessionId(), { taskId: settled.taskId }, settledOutcome(settled))) redrawReview();
 	});
 	pi.on("agent_settled", (_event, ctx) => {
 		// Pi clears its own run-active flag before emitting agent_settled, so
