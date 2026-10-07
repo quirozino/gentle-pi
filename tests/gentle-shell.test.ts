@@ -29,6 +29,7 @@ import { readBannerConfig } from "../extensions/startup-banner.ts";
 import { listVisualProfiles, saveVisualProfile } from "../lib/visual-profiles.ts";
 import { oddPhaseRegistry } from "../lib/odd-phase.ts";
 import { PROMOTION_REPORT_MARKER, promotionStatusRegistry } from "../lib/promotion-report.ts";
+import { SUBAGENT_COMPLETED_EVENT } from "../lib/subagent-completion-event.ts";
 import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
 import { resolveCardStyle, writeCardStyle } from "../lib/card-style-policy.ts";
 
@@ -1013,6 +1014,50 @@ test("a background verifier's completion message is captured when its task id co
 		// The completion arrives as a gentle-agents result message, not a tool_result.
 		await fireMessageEnd(handlers, backgroundCompletion(), ctx);
 		assert.deepEqual(promotionStatusRegistry.get("shell-session"), { candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "APTO" });
+	} finally {
+		promotionStatusRegistry.clear("shell-session");
+	}
+});
+
+// An idle parent's background result never produces an extension message_end
+// in pi 1.0.4, so the shell also captures from gentle-agents' in-process
+// completion event, with the same session, source and correlation gates.
+test("a verifier completion event on pi.events is captured for the active session without any message_end", async () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	const { ctx } = fakeContext();
+	const completed = (overrides: Record<string, unknown> = {}) => ({
+		schema: SUBAGENT_COMPLETED_EVENT,
+		parentSessionId: "shell-session",
+		taskId: "task-1",
+		agent: "ddata-promotion-verifier",
+		status: "completed",
+		mode: "background",
+		result: `checked\n${PROMOTION_REPORT_MARKER} ${JSON.stringify({ candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "APTO" })}`,
+		...overrides,
+	});
+	try {
+		await fire(handlers, "session_start", ctx);
+		pi.events.emit(SUBAGENT_COMPLETED_EVENT, completed());
+		assert.equal(promotionStatusRegistry.get("shell-session"), undefined, "an uncorrelated completion fails closed");
+		await fireExecutionStart(handlers, verifierStart("call-1"), ctx);
+		await fireToolResult(handlers, promotionEvent({ details: { gentleAgents: { taskId: "task-1", agent: "ddata-promotion-verifier", status: "queued" } } }), ctx);
+		pi.events.emit(SUBAGENT_COMPLETED_EVENT, completed({ parentSessionId: "foreign" }));
+		pi.events.emit(SUBAGENT_COMPLETED_EVENT, completed({ agent: "other-agent" }));
+		pi.events.emit(SUBAGENT_COMPLETED_EVENT, completed({ status: "failed" }));
+		pi.events.emit(SUBAGENT_COMPLETED_EVENT, completed({ schema: "other" }));
+		pi.events.emit(SUBAGENT_COMPLETED_EVENT, completed({ result: `${PROMOTION_REPORT_MARKER} {broken` }));
+		assert.equal(promotionStatusRegistry.get("shell-session"), undefined, "foreign, other-agent, failed, malformed or unparseable events never capture");
+		pi.events.emit(SUBAGENT_COMPLETED_EVENT, completed());
+		assert.deepEqual(promotionStatusRegistry.get("shell-session"), { candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "APTO" });
+		// The result message for the same task arriving later is a replay.
+		await fireMessageEnd(handlers, backgroundCompletion({}, { candidateId: "lib/y.ts", step: "bloqueado", verdict: "BLOQUEADO" }), ctx);
+		assert.deepEqual(promotionStatusRegistry.get("shell-session"), { candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "APTO" }, "duplicate delivery of one task is idempotent");
+		await fire(handlers, "session_shutdown", ctx);
+		promotionStatusRegistry.beginEvaluation("shell-session", "call-2");
+		promotionStatusRegistry.correlate("shell-session", "call-2", "task-2");
+		pi.events.emit(SUBAGENT_COMPLETED_EVENT, completed({ taskId: "task-2" }));
+		assert.equal(promotionStatusRegistry.get("shell-session"), undefined, "shutdown unsubscribes the capture");
 	} finally {
 		promotionStatusRegistry.clear("shell-session");
 	}

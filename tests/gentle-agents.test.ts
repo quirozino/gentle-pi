@@ -29,6 +29,8 @@ import { fakeChild, type FakeChild } from "./agents-fake-child.ts";
 import { AgentRunner } from "../lib/agents-runner.ts";
 import { bindSessionRepositoryPreparation } from "../lib/bounded-writer-admission.ts";
 import { CHILD_METRICS_EVENT } from "../lib/runtime-metrics-children.ts";
+import { installPromotionCompletionCapture, PROMOTION_REPORT_MARKER, promotionStatusRegistry, verifierRunStart, verifierRunTaskId } from "../lib/promotion-report.ts";
+import { SUBAGENT_COMPLETED_EVENT } from "../lib/subagent-completion-event.ts";
 import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
 // The card style defaults to float; these assertions pin the outlined (neon)
 // panels unless a test switches the style itself.
@@ -4240,6 +4242,54 @@ test("an idle parent stores the structured completion and is woken through the n
 	assert.equal(sent.length, 1, "later boundaries never replay the completion");
 	assert.equal(userMessages.length, 1, "later boundaries never repeat the wake");
 	await fire("session_shutdown", ctx);
+});
+
+// pi 1.0.4 stores an idle parent's custom message (triggerTurn: false) via
+// _appendCustomMessage, which never reaches extension message_end handlers;
+// this fakePi mirrors that (sendMessage only records). The Promoción capture
+// must still see the verifier's background report, through the in-process
+// completion event published on pi.events.
+test("an idle parent's background verifier completion reaches the promotion capture without any message_end", async () => {
+	const { pi, tools, fire, sent, events } = fakePi();
+	const harness = deps();
+	const verifierDefinition = join(home, ".pi", "agent", "agents", "ddata-promotion-verifier.md");
+	writeFileSync(verifierDefinition, "---\ndescription: advisory promotion verifier\ntools: [read]\n---\nYou verify promotions.");
+	gentleAgents(pi, {}, harness.deps);
+	// The real capture subscriber, bound to the session like gentle-shell binds it.
+	let captures = 0;
+	const unsubscribe = installPromotionCompletionCapture(pi.events, () => "s1", () => { captures += 1; });
+	const { ctx } = fakeContext();
+	try {
+		await fire("session_start", ctx);
+		// What gentle-shell's tool_execution_start / tool_result handlers record.
+		const args = { agent: "ddata-promotion-verifier", task: "Evaluate the candidate", mode: "background" };
+		promotionStatusRegistry.beginEvaluation("s1", verifierRunStart({ toolName: "subagent_run", toolCallId: "c1", args })!.toolCallId);
+		const started = await tools.get("subagent_run")!.execute("c1", args, undefined, undefined, ctx);
+		const running = verifierRunTaskId({ toolName: "subagent_run", toolCallId: "c1", details: started.details });
+		assert.ok(running, "the background start reports the verifier task id");
+		promotionStatusRegistry.correlate("s1", running.toolCallId, running.taskId);
+		await tick();
+		const report = { candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "APTO" };
+		harness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: `checked\n${PROMOTION_REPORT_MARKER} ${JSON.stringify(report)}` }] }] });
+		harness.children[0].emit({ type: "agent_settled" });
+		await tick();
+		const results = sent.filter((entry) => entry.message.customType === "gentle-agents.result");
+		assert.equal(results.length, 1, "the result is stored once");
+		assert.deepEqual(results[0]!.options, { triggerTurn: false }, "the idle route is exercised");
+		assert.deepEqual(promotionStatusRegistry.get("s1"), report, "the panel's capture sees the report with no message_end");
+		assert.equal(captures, 1, "one capture requests one redraw");
+		const published = events.filter((event) => event.name === SUBAGENT_COMPLETED_EVENT);
+		assert.equal(published.length, 1, "exactly one completion event per finished task");
+		assert.equal((published[0]!.data as { taskId?: string }).taskId, running.taskId);
+		// Replaying the same completion (e.g. a later message_end or pull) never captures twice.
+		pi.events.emit(SUBAGENT_COMPLETED_EVENT, published[0]!.data);
+		assert.equal(captures, 1, "a replayed completion is idempotent");
+	} finally {
+		unsubscribe();
+		promotionStatusRegistry.clear("s1");
+		rmSync(verifierDefinition, { force: true });
+		await fire("session_shutdown", ctx);
+	}
 });
 
 test("idle deliveries before the woken run starts share one wake, and the next idle window wakes again", async () => {

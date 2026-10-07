@@ -1,0 +1,43 @@
+# Promotion panel review fixes
+
+## Objective
+Make the Matrix-Green "Promoción" status group reliably reflect `ddata-promotion-verifier` runs and say unambiguously what state it is in.
+
+## Problem
+A read-only review (2026-10-07) of commits f08c14d5b..d76cd1f9f found:
+1. High — a background verifier result delivered while the parent is idle never reaches the panel: `gentle-agents.ts` sends it with `triggerTurn: false`, pi 1.0.4 appends it via `_appendCustomMessage`, which emits `message_end` only to session subscribers (`agent-session.js:1817-1821`), so the extension handler at `gentle-shell.ts:2878` never fires. The test calls the handler directly and misses it.
+2. Medium — the "Fase" row inside Promoción is the ODD workflow phase, not the promotion step; it reads as "promotion waiting".
+3. Medium — "sin candidato" covers four states: never run, running, failed/aborted, unparseable last line (e.g. report wrapped in a code fence).
+4. Low — the captured report is lost on every `/reload`/resume although the result is still in session history.
+5. Low — step and verdict are not checked against each other (`APTO` + `bloqueado` is accepted).
+6. Low — a `subagent_run` reaching pi under an MCP-namespaced tool name is not tracked (ODD phase inference already handles it).
+
+## Scope
+Authorized: fix findings 1–6 in this package. Out of scope: the verifier agent definition in `ddata-topology-maps` (its output contract is the source of truth), user WIP in `lib/shell-usage.ts` and `tests/shell-usage.test.ts`.
+
+## Constraints
+- Live install: changes apply on pi restart/`/reload`. Branch `feat/matrix-promotion-panel-local`, no upstream; commit explicit paths only.
+- Theme roles only, no hex. Advisory-only wording stays ("asesor · no autoriza despliegue").
+- Fail closed: an invalid report never shows as a verdict.
+
+## Tasks
+- [x] T1 — Deliver verifier results through a path that does not depend on pi emitting extension `message_end` (finding 1). Test the idle-parent background path end to end, not by calling the handler directly. Route: delegated (2+ non-trivial files).
+- [ ] T2 — Explicit promotion state: label the ODD row unambiguously, add a promotion state row (sin candidato / evaluando / sin reporte válido / error), tolerate a fenced last line (findings 2, 3). Route: delegated.
+- [ ] T3 — Restore the latest valid report from session history on session start, reject inconsistent step/verdict pairs, track MCP-namespaced `subagent_run` (findings 4, 5, 6). Route: delegated.
+
+## Acceptance criteria
+- Idle-parent background verifier completion updates the panel (proved by a test exercising the real delivery path or the new channel).
+- Each of the four former "sin candidato" situations renders a distinct state.
+- After `/reload`, the last valid report in the session reappears.
+- Inconsistent step/verdict pairs render as "sin reporte válido".
+- Promotion, shell-bar, shell and chrome test suites pass.
+
+## Checks
+`node --experimental-strip-types --test tests/promotion-report.test.ts tests/shell-bar.test.ts tests/float-chrome-roles.test.ts tests/gentle-shell.test.ts tests/quiet-tool-rendering.test.ts tests/review-candidate-view.test.ts` plus any gentle-agents tests touched.
+
+## Progress
+- 2026-10-07: document created; guia preflight READY_EXISTING (HEAD d76cd1f9f).
+- T1 done (delegated writer): `gentle-agents` onFinish publishes `gentle-pi:subagent-completed/v1` on `pi.events` (lib/subagent-completion-event.ts); `installPromotionCompletionCapture` subscribes. RED/GREEN observed on an idle-parent test whose fake `sendMessage` never fires `message_end`. Checks: shell/promotion suites 557 pass/0 fail/7 skipped; gentle-agents 178 pass; agents/background/metrics 438 pass; typecheck no regressions vs baseline; parent spot check 193/193.
+
+## Next step
+T2.

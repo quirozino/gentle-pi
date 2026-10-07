@@ -45,6 +45,7 @@ import { openInExternalEditor } from "./gentle-shell.ts";
 import { resolveGentlePiAgentHome, gentlePiConfigHome } from "../lib/agent-home.ts";
 import { resolveProfilePin, resolveUnversionedProjectProfile } from "../lib/agent-profile-pin.ts";
 import { allowedEditSurfaces, isDevelopmentSurface, isGenericBoundedWriter, prepareBoundSessionRepository, rejectUnscopedBoundedWriterDispatch, safeBootstrapDirectory, sessionRepositoryAuthority } from "../lib/bounded-writer-admission.ts";
+import { SUBAGENT_COMPLETED_EVENT, subagentCompletedEvent } from "../lib/subagent-completion-event.ts";
 import { CHILD_METRICS_EVENT, CHILD_METRICS_REVOKED, childEvent, launchSelection, type LaunchSelection } from "../lib/runtime-metrics-children.ts";
 import { runtimeMetricsEnvAllows, type RuntimeMetricsPolicyDeps } from "../lib/runtime-metrics-policy.ts";
 
@@ -1012,6 +1013,11 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 					if (event && metrics.current()) pi.events.emit(CHILD_METRICS_EVENT, event);
 				}
 			} catch { /* Metrics must never interrupt task finalization. */ }
+			// Every finished task is announced in-process, independently of the
+			// conversation delivery route: an idle parent stores the result with
+			// triggerTurn: false, which pi never surfaces as an extension
+			// message_end, so consumers such as the Promoción capture listen here.
+			try { pi.events.emit(SUBAGENT_COMPLETED_EVENT, subagentCompletedEvent(task)); } catch { /* Observers must never interrupt task finalization. */ }
 			try {
 				ownedTaskIds.delete(task.id);
 				settleAwaitingReply(task.id);

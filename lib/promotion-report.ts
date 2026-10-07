@@ -7,6 +7,8 @@
 // evidence, never durable proof: nothing here writes, reaches the network, or
 // infers any authority (a deployed candidate, say) from an APTO verdict.
 
+import { SUBAGENT_COMPLETED_EVENT, readSubagentCompletedEvent } from "./subagent-completion-event.ts";
+
 export const PROMOTION_VERIFIER_AGENT = "ddata-promotion-verifier";
 export const PROMOTION_REPORT_MARKER = "DDATA_PROMOTION_REPORT_V1";
 
@@ -308,6 +310,39 @@ export class PromotionStatusRegistry {
 const PROMOTION_STATUS_REGISTRY = Symbol.for("gentle-pi.promotion-status-registry");
 const processState = globalThis as typeof globalThis & { [PROMOTION_STATUS_REGISTRY]?: PromotionStatusRegistry };
 export const promotionStatusRegistry = processState[PROMOTION_STATUS_REGISTRY] ??= new PromotionStatusRegistry();
+
+/** The slice of pi's extension event bus the completion capture needs. */
+export interface PromotionEventBus {
+	on(channel: string, handler: (data: unknown) => void): () => void;
+}
+
+/**
+ * Subscribes the promotion capture to gentle-agents' in-process subagent
+ * completion event. This is the delivery path that does not depend on pi
+ * emitting an extension `message_end` for the result message, which pi skips
+ * when an idle parent stores it with triggerTurn: false. The same fail-closed
+ * rules apply as on every other path: the event must name the active session,
+ * the completed ddata-promotion-verifier, and a task id correlated to that
+ * session's latest evaluation. Capture is keyed by task id, so the event, the
+ * result message and a later subagent_result pull never capture twice.
+ * `onCapture` runs only when a report was actually stored (to redraw).
+ * Returns the unsubscribe function.
+ */
+export function installPromotionCompletionCapture(
+	events: PromotionEventBus,
+	activeSessionId: () => string | undefined,
+	onCapture: () => void,
+	registry: PromotionStatusRegistry = promotionStatusRegistry,
+): () => void {
+	return events.on(SUBAGENT_COMPLETED_EVENT, (data) => {
+		const event = readSubagentCompletedEvent(data);
+		if (!event || event.agent !== PROMOTION_VERIFIER_AGENT || event.status !== "completed") return;
+		const sessionId = activeSessionId();
+		if (!sessionId || sessionId !== event.parentSessionId) return;
+		const report = parsePromotionReport(event.result);
+		if (report && registry.capture(sessionId, { taskId: event.taskId }, report)) onCapture();
+	});
+}
 
 export interface PromotionSidebarRows {
 	/** Label/value rows rendered in the group's pair layout. */

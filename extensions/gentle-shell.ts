@@ -31,7 +31,7 @@ import { GentleAiDevBinaryOverrideError, resolveGentleAiDevBinaryOverride } from
 import { DOUBLE_ESC_CANCEL_HINT, floatPromptRow, framePromptLines, resolvePromptLayout, IDLE_ESC_CLEAR_HINT, PROMPT_HINT, PROMPT_STATE, SHELL_PULSE_MS, withPromptHint, type PromptState } from "../lib/shell-prompt.ts";
 import { SHELL_GLYPHS } from "../lib/shell-glyphs.ts";
 import { oddPhaseRegistry } from "../lib/odd-phase.ts";
-import { completedVerifierMessage, completedVerifierResult, parsePromotionReport, promotionStatusRegistry, verifierRunStart, verifierRunTaskId } from "../lib/promotion-report.ts";
+import { completedVerifierMessage, completedVerifierResult, installPromotionCompletionCapture, parsePromotionReport, promotionStatusRegistry, verifierRunStart, verifierRunTaskId } from "../lib/promotion-report.ts";
 import { inferOddPhase } from "../lib/odd-phase-inference.ts";
 import { isInteractiveMode } from "../lib/rpc-host.ts";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
@@ -2108,6 +2108,16 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		review = { state: event.snapshot.state, scope: event.snapshot.scope };
 		redrawReview();
 	});
+	// Background subagent completions reach the Promoción capture through
+	// gentle-agents' in-process event: pi stores an idle parent's result
+	// message without an extension message_end, so that hook alone would miss
+	// it. Capture keys by task id, so the message_end/tool_result paths below
+	// replaying the same task are ignored.
+	const unsubscribePromotion = installPromotionCompletionCapture(
+		pi.events,
+		() => currentContext?.hasUI && isInteractiveMode(currentContext.mode) ? currentContext.sessionManager.getSessionId() : undefined,
+		redrawReview,
+	);
 	pi.on("session_tree", () => {
 		review = undefined;
 		redrawReview();
@@ -2370,6 +2380,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		// Pi rebuilds the extension runtime after every shutdown (reload, replacement,
 		// fork, quit), so the factory-level subscription never needs to be restored.
 		unsubscribeReview();
+		unsubscribePromotion();
 		stopProfilePoll();
 		oddPhaseRegistry.clear(ctx.sessionManager.getSessionId());
 		oddPhaseRegistry.clearRenderRequest(ctx.sessionManager.getSessionId());
@@ -2881,9 +2892,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		// the source guard is exact (custom type + details.gentleAgents) and the
 		// capture is still gated on correlation: only a taskId tracked for this
 		// session's LATEST verifier evaluation can display, so an uncorrelated,
-		// replayed or foreign-session message fails closed. If the platform
-		// never delivers this message, the panel keeps the neutral evaluating
-		// state until an explicit subagent_result pull.
+		// replayed or foreign-session message fails closed. pi does not emit
+		// this hook for an idle parent's stored result; that route is covered
+		// by installPromotionCompletionCapture above, and whichever path runs
+		// first captures the task once.
 		if (!ctx.hasUI || !isInteractiveMode(ctx.mode)) return;
 		const message = (event as { message?: unknown }).message;
 		if (typeof message !== "object" || message === null) return;
