@@ -305,6 +305,8 @@ export interface SettledVerifierResult {
 	toolCallId: string | undefined;
 	taskId: string | undefined;
 	failed: boolean;
+	/** The launch never created a task (unknown agent, refused, thrown first): no verifier ran. */
+	refused?: true;
 	text: string;
 }
 
@@ -321,7 +323,9 @@ function textParts(content: unknown): string {
  * Recognizes the pi tool_result events that settle a verifier evaluation:
  * a completed ddata-promotion-verifier result (subagent_run or
  * subagent_result) with its text, a failed/cancelled/timed-out one, or a
- * subagent_run that errored (aborted, thrown) or produced no task at all. A
+ * subagent_run that errored after creating its task. A subagent_run that
+ * never created a task (unknown agent, validation refusal, thrown before
+ * launch) is reported as refused: no verifier ran, so it is not a failure. A
  * failed subagent_result pull is not the verifier failing and is ignored, as
  * are other tools, other agents and unsettled statuses. Correlation to the
  * session's latest evaluation is the registry's job.
@@ -336,8 +340,10 @@ export function settledVerifierResult(event: { toolName?: unknown; toolCallId?: 
 	if (gentle && gentle.agent !== PROMOTION_VERIFIER_AGENT) return undefined;
 	const taskId = typeof gentle?.taskId === "string" && gentle.taskId.length > 0 ? gentle.taskId : undefined;
 	const isRun = toolName === "subagent_run";
-	// A run that threw, or returned without ever creating a task, failed.
-	if (event.isError || !gentle) return isRun ? { toolCallId, taskId, failed: true, text: "" } : undefined;
+	// No task was ever created: the verifier never ran, so the launch is refused, not failed.
+	if (!gentle) return isRun ? { toolCallId, taskId: undefined, failed: false, refused: true, text: "" } : undefined;
+	// A run that threw or was aborted after its task existed failed.
+	if (event.isError) return isRun ? { toolCallId, taskId, failed: true, text: "" } : undefined;
 	if (gentle.status === "completed") return { toolCallId, taskId, failed: false, text: textParts(event.content) };
 	if (typeof gentle.status === "string" && FAILED_STATUSES.has(gentle.status)) return { toolCallId, taskId, failed: true, text: "" };
 	return undefined;
@@ -467,6 +473,8 @@ interface Evaluation {
 	toolCallId: string;
 	taskId?: string;
 	outcome?: PromotionOutcome["kind"];
+	/** What the session showed before this evaluation began, restored if its launch is refused. */
+	previous: PromotionState;
 }
 
 interface SessionCapture {
@@ -510,7 +518,7 @@ export class PromotionStatusRegistry {
 		const session = this.session(sessionId);
 		// A repeated start of the same call is the same evaluation.
 		if (session.evaluations.at(-1)?.toolCallId === toolCallId) return;
-		session.evaluations.push({ toolCallId });
+		session.evaluations.push({ toolCallId, previous: session.state });
 		while (session.evaluations.length > MAX_TRACKED_EVALUATIONS) session.evaluations.shift();
 		// Buffered outcomes belonged to the superseded evaluation.
 		session.pending = [];
@@ -548,6 +556,24 @@ export class PromotionStatusRegistry {
 	 * applied by correlate(). Returns true only when the displayed state
 	 * changed (the caller redraws).
 	 */
+	/**
+	 * Withdraws the latest evaluation when its launch never created a task (a
+	 * refused launch is not a verifier run) and restores what the session
+	 * showed before it began. Settled, correlated or stale evaluations stay.
+	 * Returns true only when the evaluation was withdrawn.
+	 */
+	withdraw(sessionId: string | undefined, toolCallId: string | undefined): boolean {
+		if (!sessionId || !toolCallId) return false;
+		const session = this.sessions.get(sessionId);
+		const latest = session?.evaluations.at(-1);
+		if (!session || !latest || latest.toolCallId !== toolCallId) return false;
+		if (latest.taskId !== undefined || latest.outcome !== undefined) return false;
+		session.evaluations.pop();
+		session.pending = [];
+		session.state = latest.previous;
+		return true;
+	}
+
 	settle(sessionId: string | undefined, ref: PromotionCaptureRef, outcome: PromotionOutcome): boolean {
 		if (!sessionId) return false;
 		const session = this.sessions.get(sessionId);
@@ -658,7 +684,8 @@ export function restorePromotionState(registry: PromotionStatusRegistry, session
 			const running = verifierRunTaskId(message);
 			if (running) registry.correlate(sessionId, running.toolCallId, running.taskId);
 			const settled = settledVerifierResult(message);
-			if (settled) registry.settle(sessionId, { toolCallId: settled.toolCallId, taskId: settled.taskId }, settledOutcome(settled));
+			if (settled?.refused) registry.withdraw(sessionId, settled.toolCallId);
+			else if (settled) registry.settle(sessionId, { toolCallId: settled.toolCallId, taskId: settled.taskId }, settledOutcome(settled));
 		} else if (message.role === "custom") {
 			settleMessage(registry, sessionId, message);
 		}

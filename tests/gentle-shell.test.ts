@@ -1180,10 +1180,15 @@ test("every delivery path drives the explicit promotion state for the latest eva
 		assert.deepEqual(state(), { kind: "invalid" }, "a completed result without a valid last line");
 		await fireToolResult(handlers, promotionEvent({ toolName: "subagent_result", toolCallId: "pull-2", details: { gentleAgents: { taskId: "task-1", agent: "ddata-promotion-verifier", status: "failed" } } }), ctx);
 		assert.deepEqual(state(), { kind: "invalid" }, "the task's first non-captured outcome is final: a failure replay does not flip it");
-		// A newer evaluation supersedes; an aborted foreground run is a failure.
+		// A refused launch (no task) is no run: the panel returns to what it showed.
+		await fireExecutionStart(handlers, verifierStart("call-r"), ctx);
+		assert.deepEqual(state(), { kind: "evaluating" });
+		await fireToolResult(handlers, promotionEvent({ toolCallId: "call-r", isError: false, details: { error: "unknown agent" } }), ctx);
+		assert.deepEqual(state(), { kind: "invalid" }, "a refused launch restores the prior state");
+		// A newer evaluation supersedes; a foreground run aborted after launch is a failure.
 		await fireExecutionStart(handlers, verifierStart("call-2"), ctx);
 		assert.deepEqual(state(), { kind: "evaluating" });
-		await fireToolResult(handlers, promotionEvent({ toolCallId: "call-2", isError: true, details: undefined }), ctx);
+		await fireToolResult(handlers, promotionEvent({ toolCallId: "call-2", isError: true, details: { gentleAgents: { taskId: "task-2", agent: "ddata-promotion-verifier", status: "running" } } }), ctx);
 		assert.deepEqual(state(), { kind: "failed" }, "an aborted run");
 		// message_end path for a background evaluation.
 		await fireExecutionStart(handlers, verifierStart("call-3"), ctx);

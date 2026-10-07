@@ -2903,8 +2903,12 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		// failed, cancelled or aborted — sets the panel's state. The registry
 		// correlates it (run call id, else task id) and fails closed when it
 		// cannot, so stale or uncorrelated outcomes never win.
+		// A refused launch (no task ever created) is no verifier run: it withdraws
+		// its evaluation and the panel returns to what it showed before.
 		const settled = settledVerifierResult(event);
-		if (settled) promotionStatusRegistry.settle(ctx.sessionManager.getSessionId(), { toolCallId: settled.toolCallId, taskId: settled.taskId }, settledOutcome(settled));
+		if (settled?.refused) {
+			if (promotionStatusRegistry.withdraw(ctx.sessionManager.getSessionId(), settled.toolCallId)) redrawReview();
+		} else if (settled) promotionStatusRegistry.settle(ctx.sessionManager.getSessionId(), { toolCallId: settled.toolCallId, taskId: settled.taskId }, settledOutcome(settled));
 	});
 	pi.on("message_end", (event, ctx) => {
 		// A background verifier's completion arrives as a gentle-agents result

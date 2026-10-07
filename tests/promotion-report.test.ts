@@ -257,9 +257,12 @@ test("settledVerifierResult reports completed text and terminal failures of veri
 	for (const status of ["queued", "running", "waiting", "weird"]) {
 		assert.equal(settledVerifierResult({ toolName: "subagent_run", toolCallId: "call-1", isError: false, content, details: gentle(status) }), undefined, `${status} is not settled`);
 	}
-	// An aborted or thrown run is a failure of the run behind that call.
-	assert.deepEqual(settledVerifierResult({ toolName: "subagent_run", toolCallId: "call-1", isError: true, content }), { toolCallId: "call-1", taskId: undefined, failed: true, text: "" });
-	assert.deepEqual(settledVerifierResult({ toolName: "subagent_run", toolCallId: "call-1", isError: false, content, details: { error: "refused" } }), { toolCallId: "call-1", taskId: undefined, failed: true, text: "" }, "a run that produced no task failed");
+	// An errored run that did create a task is a failure of that run.
+	assert.deepEqual(settledVerifierResult({ toolName: "subagent_run", toolCallId: "call-1", isError: true, content, details: gentle("running") }), { toolCallId: "call-1", taskId: "task-1", failed: true, text: "" });
+	// A launch that never created a task (unknown agent, validation refusal,
+	// thrown before launch) is not a verifier run: it is refused, not failed.
+	assert.deepEqual(settledVerifierResult({ toolName: "subagent_run", toolCallId: "call-1", isError: true, content }), { toolCallId: "call-1", taskId: undefined, failed: false, refused: true, text: "" });
+	assert.deepEqual(settledVerifierResult({ toolName: "subagent_run", toolCallId: "call-1", isError: false, content, details: { error: "unknown agent" } }), { toolCallId: "call-1", taskId: undefined, failed: false, refused: true, text: "" }, "a run that produced no task was refused");
 	// A failed result pull is not the verifier failing.
 	assert.equal(settledVerifierResult({ toolName: "subagent_result", toolCallId: "pull-1", isError: true, content, details: gentle("completed") }), undefined);
 	assert.equal(settledVerifierResult({ toolName: "subagent_result", toolCallId: "pull-1", isError: false, content, details: {} }), undefined);
@@ -389,7 +392,8 @@ test("verifier tracking accepts MCP-namespaced subagent tool names like ODD phas
 	assert.deepEqual(verifierRunStart({ toolName: "mcp__gentle__subagent_run", toolCallId: "call-1", args: { agent: PROMOTION_VERIFIER_AGENT } }), { toolCallId: "call-1" });
 	assert.deepEqual(verifierRunTaskId({ toolName: "mcp__gentle__subagent_run", toolCallId: "call-1", details: gentle("queued") }), { toolCallId: "call-1", taskId: "task-1" });
 	assert.deepEqual(settledVerifierResult({ toolName: "mcp__gentle__subagent_result", toolCallId: "pull-1", isError: false, content: "x", details: gentle("completed") }), { toolCallId: "pull-1", taskId: "task-1", failed: false, text: "x" });
-	assert.deepEqual(settledVerifierResult({ toolName: "mcp__gentle__subagent_run", toolCallId: "call-1", isError: true }), { toolCallId: "call-1", taskId: undefined, failed: true, text: "" }, "a namespaced run that threw failed");
+	assert.deepEqual(settledVerifierResult({ toolName: "mcp__gentle__subagent_run", toolCallId: "call-1", isError: true, details: gentle("running") }), { toolCallId: "call-1", taskId: "task-1", failed: true, text: "" }, "a namespaced run that threw after launch failed");
+	assert.deepEqual(settledVerifierResult({ toolName: "mcp__gentle__subagent_run", toolCallId: "call-1", isError: true }), { toolCallId: "call-1", taskId: undefined, failed: false, refused: true, text: "" }, "a namespaced launch that never created a task was refused");
 	assert.equal(verifierRunTaskId({ toolName: "mcp__gentle__subagent_result", toolCallId: "pull-1", details: gentle("completed") }), undefined, "a namespaced pull is still not the run");
 	assert.equal(verifierRunStart({ toolName: "mcp_subagent_run", toolCallId: "call-1", args: { agent: PROMOTION_VERIFIER_AGENT } }), undefined, "not the MCP proxy shape");
 });
@@ -436,6 +440,38 @@ test("a task's first non-captured outcome is final across replays, but a valid c
 	assert.deepEqual(registry.state("s"), { kind: "failed" });
 	assert.equal(registry.settle("s", { taskId: "task-2" }, { kind: "captured", report: a }), true, "a valid capture still wins");
 	assert.deepEqual(registry.state("s"), { kind: "captured", report: a });
+});
+
+test("a refused verifier launch withdraws its evaluation and restores the prior state", () => {
+	const registry = new PromotionStatusRegistry();
+	const a: PromotionReport = { candidateId: "a", step: "listo-para-decision", verdict: "APTO" };
+	// Nothing before: a refused launch leaves the panel idle ("sin candidato"), not failed.
+	registry.beginEvaluation("s", "call-1");
+	assert.equal(registry.withdraw("s", "call-1"), true);
+	assert.deepEqual(registry.state("s"), { kind: "idle" });
+	assert.equal(registry.latestVerdict("s"), undefined);
+	// A captured report survives a later refused launch.
+	registry.beginEvaluation("s", "call-2");
+	registry.settle("s", { toolCallId: "call-2", taskId: "task-2" }, { kind: "captured", report: a });
+	registry.beginEvaluation("s", "call-3");
+	assert.deepEqual(registry.state("s"), { kind: "evaluating" });
+	assert.equal(registry.withdraw("s", "call-3"), true);
+	assert.deepEqual(registry.state("s"), { kind: "captured", report: a });
+	// Only the latest, still task-less evaluation can be withdrawn.
+	assert.equal(registry.withdraw("s", "call-2"), false, "a settled or stale evaluation is never withdrawn");
+	assert.equal(registry.withdraw("s", "missing"), false);
+	registry.beginEvaluation("s", "call-4");
+	registry.correlate("s", "call-4", "task-4");
+	assert.equal(registry.withdraw("s", "call-4"), false, "a launch that created a task really ran");
+});
+
+test("restorePromotionState treats a refused launch in history as no run", () => {
+	const registry = new PromotionStatusRegistry();
+	restorePromotionState(registry, "s", [
+		{ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "subagent_run", arguments: { agent: PROMOTION_VERIFIER_AGENT, task: "C5" } }] } },
+		{ type: "message", message: { role: "toolResult", toolCallId: "call-1", toolName: "subagent_run", isError: false, content: [{ type: "text", text: "Error: no subagent named \"ddata-promotion-verifier\"." }], details: { error: "unknown agent" } } },
+	]);
+	assert.deepEqual(registry.state("s"), { kind: "idle" });
 });
 
 test("restorePromotionState rebuilds the latest evaluation's outcome from session history", () => {
