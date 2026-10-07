@@ -116,6 +116,8 @@ export interface ShellBarTheme {
 	readonly name?: string;
 	fg(color: string, text: string): string;
 	bold(text: string): string;
+	/** Inverse video (pi Theme.inverse). Optional: a theme without it draws no badges, only plain values. */
+	inverse?(text: string): string;
 }
 
 // Theme roles the bar paints with. Keys are pi theme colors; the Gentle themes
@@ -139,6 +141,26 @@ const ROLE = {
 } as const;
 
 const PROMOTION_TONE_ROLE: Record<PromotionRowTone, string> = { warning: ROLE.WARNING, failure: ROLE.FAILURE };
+
+// Map phase tones (from the map repo's phase-tones file, via the verifier
+// report) to the theme role their Fase badge is drawn in. Presentation only,
+// and never a state role (warning/error/success): a phase is not a verdict.
+// A Map, so a tone such as "constructor" never resolves through a prototype.
+const PHASE_TONE_ROLE: ReadonlyMap<string, string> = new Map([
+	["info", "syntaxType"],
+	["accent", "accent"],
+	["highlight", "syntaxString"],
+]);
+
+/** The value's badge text: one space of padding each side. */
+const badgeText = (text: string) => ` ${text} `;
+
+// A neon badge: inverse video of the role's foreground, so the role colour
+// becomes the background and the terminal background the text. Callers only
+// pass a badge role when the theme has inverse video.
+function paintBadge(theme: ShellBarTheme, role: string, text: string): string {
+	return theme.inverse!(theme.fg(role, theme.bold(badgeText(text))));
+}
 
 export const SHELL_BAR_BRAND = "✿ gentle shell";
 export const SHELL_BAR_SEPARATOR = "⟡";
@@ -447,7 +469,11 @@ export function renderShellSidebarCard(model: ShellBarModel, theme: ShellBarThem
 					title: "Promoción",
 					pairs: [
 						["Fase ODD", model.oddPhase ? oddPhaseLabel(model.oddPhase) : "En espera"] as const,
-						...promotion.pairs.map(([key, text, tone]) => (tone ? [key, text, PROMOTION_TONE_ROLE[tone]] as const : [key, text] as const)),
+						...promotion.pairs.map(([key, text, tone, phaseTone]): StatusPair => {
+							const badgeRole = phaseTone && theme.inverse ? PHASE_TONE_ROLE.get(phaseTone) : undefined;
+							if (badgeRole) return [key, text, badgeRole, true];
+							return tone ? [key, text, PROMOTION_TONE_ROLE[tone]] : [key, text];
+						}),
 					],
 					lines: [],
 				}]
@@ -463,7 +489,12 @@ export function renderShellSidebarCard(model: ShellBarModel, theme: ShellBarThem
 		const body = groups.flatMap((group, index) => [
 			...(index && (!presentation || presentation.density === "comfortable") ? [""] : []),
 			...(presentation?.density === "minimal" ? [] : [label(group.title)]),
-			...[...(group.value ? [value(group.value)] : []), ...(group.pairs ?? []).map(([key, text, role]) => `${label(key)} ${role ? theme.fg(role, theme.bold(text)) : value(text)}`), ...group.lines]
+			...[...(group.value ? [value(group.value)] : []), ...(group.pairs ?? []).map(([key, text, role, badge]) => {
+				// A badge is drawn whole on the key's line or not at all: wrapping
+				// would split it, so a value too wide for one line stays plain.
+				if (badge && role && visibleWidth(key) + 1 + visibleWidth(badgeText(text)) <= innerWidth - inset) return `${label(key)} ${paintBadge(theme, role, text)}`;
+				return `${label(key)} ${role && !badge ? theme.fg(role, theme.bold(text)) : value(text)}`;
+			}), ...group.lines]
 				.flatMap((line) => wrapTextWithAnsi(line, innerWidth - inset).map((part) => " ".repeat(inset) + part)),
 			...(group.fitted?.(innerWidth - inset) ?? []).map((line) => " ".repeat(inset) + line),
 		]);
@@ -503,12 +534,15 @@ function embedRows(embed: SidebarBarOptions["embed"], boxWidth: number): string[
 	});
 }
 
+/** key, value, optional value role, and whether that role is drawn as an inverse badge. */
+type StatusPair = readonly [key: string, text: string, role?: string, badge?: boolean];
+
 interface StatusGroup {
 	title: string;
 	/** Shown flush right on the heading row, e.g. the project path. */
 	value?: string;
 	/** Label/value rows: the value sits flush right when both fit on one row; an optional third entry is the value's theme role. */
-	pairs?: ReadonlyArray<readonly [string, string, string?]>;
+	pairs?: ReadonlyArray<StatusPair>;
 	lines: string[];
 	/** Rows drawn for an exact line width instead of wrapped, e.g. the cwd tree. */
 	fitted?: (width: number) => string[];
@@ -554,8 +588,17 @@ function statusBoxRows(groups: StatusGroup[], theme: ShellBarTheme, boxWidth: nu
 	};
 	const rule = (left: string, right: string, line: string = PANEL.horizontal) => frame(left + line.repeat(boxWidth - 2) + right);
 	const row = (text: string) => `${frame(PANEL.vertical)} ${fit(text, content)} ${frame(PANEL.vertical)}`;
-	const pair = (key: string, text: string, keyRole: string = ROLE.LABEL, valueRole: string = ROLE.VALUE): string[] => {
+	const pair = (key: string, text: string, keyRole: string = ROLE.LABEL, valueRole: string = ROLE.VALUE, badge = false): string[] => {
 		const keyText = theme.fg(keyRole, theme.bold(key));
+		if (badge) {
+			// Whole badge flush right, or whole on its own row under the key;
+			// too narrow for either and the value falls back to plain text.
+			const badgeWidth = visibleWidth(badgeText(text));
+			const badgeGap = content - visibleWidth(key) - badgeWidth;
+			if (badgeGap >= 1) return [`${keyText}${" ".repeat(badgeGap)}${paintBadge(theme, valueRole, text)}`];
+			if (badgeWidth <= content - 1) return [keyText, ` ${paintBadge(theme, valueRole, text)}`];
+			valueRole = ROLE.VALUE;
+		}
 		const valueText = theme.fg(valueRole, theme.bold(text));
 		const gap = content - visibleWidth(key) - visibleWidth(text);
 		if (gap >= 1) return [`${keyText}${" ".repeat(gap)}${valueText}`];
@@ -573,7 +616,7 @@ function statusBoxRows(groups: StatusGroup[], theme: ShellBarTheme, boxWidth: nu
 		...(presentation?.density === "minimal"
 			? group.value ? pair("", group.value) : []
 			: group.value ? pair(group.title, group.value, STATUS_PANEL_ROLE.HEADING) : [theme.fg(STATUS_PANEL_ROLE.HEADING, theme.bold(group.title))]),
-		...(group.pairs ?? []).flatMap(([key, text, role]) => pair(key, text, ROLE.LABEL, role)),
+		...(group.pairs ?? []).flatMap(([key, text, role, badge]) => pair(key, text, ROLE.LABEL, role, badge)),
 		...group.lines.flatMap((line) => wrapTextWithAnsi(line, content - 1).map((part) => ` ${part}`)),
 		...(group.fitted?.(content - 1) ?? []).map((line) => ` ${line}`),
 	]).filter((section) => section.length > 0);

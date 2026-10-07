@@ -52,6 +52,12 @@ export const PROMOTION_CANDIDATE_PATTERN = /^[A-Za-z0-9._/-]{1,80}$/;
  * adds or renames a phase needs no change here.
  */
 export const PROMOTION_PHASE_ID_PATTERN = /^[a-z0-9_-]{1,32}$/;
+/**
+ * Shape of an optional V2 phase tone, copied by the verifier from the map
+ * repo's `ddata-promotion.phase-tones.json`. Presentation only: the shell maps
+ * known tones to theme roles and shows anything else plainly.
+ */
+export const PROMOTION_PHASE_TONE_PATTERN = /^[a-z0-9_-]{1,24}$/;
 /** Longest V2 phase label, in code points. */
 export const PROMOTION_PHASE_LABEL_MAX = 48;
 // Control (Cc: C0, DEL, C1) and format (Cf: bidi overrides, zero-width)
@@ -69,6 +75,8 @@ export const AGENTS_RESULT_CUSTOM_TYPE = "gentle-agents.result";
 export interface PromotionPhase {
 	id: string;
 	label: string;
+	/** Presentation tone for the phase; present only when the report carried a non-null one. */
+	tone?: string;
 }
 
 export interface PromotionReport {
@@ -87,9 +95,11 @@ const MAX_REPORT_LINE = 1024;
 // terminal text, so an escape sequence or stray control byte is hostile.
 const CONTROL = /[\u{0000}-\u{001F}\u{007F}]/u;
 const REPORT_LINE = /^DDATA_PROMOTION_REPORT_V([12]) (\{.*\})$/;
-// Exact field sets: V1 has no phase fields, V2 always has both.
+// Exact field sets: V1 has no phase fields, V2 always has both and may add the
+// phase tone as its only sixth field.
 const V1_FIELDS = ["candidateId", "step", "verdict"] as const;
 const V2_FIELDS = [...V1_FIELDS, "phaseId", "phaseLabel"] as const;
+const V2_TONED_FIELDS = [...V2_FIELDS, "phaseTone"] as const;
 // Last-line extraction touches at most this tail of the output: a legal report
 // line (≤ MAX_REPORT_LINE) plus trailing whitespace up to the same bound is
 // always inside; a report hidden beyond it fails closed instead of paying an
@@ -144,7 +154,9 @@ function parsePhase(phaseId: unknown, phaseLabel: unknown): PromotionPhase | nul
  * the sin-candidato step (and a candidate with any other step), or the report
  * is rejected as inconsistent. V1 has exactly three fields; V2 exactly five,
  * whose phase pair is both null (undetermined, and always with sin-candidato)
- * or a valid id and label; a determined phase is returned as `phase`.
+ * or a valid id and label; a determined phase is returned as `phase`. V2 may
+ * add `phaseTone` as a sixth field: null, or a slug that requires a determined
+ * phase and is returned as `phase.tone`.
  */
 export function parsePromotionReport(output: string | undefined): PromotionReport | undefined {
 	if (typeof output !== "string") return undefined;
@@ -161,7 +173,8 @@ export function parsePromotionReport(output: string | undefined): PromotionRepor
 	}
 	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
 	const fields = parsed as Record<string, unknown>;
-	if (!hasExactFields(fields, isV2 ? V2_FIELDS : V1_FIELDS)) return undefined;
+	const fieldSets = isV2 ? [V2_FIELDS, V2_TONED_FIELDS] : [V1_FIELDS];
+	if (!fieldSets.some((expected) => hasExactFields(fields, expected))) return undefined;
 	if (!isPromotionStep(fields.step) || !isPromotionVerdict(fields.verdict)) return undefined;
 	// A non-null candidate must be a plain path-ish id; the explicit typed
 	// variable keeps the narrowing for the consistency check and the return.
@@ -180,6 +193,12 @@ export function parsePromotionReport(output: string | undefined): PromotionRepor
 	if (phase === undefined) return undefined;
 	// No candidate has no place on the map.
 	if (phase !== null && step === "sin-candidato") return undefined;
+	// The tone is absent (five fields) or null, or a slug for a determined phase.
+	const tone = fields.phaseTone;
+	if (tone !== undefined && tone !== null) {
+		if (phase === null || typeof tone !== "string" || !PROMOTION_PHASE_TONE_PATTERN.test(tone)) return undefined;
+		return { candidateId, step, verdict, phase: { ...phase, tone } };
+	}
 	return phase === null ? { candidateId, step, verdict } : { candidateId, step, verdict, phase };
 }
 
@@ -617,8 +636,11 @@ export function installPromotionCompletionCapture(
 /** Semantic tone of a row value; the shell maps it to a theme role. */
 export type PromotionRowTone = "warning" | "failure";
 
-/** One label/value row, with an optional tone for its value. */
-export type PromotionRow = readonly [label: string, value: string, tone?: PromotionRowTone];
+/**
+ * One label/value row, with an optional tone for its value. The Fase row may
+ * add the report's raw phase tone, which the shell presents as a badge.
+ */
+export type PromotionRow = readonly [label: string, value: string, tone?: PromotionRowTone, phaseTone?: string];
 
 export interface PromotionSidebarRows {
 	/** Label/value rows rendered in the group's pair layout. */
@@ -645,7 +667,7 @@ export function promotionSidebarRows(state: PromotionState | undefined): Promoti
 	return {
 		pairs: [
 			["Candidato", report.candidateId],
-			...(report.phase ? [["Fase", report.phase.label] as const] : []),
+			...(report.phase ? [report.phase.tone ? (["Fase", report.phase.label, undefined, report.phase.tone] as const) : (["Fase", report.phase.label] as const)] : []),
 			["Paso", report.step],
 			["Veredicto", verdict],
 		],

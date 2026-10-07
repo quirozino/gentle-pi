@@ -19,7 +19,7 @@ Authorized repos: `/srv/workspaces/ddata-topology-maps` (branch `docs/ddata-topo
 - [x] P1 — Verifier contract emits V2 with map phase (ddata-topology-maps). Route: delegated (with P2, one writer, contract coherence).
 - [x] P2 — Parser V1+V2, "Fase" row from report, restore/history and all capture paths carry it (gentle-pi). Route: delegated.
 
-- [ ] P3 — Phase badge: map `phases[].tone` (user decision 2026-10-07: the map defines the tone), verifier copies it as `phaseTone`, panel renders the Fase value as a neon badge (inverse video in the tone's Matrix-Green role). Route: delegated.
+- [x] P3 — Phase badge: tones in `ddata-topology-maps/docs/maps/ddata-promotion.phase-tones.json` keyed by phase id (user decisions 2026-10-07: the map repo defines the tone; a separate file because archify 2.16.0's closed schema rejects `phases[].tone` and the workflow JSON sha256 e6247e8d… is a recorded, published delivery receipt), verifier copies it as `phaseTone`, panel renders the Fase value as a neon badge (inverse video in the tone's Matrix-Green role). Route: delegated.
 
 ## Acceptance criteria
 - A V2 report with a map phase renders `Fase <label>` in the panel; V1 reports still render without it.
@@ -31,7 +31,8 @@ gentle-pi: `node --experimental-strip-types --test tests/promotion-report.test.t
 
 ## Progress
 - 2026-10-07: created; guia preflight READY_EXISTING for both repos (topology HEAD 2eda6b77, gentle-pi HEAD 5e04438bb).
-- P1+P2 done (one delegated writer): verifier V2 report with phaseId/phaseLabel copied from `phases[]` via node col in fromCol..toCol; parser V1+V2 with shape-only phase validation; `Fase` row after Candidato. RED/GREEN observed (parser 5 RED → 31/31; panel 2 RED → 76/76). Checks: gentle-pi 550 pass/0 fail, typecheck no regressions; topology tests 23 pass/1 pre-existing fail (Spanish git locale in git-safe-start test).
+- P1+P2 done (one delegated writer): verifier V2 report with phaseId/phaseLabel copied from `phases[]` via node col in fromCol..toCol; parser V1+V2 with shape-only phase validation; `Fase` row after Candidato. RED/GREEN observed (parser 5 RED → 31/31; panel 2 RED → 76/76). Checks: gentle-pi 550 pass/0 fail, typecheck no regressions; topology tests 23 pass/1 pre-existing fail (Spanish git locale in git-safe-start test). Commits 3b93e8e5a (topology) and 0668c1082 (gentle-pi).
+- P3 done: first writer blocked (archify closed schema + recorded map hash) → user chose a separate tones file. `docs/maps/ddata-promotion.phase-tones.json` + its test; verifier V2 optional `phaseTone`; parser 5|6 fields; badge = `theme.inverse(theme.fg(role, bold(" label ")))`, info→syntaxType, accent→accent, highlight→syntaxString, unknown→plain. RED/GREEN per area. Checks: gentle-pi 558 pass/0 fail, typecheck no regressions; topology 26 pass/1 pre-existing fail; archify validate ok; workflow JSON sha256 unchanged (e6247e8d…).
 
 ## Next step
-P3 writer.
+Live check after `/reload`: run the verifier with an explicit candidate and confirm the Fase badge colour. Follow-up feature: `odd/tasks/promotion-gate-guard.md`.

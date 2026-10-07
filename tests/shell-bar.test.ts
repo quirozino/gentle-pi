@@ -1063,6 +1063,72 @@ test("a captured V2 report's map phase renders as a Fase row between Candidato a
 	}
 });
 
+// The Fase value is a neon badge when the report carries a known phase tone:
+// inverse video of the tone's theme role, padded one space each side. The
+// recording theme emits zero-width markers so layout math stays real.
+const BADGE_ROLE_CODES = new Map<string, number>();
+const badgeRoleCode = (role: string) => {
+	if (!BADGE_ROLE_CODES.has(role)) BADGE_ROLE_CODES.set(role, 16 + BADGE_ROLE_CODES.size);
+	return BADGE_ROLE_CODES.get(role)!;
+};
+const recordingMatrixTheme: ShellBarTheme = {
+	name: "Matrix-Green",
+	fg: (role: string, text: string) => `\x1b[38;5;${badgeRoleCode(role)}m${text}\x1b[39m`,
+	bold: (text: string) => text,
+	inverse: (text: string) => `\x1b[7m${text}\x1b[27m`,
+};
+const INVERSE_SEGMENT = /\x1b\[7m\x1b\[38;5;(\d+)m([^\x1b]*)\x1b\[39m\x1b\[27m/g;
+/** Every inverse segment in the rows, as the role it paints and its text. */
+function badges(rows: readonly string[]): Array<{ role: string; text: string }> {
+	const roleOf = (code: number) => [...BADGE_ROLE_CODES].find(([, value]) => value === code)?.[0] ?? `?${code}`;
+	return rows.flatMap((row) => [...row.matchAll(INVERSE_SEGMENT)].map((match) => ({ role: roleOf(Number(match[1])), text: match[2]! })));
+}
+const tonedModel = (tone: string | undefined, label = "Validar en Stage") => model({
+	oddPhase: "checking",
+	promotion: { kind: "captured", report: { candidateId: "lib/x.ts", step: "validacion-stage", verdict: "EVIDENCIA INSUFICIENTE", phase: { id: "validar", label, ...(tone ? { tone } : {}) } } },
+});
+
+test("a known phase tone renders the Fase value as an inverse badge in the tone's theme role", (t) => {
+	for (const style of [CARD_STYLE.NEON, CARD_STYLE.FLOAT]) {
+		useCardStyle(t, style);
+		for (const [tone, role] of [["info", "syntaxType"], ["accent", "accent"], ["highlight", "syntaxString"]] as const) {
+			const rows = renderShellSidebarBar(tonedModel(tone), recordingMatrixTheme, 46);
+			assert.deepEqual(badges(rows), [{ role, text: " Validar en Stage " }], `${style}/${tone}: one badge, padded one space each side`);
+			assert.ok(rows.every((row) => visibleWidth(row) === 46), `${style}/${tone}: the badge keeps the card width`);
+			const fase = rows.map(stripAnsi).find((row) => /Fase(?! ODD)/.test(row));
+			assert.match(fase ?? "", /Fase +Validar en Stage +║/, `${style}/${tone}: the badge sits flush right on the Fase row`);
+		}
+	}
+});
+
+test("an unknown, missing or state-like phase tone keeps the plain Fase value", () => {
+	for (const tone of [undefined, "neon", "constructor", "__proto__", "warning", "error", "success"]) {
+		const rows = renderShellSidebarBar(tonedModel(tone), recordingMatrixTheme, 46);
+		assert.deepEqual(badges(rows), [], `tone ${tone}: no badge`);
+		assert.ok(!rows.some((row) => row.includes("\x1b[7m")), `tone ${tone}: no inverse video at all`);
+		assert.match(flattened(rows), /Fase +Validar en Stage/, `tone ${tone}: the label is still shown`);
+	}
+	// A theme without inverse video cannot draw a badge: the value stays plain.
+	assert.match(flattened(renderShellSidebarBar(tonedModel("info"), matrixTheme, 46)), /Fase +Validar en Stage/);
+	// The badge never leaves the Matrix-Green gate.
+	const other = renderShellSidebarBar(tonedModel("info"), { ...recordingMatrixTheme, name: "Gentle" }, 46);
+	assert.deepEqual(badges(other), [], "no Promoción group, no badge, on any other theme");
+});
+
+test("narrow widths keep the badge intact or fall back to the plain value, never overflowing", () => {
+	for (const width of [14, 15, 18, 20, 24, 28, 30, 34, 40]) {
+		for (const label of ["Validar en Stage", "Promoción — propuesta larga"]) {
+			const rows = renderShellSidebarBar(tonedModel("info", label), recordingMatrixTheme, width);
+			assert.ok(rows.every((row) => visibleWidth(row) <= width), `width ${width}/${label}: rows fit`);
+			for (const badge of badges(rows)) assert.deepEqual(badge, { role: "syntaxType", text: ` ${label} ` }, `width ${width}/${label}: a badge is never cut`);
+			assert.equal(rows.filter((row) => row.includes("\x1b[7m")).length, badges(rows).length, `width ${width}/${label}: no stray inverse`);
+			assert.match(flattened(rows), /Fase/, `width ${width}/${label}: the row is kept`);
+		}
+	}
+	// Wide enough for the badge on its own row under the key, the badge survives.
+	assert.equal(badges(renderShellSidebarBar(tonedModel("accent"), recordingMatrixTheme, 34)).length, 1, "width 34 keeps the badge");
+});
+
 test("an idle session with a captured report keeps En espera and the captured evidence", () => {
 	const data = model({ promotion: { kind: "captured", report: { candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "EVIDENCIA INSUFICIENTE" } } });
 	const body = flattened(renderShellSidebarBar(data, matrixTheme, 60));

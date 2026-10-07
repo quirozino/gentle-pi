@@ -17,6 +17,7 @@ import {
 	promotionSidebarRows,
 	restorePromotionState,
 	promotionStatusRegistry,
+	settledOutcome,
 	settledVerifierMessage,
 	settledVerifierResult,
 	verifierRunStart,
@@ -537,6 +538,68 @@ test("parsePromotionReport keeps each version's exact field set", () => {
 	assert.deepEqual(parsePromotionReport(line(base)), { candidateId: "lib/x.ts", step: "validacion-stage", verdict: "EVIDENCIA INSUFICIENTE" });
 	// Unknown versions are not reports.
 	assert.equal(parsePromotionReport(`DDATA_PROMOTION_REPORT_V3 ${JSON.stringify(v2("lib/x.ts", "validacion-stage", "EVIDENCIA INSUFICIENTE", "validar", "Validar en Stage"))}`), undefined, "V3");
+});
+
+// --- Report V2 phaseTone: an optional sixth field, presentation only ---
+// The verifier copies phaseTone verbatim from the map repo's phase-tones file;
+// it never affects step or verdict, and the parser checks its shape only.
+
+const v2t = (phaseId: unknown, phaseLabel: unknown, phaseTone: unknown): Record<string, unknown> => ({ ...v2("lib/x.ts", "validacion-stage", "EVIDENCIA INSUFICIENTE", phaseId, phaseLabel), phaseTone });
+
+test("parsePromotionReport accepts a six-field V2 report and carries the phase tone", () => {
+	assert.deepEqual(parsePromotionReport(lineV2(v2t("validar", "Validar en Stage", "info"))), {
+		candidateId: "lib/x.ts",
+		step: "validacion-stage",
+		verdict: "EVIDENCIA INSUFICIENTE",
+		phase: { id: "validar", label: "Validar en Stage", tone: "info" },
+	});
+	// Any slug-shaped tone parses: the tone vocabulary belongs to the map repo.
+	assert.deepEqual(parsePromotionReport(lineV2(v2t("promover", "Promover", "a".repeat(24))))?.phase, { id: "promover", label: "Promover", tone: "a".repeat(24) }, "the 24-character bound is inclusive");
+	// A null tone is the same report as the five-field form.
+	assert.deepEqual(parsePromotionReport(lineV2(v2t("validar", "Validar en Stage", null)))?.phase, { id: "validar", label: "Validar en Stage" });
+	assert.deepEqual(parsePromotionReport(lineV2(v2t(null, null, null))), { candidateId: "lib/x.ts", step: "validacion-stage", verdict: "EVIDENCIA INSUFICIENTE" });
+	assert.deepEqual(parsePromotionReport(lineV2({ ...v2(null, "sin-candidato", "EVIDENCIA INSUFICIENTE", null, null), phaseTone: null })), { candidateId: null, step: "sin-candidato", verdict: "EVIDENCIA INSUFICIENTE" });
+	// The five-field form still parses with no tone.
+	assert.equal(parsePromotionReport(lineV2(v2("lib/x.ts", "validacion-stage", "EVIDENCIA INSUFICIENTE", "validar", "Validar en Stage")))?.phase?.tone, undefined);
+});
+
+test("parsePromotionReport rejects a tone without a phase and malformed tones", () => {
+	assert.equal(parsePromotionReport(lineV2(v2t(null, null, "info"))), undefined, "a tone requires a determined phase");
+	assert.equal(parsePromotionReport(lineV2({ ...v2(null, "sin-candidato", "EVIDENCIA INSUFICIENTE", null, null), phaseTone: "info" })), undefined, "sin-candidato never carries a tone");
+	for (const bad of ["", "Info", "in fo", "info!", "a".repeat(25), "neon/1", "\u001b[7m", 7, true, {}, []]) {
+		assert.equal(parsePromotionReport(lineV2(v2t("validar", "Validar en Stage", bad))), undefined, `phaseTone ${JSON.stringify(bad)} must be rejected`);
+	}
+	// Six fields means exactly phaseTone as the sixth; seven is never a report.
+	assert.equal(parsePromotionReport(lineV2({ ...v2("lib/x.ts", "validacion-stage", "EVIDENCIA INSUFICIENTE", "validar", "Validar en Stage"), tone: "info" })), undefined, "a sixth field with another name");
+	assert.equal(parsePromotionReport(lineV2({ ...v2t("validar", "Validar en Stage", "info"), extra: 1 })), undefined, "seven fields");
+	// V1 never carries a tone.
+	assert.equal(parsePromotionReport(line({ ...report("lib/x.ts", "validacion-stage", "EVIDENCIA INSUFICIENTE"), phaseTone: null })), undefined, "V1 with phaseTone");
+});
+
+test("a V2 phase tone travels through every capture path", () => {
+	const good = lineV2({ ...v2("lib/x.ts", "listo-para-decision", "APTO", "aprobar", "Aprobación"), phaseTone: "accent" });
+	const expected: PromotionReport = { candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "APTO", phase: { id: "aprobar", label: "Aprobación", tone: "accent" } };
+	const registry = new PromotionStatusRegistry();
+	const handlers: Array<(data: unknown) => void> = [];
+	installPromotionCompletionCapture({ on(_channel: string, handler: (data: unknown) => void) { handlers.push(handler); return () => {}; } }, () => "s", () => {}, registry);
+	registry.beginEvaluation("s", "call-1");
+	registry.correlate("s", "call-1", "task-1");
+	for (const handler of handlers) handler({ schema: SUBAGENT_COMPLETED_EVENT, parentSessionId: "s", taskId: "task-1", agent: PROMOTION_VERIFIER_AGENT, status: "completed", mode: "background", result: `ok\n${good}` });
+	assert.deepEqual(registry.get("s"), expected);
+	const settled = settledVerifierResult({ toolName: "subagent_run", toolCallId: "call-2", isError: false, content: [{ type: "text", text: `ok\n${good}` }], details: { gentleAgents: { taskId: "task-2", agent: PROMOTION_VERIFIER_AGENT, status: "completed" } } });
+	assert.ok(settled);
+	assert.deepEqual(settledOutcome(settled), { kind: "captured", report: expected });
+	const message = settledVerifierMessage({ customType: "gentle-agents.result", content: `ok\n${good}`, details: { gentleAgents: { taskId: "task-3", agent: PROMOTION_VERIFIER_AGENT, status: "completed" } } });
+	assert.ok(message);
+	assert.deepEqual(parsePromotionReport(message.text), expected);
+});
+
+test("promotionSidebarRows carries the phase tone on the Fase row only", () => {
+	const captured = (phase: PromotionReport["phase"]) => promotionSidebarRows({ kind: "captured", report: { candidateId: "lib/x.ts", step: "validacion-stage", verdict: "EVIDENCIA INSUFICIENTE", ...(phase ? { phase } : {}) } }).pairs;
+	const toned = captured({ id: "validar", label: "Validar en Stage", tone: "info" });
+	assert.deepEqual(toned.find(([key]) => key === "Fase"), ["Fase", "Validar en Stage", undefined, "info"]);
+	assert.ok(toned.filter(([key]) => key !== "Fase").every((row) => row.length <= 3), "no other row carries a phase tone");
+	assert.deepEqual(captured({ id: "validar", label: "Validar en Stage" }).find(([key]) => key === "Fase"), ["Fase", "Validar en Stage"], "no tone, no badge entry");
 });
 
 test("a V2 phase travels through the event capture and the history restore", () => {

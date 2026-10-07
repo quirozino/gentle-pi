@@ -30,6 +30,9 @@ const theme = {
 		return `\x1b[48;5;${roleCode(role)}m${text}\x1b[49m`;
 	},
 	bold: (text: string) => text,
+	// Inverse video is a text attribute (SGR 7/27), not a colour: the badge's
+	// colour still comes from the fg role it inverts.
+	inverse: (text: string) => `\x1b[7m${text}\x1b[27m`,
 };
 
 // Every colour key a Pi theme defines: the host schema the Matrix-Green theme fills.
@@ -47,7 +50,9 @@ function assertRolesOnly(rows: readonly string[], label: string): void {
 	for (const row of rows) {
 		const rest = row
 			.replace(new RegExp(`\\x1b\\[[34]8;5;(?:${roleCodes})m`, "g"), "")
-			.replace(/\x1b\[(?:0|39|49)?m/g, "");
+			.replace(/\x1b\[(?:0|39|49)?m/g, "")
+			// Inverse video on/off: an attribute, never a colour of its own.
+			.replace(/\x1b\[(?:7|27)m/g, "");
 		assert.doesNotMatch(rest, /\x1b\[/, `${label}: raw escape outside the theme in ${JSON.stringify(row)}`);
 		assert.doesNotMatch(rest, /#[0-9a-f]{6}/i, `${label}: hex colour`);
 	}
@@ -103,6 +108,26 @@ test("float cards, rail panels, the top bar and the prompt row paint only throug
 		const rows = renderShellSidebarBar({ ...model(), promotion: state }, { ...theme, name: "Matrix-Green" }, 46);
 		assert.match(rows.join("\n"), /Estado/, `${state.kind}: the state row is painted`);
 		assertRolesOnly(rows, `Matrix-Green promotion ${state.kind} state`);
+	}
+
+	// The Fase badge: inverse video of a phase-tone role, never a state role
+	// (warning/error/success) and never a raw or hex colour.
+	for (const [tone, role] of [["info", "syntaxType"], ["accent", "accent"], ["highlight", "syntaxString"], ["unknown-tone", undefined]] as const) {
+		fgRoles.clear();
+		const rows = renderShellSidebarBar(
+			{ ...model(), oddPhase: "checking", promotion: { kind: "captured", report: { candidateId: "lib/x.ts", step: "validacion-stage", verdict: "EVIDENCIA INSUFICIENTE", phase: { id: "validar", label: "Validar en Stage", tone } } } },
+			{ ...theme, name: "Matrix-Green" },
+			46,
+		);
+		assertRolesOnly(rows, `Matrix-Green Fase badge (${tone})`);
+		const badge = rows.join("\n").match(/\x1b\[7m\x1b\[38;5;(\d+)m Validar en Stage \x1b\[39m\x1b\[27m/);
+		if (role) {
+			assert.ok(badge, `${tone}: the Fase value is an inverse badge`);
+			assert.equal(Number(badge[1]), roleCode(role), `${tone}: the badge inverts the ${role} role`);
+		} else {
+			assert.equal(badge, null, "an unknown tone draws no badge");
+		}
+		for (const state of ["warning", "error", "success"]) assert.ok(!fgRoles.has(state), `${tone}: the phase never paints the ${state} role`);
 	}
 
 	const header = renderShellHeaderChrome(buildShellHeaderModel(model()), theme, 120, "alt+u", undefined, 3);

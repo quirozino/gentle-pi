@@ -1238,6 +1238,21 @@ test("a V2 verifier report's map phase reaches the sidebar model through the too
 	}
 });
 
+test("a six-field V2 verifier report's phase tone reaches the sidebar model through the tool_result path", async () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	const { ctx } = fakeContext();
+	try {
+		const fields = { candidateId: "lib/x.ts", step: "validacion-stage", verdict: "EVIDENCIA INSUFICIENTE", phaseId: "validar", phaseLabel: "Validar en Stage", phaseTone: "info" };
+		await fireExecutionStart(handlers, verifierStart(), ctx);
+		await fireToolResult(handlers, promotionEvent({ content: [{ type: "text", text: `verificación lista\n${PROMOTION_REPORT_MARKER_V2} ${JSON.stringify(fields)}` }] }), ctx);
+		const report = { candidateId: "lib/x.ts", step: "validacion-stage", verdict: "EVIDENCIA INSUFICIENTE", phase: { id: "validar", label: "Validar en Stage", tone: "info" } };
+		assert.deepEqual(buildShellBarModel(pi, ctx, emptyFooterData).promotion, { kind: "captured", report });
+	} finally {
+		promotionStatusRegistry.clear("shell-session");
+	}
+});
+
 test("a fresh verifier run clears the stale candidate without inventing one, and other agents' runs never clear", async () => {
 	const { pi, handlers } = fakePi();
 	gentleShell(pi, {});
