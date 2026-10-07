@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test, { after, before, type TestContext } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { DEFAULT_VISUAL_SETTINGS } from "../lib/visual-customization-policy.ts";
@@ -17,6 +18,7 @@ import {
 	renderShellSidebarBar,
 	shellEnabled,
 	shellHeaderUsageHit,
+	ODD_PHASE_BADGE_ROLE,
 	type ShellBarModel,
 	type ShellBarTheme,
 } from "../lib/shell-bar.ts";
@@ -25,6 +27,7 @@ import { REVIEW_SCOPE_UNAVAILABLE } from "../lib/review-sidebar-state.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import { CARD_STYLE, cardStyle, setCardStyle, type CardStyle } from "../lib/shell-card.ts";
 import { directoryLevels } from "../lib/directory-tree.ts";
+import { ODD_PHASES, oddPhaseLabel } from "../lib/odd-phase.ts";
 
 // The Gentle Shell bar replaces pi's three-line footer with one line of
 // segments. Rendering is pure so it can be verified without a TUI.
@@ -1083,8 +1086,8 @@ function badges(rows: readonly string[]): Array<{ role: string; text: string }> 
 	const roleOf = (code: number) => [...BADGE_ROLE_CODES].find(([, value]) => value === code)?.[0] ?? `?${code}`;
 	return rows.flatMap((row) => [...row.matchAll(INVERSE_SEGMENT)].map((match) => ({ role: roleOf(Number(match[1])), text: match[2]! })));
 }
+// Idle ODD phase, so the map phase is the only badge in these rows.
 const tonedModel = (tone: string | undefined, label = "Validar en Stage") => model({
-	oddPhase: "checking",
 	promotion: { kind: "captured", report: { candidateId: "lib/x.ts", step: "validacion-stage", verdict: "EVIDENCIA INSUFICIENTE", phase: { id: "validar", label, ...(tone ? { tone } : {}) } } },
 });
 
@@ -1127,6 +1130,68 @@ test("narrow widths keep the badge intact or fall back to the plain value, never
 	}
 	// Wide enough for the badge on its own row under the key, the badge survives.
 	assert.equal(badges(renderShellSidebarBar(tonedModel("accent"), recordingMatrixTheme, 34)).length, 1, "width 34 keeps the badge");
+});
+
+// The Fase ODD value is a neon badge too: each ODD phase paints in its own
+// theme role so the live phase reads at a glance. Roles only, never a state
+// role, so a phase never looks like a verdict or a warning.
+const EXPECTED_ODD_PHASE_ROLE = {
+	authorizing: "mdHeading",
+	exploring: "syntaxType",
+	researching: "syntaxNumber",
+	deciding: "syntaxVariable",
+	planning: "syntaxFunction",
+	implementing: "accent",
+	checking: "syntaxType",
+	closing: "syntaxVariable",
+} as const;
+const PI_THEME_ROLES = new Set(Object.keys(JSON.parse(readFileSync(new URL("../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme-schema.json", import.meta.url), "utf8")).properties.colors.properties));
+
+test("each ODD phase renders the Fase ODD value as an inverse badge in its mapped theme role", (t) => {
+	for (const style of [CARD_STYLE.NEON, CARD_STYLE.FLOAT]) {
+		useCardStyle(t, style);
+		for (const phase of ODD_PHASES) {
+			const rows = renderShellSidebarBar(model({ oddPhase: phase }), recordingMatrixTheme, 46);
+			assert.deepEqual(badges(rows), [{ role: EXPECTED_ODD_PHASE_ROLE[phase], text: ` ${oddPhaseLabel(phase)} ` }], `${style}/${phase}: one badge, padded one space each side`);
+			assert.ok(rows.every((row) => visibleWidth(row) === 46), `${style}/${phase}: the badge keeps the card width`);
+			const row = rows.map(stripAnsi).find((line) => line.includes("Fase ODD"));
+			assert.match(row ?? "", new RegExp(`Fase ODD +${oddPhaseLabel(phase)} +║`), `${style}/${phase}: the badge sits flush right`);
+		}
+	}
+});
+
+test("the ODD phase badge map covers every phase with Pi theme roles only, never a state role or hex", () => {
+	assert.deepEqual(Object.keys(ODD_PHASE_BADGE_ROLE).sort(), [...ODD_PHASES].sort(), "every phase has exactly one role");
+	assert.deepEqual({ ...ODD_PHASE_BADGE_ROLE }, EXPECTED_ODD_PHASE_ROLE);
+	for (const [phase, role] of Object.entries(ODD_PHASE_BADGE_ROLE)) {
+		assert.ok(PI_THEME_ROLES.has(role), `${phase}: ${role} is a Pi theme role`);
+		assert.doesNotMatch(role, /#|^(?:warning|error|success|syntaxString)$|Bg$/, `${phase}: ${role} is not hex, a state role, or yellow`);
+	}
+	// Adjacent phases never share a role, so a transition is always visible.
+	ODD_PHASES.slice(1).forEach((phase, index) => assert.notEqual(ODD_PHASE_BADGE_ROLE[phase], ODD_PHASE_BADGE_ROLE[ODD_PHASES[index]!], `${ODD_PHASES[index]} → ${phase}`));
+});
+
+test("an idle ODD phase, or a theme without inverse video, keeps the Fase ODD value plain", () => {
+	const idle = renderShellSidebarBar(model(), recordingMatrixTheme, 46);
+	assert.deepEqual(badges(idle), [], "En espera is never a badge");
+	assert.ok(!idle.some((row) => row.includes("\x1b[7m")), "no inverse video while idle");
+	assert.match(flattened(idle), /Fase ODD +En espera/);
+	const { inverse: _inverse, ...noInverse } = recordingMatrixTheme;
+	const plain = renderShellSidebarBar(model({ oddPhase: "implementing" }), noInverse, 46);
+	assert.ok(!plain.some((row) => row.includes("\x1b[7m")), "no inverse video without theme support");
+	assert.match(flattened(plain), /Fase ODD +implementing…/);
+});
+
+test("narrow widths keep the ODD phase badge intact or fall back to plain text, never overflowing", () => {
+	for (const width of [14, 15, 18, 20, 24, 28, 30, 34, 40]) {
+		for (const phase of ["implementing", "researching"] as const) {
+			const rows = renderShellSidebarBar(model({ oddPhase: phase }), recordingMatrixTheme, width);
+			assert.ok(rows.every((row) => visibleWidth(row) <= width), `width ${width}/${phase}: rows fit`);
+			for (const badge of badges(rows)) assert.deepEqual(badge, { role: EXPECTED_ODD_PHASE_ROLE[phase], text: ` ${oddPhaseLabel(phase)} ` }, `width ${width}/${phase}: a badge is never cut`);
+			assert.equal(rows.filter((row) => row.includes("\x1b[7m")).length, badges(rows).length, `width ${width}/${phase}: no stray inverse`);
+			assert.match(flattened(rows), /Fase ODD/, `width ${width}/${phase}: the row is kept`);
+		}
+	}
 });
 
 test("an idle session with a captured report keeps En espera and the captured evidence", () => {

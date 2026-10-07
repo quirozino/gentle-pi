@@ -152,6 +152,22 @@ const PHASE_TONE_ROLE: ReadonlyMap<string, string> = new Map([
 	["highlight", "syntaxString"],
 ]);
 
+// The theme role each ODD phase's Fase ODD badge is drawn in. Presentation
+// only, never a state role (warning/error/success) and never the yellow
+// syntaxString, so a phase never reads as a verdict or a warning. Adjacent
+// phases use different roles (and, in Matrix-Green, different colours), so a
+// transition is always visible. Idle ("En espera") stays plain text.
+export const ODD_PHASE_BADGE_ROLE: Readonly<Record<OddPhase, string>> = Object.freeze({
+	authorizing: "mdHeading",
+	exploring: "syntaxType",
+	researching: "syntaxNumber",
+	deciding: "syntaxVariable",
+	planning: "syntaxFunction",
+	implementing: "accent",
+	checking: "syntaxType",
+	closing: "syntaxVariable",
+});
+
 /** The value's badge text: one space of padding each side. */
 const badgeText = (text: string) => ` ${text} `;
 
@@ -468,7 +484,9 @@ export function renderShellSidebarCard(model: ShellBarModel, theme: ShellBarThem
 			? [{
 					title: "Promoción",
 					pairs: [
-						["Fase ODD", model.oddPhase ? oddPhaseLabel(model.oddPhase) : "En espera"] as const,
+						model.oddPhase && theme.inverse
+							? ["Fase ODD", oddPhaseLabel(model.oddPhase), ODD_PHASE_BADGE_ROLE[model.oddPhase], true] as const
+							: ["Fase ODD", model.oddPhase ? oddPhaseLabel(model.oddPhase) : "En espera"] as const,
 						...promotion.pairs.map(([key, text, tone, phaseTone]): StatusPair => {
 							const badgeRole = phaseTone && theme.inverse ? PHASE_TONE_ROLE.get(phaseTone) : undefined;
 							if (badgeRole) return [key, text, badgeRole, true];
