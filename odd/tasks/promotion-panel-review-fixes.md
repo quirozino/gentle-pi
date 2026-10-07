@@ -22,7 +22,7 @@ Authorized: fix findings 1–6 in this package. Out of scope: the verifier agent
 
 ## Tasks
 - [x] T1 — Deliver verifier results through a path that does not depend on pi emitting extension `message_end` (finding 1). Test the idle-parent background path end to end, not by calling the handler directly. Route: delegated (2+ non-trivial files).
-- [ ] T2 — Explicit promotion state: label the ODD row unambiguously, add a promotion state row (sin candidato / evaluando / sin reporte válido / error), tolerate a fenced last line (findings 2, 3). Route: delegated.
+- [x] T2 — Explicit promotion state: label the ODD row unambiguously, add a promotion state row (sin candidato / evaluando / sin reporte válido / error), tolerate a fenced last line (findings 2, 3). Route: delegated.
 - [ ] T3 — Restore the latest valid report from session history on session start, reject inconsistent step/verdict pairs, track MCP-namespaced `subagent_run` (findings 4, 5, 6). Route: delegated.
 
 ## Acceptance criteria
@@ -37,7 +37,8 @@ Authorized: fix findings 1–6 in this package. Out of scope: the verifier agent
 
 ## Progress
 - 2026-10-07: document created; guia preflight READY_EXISTING (HEAD d76cd1f9f).
-- T1 done (delegated writer): `gentle-agents` onFinish publishes `gentle-pi:subagent-completed/v1` on `pi.events` (lib/subagent-completion-event.ts); `installPromotionCompletionCapture` subscribes. RED/GREEN observed on an idle-parent test whose fake `sendMessage` never fires `message_end`. Checks: shell/promotion suites 557 pass/0 fail/7 skipped; gentle-agents 178 pass; agents/background/metrics 438 pass; typecheck no regressions vs baseline; parent spot check 193/193.
+- T1 done (delegated writer): `gentle-agents` onFinish publishes `gentle-pi:subagent-completed/v1` on `pi.events` (lib/subagent-completion-event.ts); `installPromotionCompletionCapture` subscribes. RED/GREEN observed on an idle-parent test whose fake `sendMessage` never fires `message_end`. Checks: shell/promotion suites 557 pass/0 fail/7 skipped; gentle-agents 178 pass; agents/background/metrics 438 pass; typecheck no regressions vs baseline; parent spot check 193/193. Commit 3c276c42e; assess medium, review_due false (under_budget, pending in slice).
+- T2 done (delegated writer): explicit promotion state (sin candidato / evaluando / sin reporte válido / error del verificador / captured), ODD row relabelled "Fase ODD" (no recorded user decision to keep "Fase"), parser strips one trailing ``` fence. RED 10/337 → GREEN. Checks: 743 pass/0 fail/7 skipped; typecheck no regressions. ~600 changed lines (≈250 tests) — exceeds the 400 heuristic because state model + tests are one coherent unit.
 
 ## Next step
-T2.
+T3.

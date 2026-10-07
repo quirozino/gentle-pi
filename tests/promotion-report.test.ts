@@ -7,15 +7,20 @@ import {
 	PROMOTION_STEPS,
 	PROMOTION_VERIFIER_AGENT,
 	PROMOTION_VERDICTS,
+	PromotionStatusRegistry,
 	completedVerifierMessage,
 	completedVerifierResult,
+	installPromotionCompletionCapture,
 	parsePromotionReport,
 	promotionSidebarRows,
 	promotionStatusRegistry,
+	settledVerifierMessage,
+	settledVerifierResult,
 	verifierRunStart,
 	verifierRunTaskId,
 	type PromotionReport,
 } from "../lib/promotion-report.ts";
+import { SUBAGENT_COMPLETED_EVENT } from "../lib/subagent-completion-event.ts";
 
 // The DDATA promotion verifier ends its output with one advisory report line.
 // Parsing is deliberately bounded and suspicious: last line only, no control
@@ -192,13 +197,16 @@ test("evaluations are bounded: a pushed-out generation can no longer capture", (
 	promotionStatusRegistry.clear("session-a");
 });
 
-test("promotionSidebarRows distinguishes nothing-captured from an explicit no-candidate report", () => {
-	assert.deepEqual(promotionSidebarRows(null), { pairs: [], lines: ["sin candidato"] });
-	assert.deepEqual(promotionSidebarRows(undefined), { pairs: [], lines: ["sin candidato"] });
+test("promotionSidebarRows distinguishes every state and an explicit no-candidate report", () => {
+	assert.deepEqual(promotionSidebarRows(undefined), { pairs: [["Estado", "sin candidato"]] });
+	assert.deepEqual(promotionSidebarRows({ kind: "idle" }), { pairs: [["Estado", "sin candidato"]] });
+	assert.deepEqual(promotionSidebarRows({ kind: "evaluating" }), { pairs: [["Estado", "evaluando"]] });
+	assert.deepEqual(promotionSidebarRows({ kind: "invalid" }), { pairs: [["Estado", "sin reporte válido", "warning"]] });
+	assert.deepEqual(promotionSidebarRows({ kind: "failed" }), { pairs: [["Estado", "error del verificador", "failure"]] });
 	const none: PromotionReport = { candidateId: null, step: "sin-candidato", verdict: "EVIDENCIA INSUFICIENTE" };
-	assert.deepEqual(promotionSidebarRows(none), { pairs: [["Candidato", "sin candidato"], ["Veredicto", `EVIDENCIA INSUFICIENTE · ${PROMOTION_ADVISORY_QUALIFIER}`]], lines: [] });
+	assert.deepEqual(promotionSidebarRows({ kind: "captured", report: none }), { pairs: [["Candidato", "sin candidato"], ["Veredicto", `EVIDENCIA INSUFICIENTE · ${PROMOTION_ADVISORY_QUALIFIER}`]] });
 	const some: PromotionReport = { candidateId: "lib/x.ts", step: "validacion-stage", verdict: "APTO" };
-	assert.deepEqual(promotionSidebarRows(some), { pairs: [["Candidato", "lib/x.ts"], ["Paso", "validacion-stage"], ["Veredicto", `APTO · ${PROMOTION_ADVISORY_QUALIFIER}`]], lines: [] });
+	assert.deepEqual(promotionSidebarRows({ kind: "captured", report: some }), { pairs: [["Candidato", "lib/x.ts"], ["Paso", "validacion-stage"], ["Veredicto", `APTO · ${PROMOTION_ADVISORY_QUALIFIER}`]] });
 });
 
 test("completedVerifierMessage recognizes only a completed verifier result message", () => {
@@ -212,4 +220,122 @@ test("completedVerifierMessage recognizes only a completed verifier result messa
 	assert.equal(completedVerifierMessage({ ...message, details: {} }), undefined, "no gentleAgents");
 	assert.equal(completedVerifierMessage({ ...message, content: "" }), undefined, "no text");
 	assert.equal(completedVerifierMessage({ customType: "gentle-agents.result" }), undefined, "no details at all");
+});
+
+test("parsePromotionReport tolerates the report line closing a trailing code fence", () => {
+	const good = line(report("lib/x.ts", "validacion-stage", "APTO"));
+	const expected = { candidateId: "lib/x.ts", step: "validacion-stage", verdict: "APTO" };
+	assert.deepEqual(parsePromotionReport(`done\n\`\`\`\n${good}\n\`\`\``), expected, "fenced report");
+	assert.deepEqual(parsePromotionReport(`done\n\`\`\`text\n${good}\n\n\`\`\`\n\n`), expected, "blank lines around the closing fence");
+	assert.deepEqual(parsePromotionReport(`${good}\n  \`\`\`  `), expected, "an indented closing fence with trailing spaces");
+	// Everything else stays strict: only ONE trailing fence is stripped, and
+	// anything after it is still the last line.
+	assert.equal(parsePromotionReport(`${good}\n\`\`\`\n\`\`\``), undefined, "two trailing fences");
+	assert.equal(parsePromotionReport(`${good}\n\`\`\`\ntrailing chat`), undefined, "chat after the fence");
+	assert.equal(parsePromotionReport(`${good}\n\`\`\`json`), undefined, "an opening fence is not a closing one");
+	assert.equal(parsePromotionReport("\`\`\`"), undefined, "a lone fence");
+	assert.equal(parsePromotionReport(`\`\`\`\n${PROMOTION_REPORT_MARKER} {broken\n\`\`\``), undefined, "a fenced malformed report");
+	assert.equal(parsePromotionReport(`\`\`\`\n${PROMOTION_REPORT_MARKER} {"candidateId":"${"a".repeat(3000)}","step":"validacion-stage","verdict":"APTO"}\n\`\`\``), undefined, "a fenced oversized line");
+});
+
+test("settledVerifierResult reports completed text and terminal failures of verifier results", () => {
+	const content = [{ type: "text", text: `work\n${line(report("a", "aprobacion-pendiente", "APTO"))}` }];
+	const gentle = (status: string, agent = PROMOTION_VERIFIER_AGENT) => ({ gentleAgents: { taskId: "task-1", agent, status } });
+	assert.deepEqual(settledVerifierResult({ toolName: "subagent_run", toolCallId: "call-1", isError: false, content, details: gentle("completed") }), { toolCallId: "call-1", taskId: "task-1", failed: false, text: content[0]!.text });
+	assert.deepEqual(settledVerifierResult({ toolName: "subagent_run", toolCallId: "call-1", isError: false, content: [], details: gentle("completed") }), { toolCallId: "call-1", taskId: "task-1", failed: false, text: "" }, "a completed run without text is settled, with nothing to parse");
+	for (const status of ["failed", "cancelled", "timed_out"]) {
+		assert.deepEqual(settledVerifierResult({ toolName: "subagent_result", toolCallId: "pull-1", isError: false, content, details: gentle(status) }), { toolCallId: "pull-1", taskId: "task-1", failed: true, text: "" }, `${status} is a failure`);
+	}
+	for (const status of ["queued", "running", "waiting", "weird"]) {
+		assert.equal(settledVerifierResult({ toolName: "subagent_run", toolCallId: "call-1", isError: false, content, details: gentle(status) }), undefined, `${status} is not settled`);
+	}
+	// An aborted or thrown run is a failure of the run behind that call.
+	assert.deepEqual(settledVerifierResult({ toolName: "subagent_run", toolCallId: "call-1", isError: true, content }), { toolCallId: "call-1", taskId: undefined, failed: true, text: "" });
+	assert.deepEqual(settledVerifierResult({ toolName: "subagent_run", toolCallId: "call-1", isError: false, content, details: { error: "refused" } }), { toolCallId: "call-1", taskId: undefined, failed: true, text: "" }, "a run that produced no task failed");
+	// A failed result pull is not the verifier failing.
+	assert.equal(settledVerifierResult({ toolName: "subagent_result", toolCallId: "pull-1", isError: true, content, details: gentle("completed") }), undefined);
+	assert.equal(settledVerifierResult({ toolName: "subagent_result", toolCallId: "pull-1", isError: false, content, details: {} }), undefined);
+	assert.equal(settledVerifierResult({ toolName: "subagent_run", toolCallId: "call-1", isError: false, content, details: gentle("failed", "other-agent") }), undefined, "another agent");
+	assert.equal(settledVerifierResult({ toolName: "subagent_run", toolCallId: "call-1", isError: true, content, details: gentle("failed", "other-agent") }), undefined, "another agent's thrown run");
+	assert.equal(settledVerifierResult({ toolName: "read", toolCallId: "call-1", isError: true, content }), undefined, "another tool");
+	assert.equal(settledVerifierResult({ toolName: "subagent_run", toolCallId: "call-1", content, details: gentle("completed") }), undefined, "isError must be an explicit boolean");
+});
+
+test("settledVerifierMessage reports completed text and terminal failures of verifier result messages", () => {
+	const text = `Subagent ${PROMOTION_VERIFIER_AGENT} (task task-1, "evalua") finished.\n\nno report`;
+	const message = (status: string, overrides: Record<string, unknown> = {}) => ({ customType: "gentle-agents.result", content: text, details: { gentleAgents: { taskId: "task-1", agent: PROMOTION_VERIFIER_AGENT, status } }, ...overrides });
+	assert.deepEqual(settledVerifierMessage(message("completed")), { taskId: "task-1", failed: false, text });
+	assert.deepEqual(settledVerifierMessage(message("completed", { content: "" })), { taskId: "task-1", failed: false, text: "" });
+	for (const status of ["failed", "cancelled", "timed_out"]) assert.deepEqual(settledVerifierMessage(message(status)), { taskId: "task-1", failed: true, text: "" });
+	assert.equal(settledVerifierMessage(message("running")), undefined);
+	assert.equal(settledVerifierMessage(message("failed", { customType: "gentle-agents.notification" })), undefined);
+	assert.equal(settledVerifierMessage({ ...message("failed"), details: { gentleAgents: { taskId: "task-1", agent: "other-agent", status: "failed" } } }), undefined);
+	assert.equal(settledVerifierMessage({ ...message("failed"), details: { gentleAgents: { agent: PROMOTION_VERIFIER_AGENT, status: "failed" } } }), undefined, "no task id");
+});
+
+test("the registry models idle, evaluating, invalid, failed and captured, and a newer evaluation supersedes", () => {
+	const registry = new PromotionStatusRegistry();
+	const a: PromotionReport = { candidateId: "a", step: "validacion-stage", verdict: "APTO" };
+	assert.deepEqual(registry.state("s"), { kind: "idle" }, "never run");
+	assert.deepEqual(registry.state(undefined), { kind: "idle" });
+	assert.equal(registry.settle("s", { toolCallId: "call-1" }, { kind: "failed" }), false, "uncorrelated outcomes are ignored");
+	assert.deepEqual(registry.state("s"), { kind: "idle" });
+	registry.beginEvaluation("s", "call-1");
+	assert.deepEqual(registry.state("s"), { kind: "evaluating" });
+	assert.equal(registry.settle("s", { toolCallId: "call-1", taskId: "task-1" }, { kind: "invalid" }), true);
+	assert.deepEqual(registry.state("s"), { kind: "invalid" }, "a completed run without a valid report");
+	assert.equal(registry.get("s"), undefined, "an invalid report is never a verdict");
+	assert.equal(registry.settle("s", { taskId: "task-1" }, { kind: "invalid" }), false, "the same state again changes nothing");
+	// A valid report for the same task (another delivery path) still wins.
+	assert.equal(registry.settle("s", { taskId: "task-1" }, { kind: "captured", report: a }), true);
+	assert.deepEqual(registry.state("s"), { kind: "captured", report: a });
+	// Once captured, later noise for that evaluation never displaces it.
+	assert.equal(registry.settle("s", { taskId: "task-1" }, { kind: "failed" }), false);
+	assert.equal(registry.settle("s", { toolCallId: "call-1" }, { kind: "invalid" }), false);
+	assert.deepEqual(registry.get("s"), a);
+	// A newer evaluation supersedes the captured report.
+	registry.beginEvaluation("s", "call-2");
+	assert.deepEqual(registry.state("s"), { kind: "evaluating" });
+	assert.equal(registry.settle("s", { taskId: "task-1" }, { kind: "captured", report: a }), false, "the older evaluation cannot come back");
+	assert.equal(registry.settle("s", { toolCallId: "call-2", taskId: "task-2" }, { kind: "failed" }), true);
+	assert.deepEqual(registry.state("s"), { kind: "failed" });
+	// A task id that contradicts the evaluation's correlated one fails closed.
+	assert.equal(registry.settle("s", { toolCallId: "call-2", taskId: "task-x" }, { kind: "captured", report: a }), false);
+	assert.deepEqual(registry.state("s"), { kind: "failed" });
+	registry.beginEvaluation("s", "call-3");
+	assert.equal(registry.capture("s", { toolCallId: "call-3" }, a), a, "capture is the captured outcome");
+	assert.deepEqual(registry.state("s"), { kind: "captured", report: a });
+	registry.clear("s");
+	assert.deepEqual(registry.state("s"), { kind: "idle" }, "a cleared session is idle again");
+});
+
+test("the pi.events completion capture drives invalid, failed and captured states for the latest evaluation only", () => {
+	const registry = new PromotionStatusRegistry();
+	const handlers: Array<(data: unknown) => void> = [];
+	const bus = { on(channel: string, handler: (data: unknown) => void) { assert.equal(channel, SUBAGENT_COMPLETED_EVENT); handlers.push(handler); return () => {}; } };
+	let redraws = 0;
+	installPromotionCompletionCapture(bus, () => "s", () => { redraws += 1; }, registry);
+	const emit = (overrides: Record<string, unknown> = {}) => {
+		for (const handler of handlers) handler({ schema: SUBAGENT_COMPLETED_EVENT, parentSessionId: "s", taskId: "task-1", agent: PROMOTION_VERIFIER_AGENT, status: "completed", mode: "background", result: "no report", ...overrides });
+	};
+	emit();
+	assert.deepEqual(registry.state("s"), { kind: "idle" }, "uncorrelated events are ignored");
+	registry.beginEvaluation("s", "call-1");
+	registry.correlate("s", "call-1", "task-1");
+	emit({ parentSessionId: "other" });
+	emit({ agent: "other-agent" });
+	emit({ taskId: "task-0" });
+	emit({ status: "running" });
+	assert.deepEqual(registry.state("s"), { kind: "evaluating" }, "foreign, other-agent, uncorrelated and unsettled events change nothing");
+	assert.equal(redraws, 0);
+	emit();
+	assert.deepEqual(registry.state("s"), { kind: "invalid" }, "a completed run whose last line is no report");
+	emit({ result: undefined });
+	assert.deepEqual(registry.state("s"), { kind: "invalid" }, "a completed run without any result text");
+	assert.equal(redraws, 1, "redraws only when the state changes");
+	emit({ status: "cancelled" });
+	assert.deepEqual(registry.state("s"), { kind: "failed" });
+	emit({ result: `ok\n\`\`\`\n${line(report("lib/x.ts", "validacion-stage", "APTO"))}\n\`\`\`` });
+	assert.deepEqual(registry.state("s"), { kind: "captured", report: { candidateId: "lib/x.ts", step: "validacion-stage", verdict: "APTO" } }, "a fenced report captures");
+	assert.equal(redraws, 3);
 });

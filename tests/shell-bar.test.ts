@@ -1023,17 +1023,18 @@ test("Directorio and Promoción close the Status card after Integrations as divi
 	assert.doesNotMatch(renderShellSidebarBar(model(), plainTheme, 46).join("\n"), /Directorio/, "no directory, no section");
 });
 
-test("the promotion group shows the idle phase and no candidate by default", () => {
+test("the promotion group shows the idle ODD phase and no candidate by default", () => {
 	const body = renderShellSidebarBar(model(), matrixTheme, 60).map(stripAnsi).join("\n");
-	assert.match(body, /Fase +En espera/, "an idle session shows the neutral label, never a stale phase");
-	assert.match(body, /sin candidato/, "no captured evidence shows the explicit no-candidate state");
+	assert.match(body, /Fase ODD +En espera/, "an idle session shows the neutral label, never a stale phase");
+	assert.doesNotMatch(body, /Fase +En espera/, "the ODD workflow phase is labelled as such, never as a promotion phase");
+	assert.match(body, /Estado +sin candidato/, "no verifier run yet shows the explicit no-candidate state");
 	assert.doesNotMatch(body, /Candidato|Paso|Veredicto/, "no candidate id, step or verdict before a completed verifier run");
 });
 
 test("the promotion group shows phase, candidate, step and verdict once a report is captured", () => {
-	const data = model({ oddPhase: "checking", promotionReport: { candidateId: "lib/shell-bar.ts", step: "validacion-stage", verdict: "APTO" } });
+	const data = model({ oddPhase: "checking", promotion: { kind: "captured", report: { candidateId: "lib/shell-bar.ts", step: "validacion-stage", verdict: "APTO" } } });
 	const body = renderShellSidebarBar(data, matrixTheme, 60).map(stripAnsi).join("\n");
-	assert.match(body, /Fase +checking…/, "the phase comes from the registry, not prose");
+	assert.match(body, /Fase ODD +checking…/, "the phase comes from the registry, not prose");
 	assert.match(body, /Candidato +lib\/shell-bar\.ts/);
 	assert.match(body, /Paso +validacion-stage/);
 	assert.match(body, /Veredicto +APTO · asesor · no autoriza despliegue/, "the advisory qualifier is displayed alongside the verdict");
@@ -1043,15 +1044,50 @@ test("the promotion group shows phase, candidate, step and verdict once a report
 });
 
 test("an idle session with a captured report keeps En espera and the captured evidence", () => {
-	const data = model({ promotionReport: { candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "EVIDENCIA INSUFICIENTE" } });
+	const data = model({ promotion: { kind: "captured", report: { candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "EVIDENCIA INSUFICIENTE" } } });
 	const body = flattened(renderShellSidebarBar(data, matrixTheme, 60));
-	assert.match(body, /Fase +En espera/);
+	assert.match(body, /Fase ODD +En espera/);
 	assert.match(body, /Candidato +lib\/x\.ts/);
 	assert.match(body, /Veredicto EVIDENCIA INSUFICIENTE · asesor · no autoriza despliegue/);
 });
 
+test("each non-captured promotion state renders its own Estado row and never a verdict", () => {
+	const cases = [
+		[{ kind: "idle" }, "sin candidato"],
+		[{ kind: "evaluating" }, "evaluando"],
+		[{ kind: "invalid" }, "sin reporte válido"],
+		[{ kind: "failed" }, "error del verificador"],
+	] as const;
+	const seen = new Set<string>();
+	for (const [promotion, copy] of cases) {
+		const body = flattened(renderShellSidebarBar(model({ promotion }), matrixTheme, 60));
+		assert.match(body, new RegExp(`Estado ${copy}`), `${promotion.kind} renders "${copy}"`);
+		assert.doesNotMatch(body, /Candidato|Paso|Veredicto|APTO|BLOQUEADO/, `${promotion.kind}: no candidate, step or verdict`);
+		seen.add(copy);
+	}
+	assert.equal(seen.size, 4, "the four former \"sin candidato\" situations are distinct");
+	// Narrow single-panel fallback keeps the state too.
+	assert.match(flattened(renderShellSidebarBar(model({ promotion: { kind: "failed" } }), matrixTheme, 15)), /Estado error del/);
+});
+
+test("promotion state words paint through semantic theme roles only", () => {
+	// Records which role painted each text, so wrapping and clipping of tag
+	// markup cannot interfere with the assertion.
+	const roleOf = (promotion: ShellBarModel["promotion"], width = 60) => {
+		const painted = new Map<string, string>();
+		const recording: ShellBarTheme = { name: "Matrix-Green", fg(color: string, value: string) { painted.set(value, color); return value; }, bold: (value: string) => value };
+		renderShellSidebarBar(model({ promotion }), recording, width);
+		return painted;
+	};
+	assert.equal(roleOf({ kind: "failed" }).get("error del verificador"), "error", "a failed verifier paints with the error role");
+	assert.equal(roleOf({ kind: "invalid" }).get("sin reporte válido"), "warning", "an invalid report paints with the warning role");
+	assert.equal(roleOf({ kind: "evaluating" }).get("evaluando"), "text", "evaluating is a plain value");
+	assert.equal(roleOf({ kind: "idle" }).get("sin candidato"), "text");
+	assert.equal(roleOf({ kind: "failed" }, 15).get("error del verificador"), "error", "the narrow fallback keeps the role");
+});
+
 test("a captured report without a candidate states so explicitly with its verdict", () => {
-	const data = model({ promotionReport: { candidateId: null, step: "sin-candidato", verdict: "EVIDENCIA INSUFICIENTE" } });
+	const data = model({ promotion: { kind: "captured", report: { candidateId: null, step: "sin-candidato", verdict: "EVIDENCIA INSUFICIENTE" } } });
 	const body = flattened(renderShellSidebarBar(data, matrixTheme, 60));
 	assert.match(body, /Candidato +sin candidato/);
 	assert.match(body, /Veredicto EVIDENCIA INSUFICIENTE · asesor · no autoriza despliegue/);
@@ -1060,7 +1096,7 @@ test("a captured report without a candidate states so explicitly with its verdic
 
 test("the promotion group follows Directorio in both panel styles and in the narrow fallback", (t) => {
 	const directory = directoryLevels("/home/alan/work/repo", "/home/alan", "/home/alan/work/repo");
-	const data = model({ directory, promotionReport: { candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "APTO" } });
+	const data = model({ directory, promotion: { kind: "captured", report: { candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "APTO" } } });
 	for (const style of [CARD_STYLE.NEON, CARD_STYLE.FLOAT]) {
 		useCardStyle(t, style);
 		const body = renderShellSidebarBar(data, matrixTheme, 60).map(stripAnsi).join("\n");
@@ -1081,7 +1117,7 @@ test("the promotion group follows Directorio in both panel styles and in the nar
 
 test("only Matrix-Green paints the Promoción group; other themes keep the original Directorio close", (t) => {
 	const directory = directoryLevels("/home/alan/work/repo", "/home/alan", "/home/alan/work/repo");
-	const data = model({ directory, promotionReport: { candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "APTO" } });
+	const data = model({ directory, promotion: { kind: "captured", report: { candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "APTO" } } });
 	for (const style of [CARD_STYLE.NEON, CARD_STYLE.FLOAT]) {
 		useCardStyle(t, style);
 		for (const [label, theme] of [["Gentle", gentleTheme], ["Gentleman-Cute", cuteTheme], ["unnamed", plainTheme]] as const) {
@@ -1102,7 +1138,7 @@ test("only Matrix-Green paints the Promoción group; other themes keep the origi
 });
 
 test("the gate matches the exact Matrix-Green name, not a case or prefix variant", () => {
-	const data = model({ promotionReport: { candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "APTO" } });
+	const data = model({ promotion: { kind: "captured", report: { candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "APTO" } } });
 	assert.match(renderShellSidebarBar(data, matrixTheme, 60).map(stripAnsi).join("\n"), /Promoci/, "exactly Matrix-Green shows the group");
 	for (const name of ["matrix-green", "Matrix-Green ", " Matrix-Green", "Matrix-Green2", "Matrix"]) {
 		const body = renderShellSidebarBar(data, { ...plainTheme, name }, 60).map(stripAnsi).join("\n");
@@ -1111,7 +1147,7 @@ test("the gate matches the exact Matrix-Green name, not a case or prefix variant
 });
 
 test("switching the theme between renders moves the Promoción group with the live theme object", () => {
-	const data = model({ promotionReport: { candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "APTO" } });
+	const data = model({ promotion: { kind: "captured", report: { candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "APTO" } } });
 	assert.match(renderShellSidebarBar(data, matrixTheme, 60).map(stripAnsi).join("\n"), /Promoci/, "Matrix-Green shows the group");
 	assert.doesNotMatch(renderShellSidebarBar(data, gentleTheme, 60).map(stripAnsi).join("\n"), /Promoci/, "a switch away hides it on the next render");
 	assert.match(renderShellSidebarBar(data, matrixTheme, 60).map(stripAnsi).join("\n"), /Promoci/, "a switch back restores it: the gate reads each render's theme, never settings.json");

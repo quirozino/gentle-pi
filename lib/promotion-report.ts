@@ -56,10 +56,17 @@ const REPORT_LINE = /^DDATA_PROMOTION_REPORT_V1 (\{.*\})$/;
 // always inside; a report hidden beyond it fails closed instead of paying an
 // unbounded trim/scan on hostile output.
 const LAST_LINE_WINDOW = MAX_REPORT_LINE * 2;
+// A model often wraps its final line in a Markdown code block. Exactly one
+// bare closing fence (optionally indented) at the very end is stripped, with
+// the blank lines around it; an opening fence (```json) or anything after the
+// fence still counts as the last line, so nothing else is loosened.
+const TRAILING_FENCE = /(?:^|\n)[ \t]*```[ \t]*$/;
 
 function lastLine(output: string): string {
 	const tail = output.length <= LAST_LINE_WINDOW ? output : output.slice(-LAST_LINE_WINDOW);
-	const trimmed = tail.trimEnd();
+	let trimmed = tail.trimEnd();
+	const fence = TRAILING_FENCE.exec(trimmed);
+	if (fence) trimmed = trimmed.slice(0, fence.index).trimEnd();
 	const start = trimmed.lastIndexOf("\n");
 	return start === -1 ? trimmed : trimmed.slice(start + 1);
 }
@@ -75,7 +82,8 @@ function isPromotionVerdict(value: unknown): value is PromotionVerdict {
 /**
  * Parses the last line of a verifier child's output into its advisory report,
  * or undefined when the output does not end with a well-formed one. Last line
- * only (extracted from a bounded tail, never a whole-output scan),
+ * only (extracted from a bounded tail, never a whole-output scan; one
+ * trailing closing code fence is not a line of its own),
  * control-character free, exact field set, and a null candidate must pair with
  * the sin-candidato step (and a candidate with any other step), or the report
  * is rejected as inconsistent.
@@ -127,6 +135,84 @@ export function verifierRunStart(event: { toolName?: unknown; toolCallId?: unkno
 	return { toolCallId: event.toolCallId };
 }
 
+// Terminal task statuses that mean the verifier did not finish (gentle-agents
+// TASK_STATUS failed/cancelled/timed_out). queued/running/waiting are not
+// settled and change nothing.
+const FAILED_STATUSES = new Set(["failed", "cancelled", "timed_out"]);
+
+/**
+ * A verifier evaluation that reached a terminal state: either completed with
+ * its text to parse (possibly empty), or failed with nothing to parse.
+ */
+export interface SettledVerifierResult {
+	toolCallId: string | undefined;
+	taskId: string | undefined;
+	failed: boolean;
+	text: string;
+}
+
+function textParts(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.map((part) => (typeof part === "object" && part !== null && (part as { type?: unknown }).type === "text" ? (part as { text?: unknown }).text : undefined))
+		.filter((part): part is string => typeof part === "string")
+		.join("\n");
+}
+
+/**
+ * Recognizes the pi tool_result events that settle a verifier evaluation:
+ * a completed ddata-promotion-verifier result (subagent_run or
+ * subagent_result) with its text, a failed/cancelled/timed-out one, or a
+ * subagent_run that errored (aborted, thrown) or produced no task at all. A
+ * failed subagent_result pull is not the verifier failing and is ignored, as
+ * are other tools, other agents and unsettled statuses. Correlation to the
+ * session's latest evaluation is the registry's job.
+ */
+export function settledVerifierResult(event: { toolName?: unknown; toolCallId?: unknown; isError?: unknown; content?: unknown; details?: unknown }): SettledVerifierResult | undefined {
+	if (typeof event.toolName !== "string" || !CAPTURE_TOOLS.has(event.toolName)) return undefined;
+	if (typeof event.isError !== "boolean") return undefined;
+	const toolCallId = typeof event.toolCallId === "string" && event.toolCallId.length > 0 ? event.toolCallId : undefined;
+	const raw = (event.details as { gentleAgents?: unknown } | undefined)?.gentleAgents;
+	const gentle = typeof raw === "object" && raw !== null ? (raw as { agent?: unknown; status?: unknown; taskId?: unknown }) : undefined;
+	if (gentle && gentle.agent !== PROMOTION_VERIFIER_AGENT) return undefined;
+	const taskId = typeof gentle?.taskId === "string" && gentle.taskId.length > 0 ? gentle.taskId : undefined;
+	const isRun = event.toolName === "subagent_run";
+	// A run that threw, or returned without ever creating a task, failed.
+	if (event.isError || !gentle) return isRun ? { toolCallId, taskId, failed: true, text: "" } : undefined;
+	if (gentle.status === "completed") return { toolCallId, taskId, failed: false, text: textParts(event.content) };
+	if (typeof gentle.status === "string" && FAILED_STATUSES.has(gentle.status)) return { toolCallId, taskId, failed: true, text: "" };
+	return undefined;
+}
+
+/**
+ * Recognizes a background verifier's settled result message (the
+ * gentle-agents AGENTS_RESULT_TYPE custom message): completed with its text,
+ * or failed. Exact source guard as completedVerifierMessage.
+ */
+export function settledVerifierMessage(message: { customType?: unknown; content?: unknown; details?: unknown }): { taskId: string; failed: boolean; text: string } | undefined {
+	if (message.customType !== AGENTS_RESULT_CUSTOM_TYPE) return undefined;
+	const gentle = (message.details as { gentleAgents?: unknown } | undefined)?.gentleAgents;
+	if (typeof gentle !== "object" || gentle === null) return undefined;
+	const { agent, status, taskId } = gentle as { agent?: unknown; status?: unknown; taskId?: unknown };
+	if (agent !== PROMOTION_VERIFIER_AGENT) return undefined;
+	if (typeof taskId !== "string" || taskId.length === 0) return undefined;
+	if (status === "completed") return { taskId, failed: false, text: textParts(message.content) };
+	if (typeof status === "string" && FAILED_STATUSES.has(status)) return { taskId, failed: true, text: "" };
+	return undefined;
+}
+
+/**
+ * The outcome a settled evaluation shows: a failure, or the parsed report —
+ * an output whose last line is not a valid report is "invalid", never a
+ * verdict (fail closed).
+ */
+export function settledOutcome(settled: { failed: boolean; text?: string }): PromotionOutcome {
+	if (settled.failed) return { kind: "failed" };
+	const report = parsePromotionReport(settled.text);
+	return report ? { kind: "captured", report } : { kind: "invalid" };
+}
+
 /** A tool result recognized as a completed verifier run, with its text to parse. */
 export interface CompletedVerifierResult {
 	toolCallId: string | undefined;
@@ -141,21 +227,10 @@ export interface CompletedVerifierResult {
  * failed or unfinished runs, missing gentleAgents details — yields undefined.
  */
 export function completedVerifierResult(event: { toolName?: unknown; toolCallId?: unknown; isError?: unknown; content?: unknown; details?: unknown }): CompletedVerifierResult | undefined {
-	if (typeof event.toolName !== "string" || !CAPTURE_TOOLS.has(event.toolName)) return undefined;
 	if (event.isError !== false) return undefined;
-	const gentle = (event.details as { gentleAgents?: unknown } | undefined)?.gentleAgents;
-	if (typeof gentle !== "object" || gentle === null) return undefined;
-	const { agent, status, taskId: resultTaskId } = gentle as { agent?: unknown; status?: unknown; taskId?: unknown };
-	if (agent !== PROMOTION_VERIFIER_AGENT || status !== "completed") return undefined;
-	if (!Array.isArray(event.content)) return undefined;
-	const text = event.content
-		.map((part) => (typeof part === "object" && part !== null && (part as { type?: unknown }).type === "text" ? (part as { text?: unknown }).text : undefined))
-		.filter((part): part is string => typeof part === "string")
-		.join("\n");
-	if (text.length === 0) return undefined;
-	const taskId = typeof resultTaskId === "string" && resultTaskId.length > 0 ? resultTaskId : undefined;
-	const toolCallId = typeof event.toolCallId === "string" && event.toolCallId.length > 0 ? event.toolCallId : undefined;
-	return { toolCallId, taskId, text };
+	const settled = settledVerifierResult(event);
+	if (!settled || settled.failed || settled.text.length === 0) return undefined;
+	return { toolCallId: settled.toolCallId, taskId: settled.taskId, text: settled.text };
 }
 
 /**
@@ -167,22 +242,9 @@ export function completedVerifierResult(event: { toolName?: unknown; toolCallId?
  * verifier evaluation can ever display a report.
  */
 export function completedVerifierMessage(message: { customType?: unknown; content?: unknown; details?: unknown }): { taskId: string; text: string } | undefined {
-	if (message.customType !== AGENTS_RESULT_CUSTOM_TYPE) return undefined;
-	const gentle = (message.details as { gentleAgents?: unknown } | undefined)?.gentleAgents;
-	if (typeof gentle !== "object" || gentle === null) return undefined;
-	const { agent, status, taskId } = gentle as { agent?: unknown; status?: unknown; taskId?: unknown };
-	if (agent !== PROMOTION_VERIFIER_AGENT || status !== "completed") return undefined;
-	if (typeof taskId !== "string" || taskId.length === 0) return undefined;
-	const text = typeof message.content === "string"
-		? message.content
-		: Array.isArray(message.content)
-			? message.content
-				.map((part) => (typeof part === "object" && part !== null && (part as { type?: unknown }).type === "text" ? (part as { text?: unknown }).text : undefined))
-				.filter((part): part is string => typeof part === "string")
-				.join("\n")
-		: "";
-	if (text.length === 0) return undefined;
-	return { taskId, text };
+	const settled = settledVerifierMessage(message);
+	if (!settled || settled.failed || settled.text.length === 0) return undefined;
+	return { taskId: settled.taskId, text: settled.text };
 }
 
 /**
@@ -202,26 +264,41 @@ export function verifierRunTaskId(event: { toolName?: unknown; toolCallId?: unkn
 }
 
 // Chronological capture state. A verifier run's tool_execution_start opens a
-// bounded generation; only the LATEST generation may capture, so an older
-// evaluation's late completion — even one never captured before — can never
-// overwrite a newer candidate. Replayed results (same task id) are ignored,
-// and a completion that cannot be correlated to any tracked evaluation fails
-// closed. Bounded: generations and task ids age out FIFO.
+// bounded generation; only the LATEST generation may settle, so an older
+// evaluation's late completion — even one never seen before — can never
+// overwrite a newer one. Once an evaluation captured a report, replays and
+// later noise for it are ignored, and an outcome that cannot be correlated to
+// the latest tracked evaluation fails closed. Bounded: generations age out FIFO.
 const MAX_TRACKED_EVALUATIONS = 8;
-const MAX_TRACKED_TASKS = 32;
+
+/** How a settled evaluation ended. */
+export type PromotionOutcome =
+	| { kind: "captured"; report: PromotionReport }
+	/** Completed, but its output did not end with a valid report line. */
+	| { kind: "invalid" }
+	/** Failed, cancelled, timed out or aborted. */
+	| { kind: "failed" };
+
+/**
+ * What the Promoción group shows: idle (no verifier run yet), evaluating (the
+ * latest run is still going), or how the latest run settled.
+ */
+export type PromotionState = { kind: "idle" } | { kind: "evaluating" } | PromotionOutcome;
+
+const IDLE: PromotionState = { kind: "idle" };
 
 interface Evaluation {
 	toolCallId: string;
 	taskId?: string;
+	outcome?: PromotionOutcome["kind"];
 }
 
 interface SessionCapture {
-	report: PromotionReport | undefined;
+	state: PromotionState;
 	evaluations: Evaluation[];
-	capturedTasks: string[];
 }
 
-/** Where a completed report came from: the run's call id, its task id, or both. */
+/** Where a settled evaluation came from: the run's call id, its task id, or both. */
 export interface PromotionCaptureRef {
 	toolCallId?: string;
 	taskId?: string;
@@ -238,17 +315,17 @@ export class PromotionStatusRegistry {
 	private session(sessionId: string): SessionCapture {
 		let session = this.sessions.get(sessionId);
 		if (!session) {
-			session = { report: undefined, evaluations: [], capturedTasks: [] };
+			session = { state: IDLE, evaluations: [] };
 			this.sessions.set(sessionId, session);
 		}
 		return session;
 	}
 
 	/**
-	 * Opens a new evaluation for the verifier run behind this tool call and
-	 * clears the session's displayed report: while the fresh evaluation runs,
-	 * the panel shows the neutral no-candidate state — the stale candidate is
-	 * neither shown nor replaced by an invented one.
+	 * Opens a new evaluation for the verifier run behind this tool call. It
+	 * supersedes whatever the session showed: while it runs the panel says
+	 * "evaluando" — the stale candidate is neither shown nor replaced by an
+	 * invented one.
 	 */
 	beginEvaluation(sessionId: string | undefined, toolCallId: string | undefined): void {
 		if (!sessionId || !toolCallId) return;
@@ -257,7 +334,7 @@ export class PromotionStatusRegistry {
 		if (session.evaluations.at(-1)?.toolCallId === toolCallId) return;
 		session.evaluations.push({ toolCallId });
 		while (session.evaluations.length > MAX_TRACKED_EVALUATIONS) session.evaluations.shift();
-		session.report = undefined;
+		session.state = { kind: "evaluating" };
 	}
 
 	/** Learns the task id of the evaluation behind a verifier run's own result. */
@@ -268,34 +345,50 @@ export class PromotionStatusRegistry {
 	}
 
 	/**
-	 * Records a completed verifier report for a session. The report must
-	 * correlate to a tracked evaluation — by the run's toolCallId, else by a
-	 * previously correlated task id — and that evaluation must still be the
-	 * latest one, so the newest evaluation wins and older completions or
-	 * replays can never overwrite it. Returns the stored report, or undefined
-	 * when the capture fails closed (uncorrelated, stale, or a replay).
+	 * Records how a verifier evaluation settled. The outcome must correlate to
+	 * a tracked evaluation — by the run's toolCallId, else by a previously
+	 * correlated task id — that is still the latest one, and must not
+	 * contradict its correlated task id. A captured report is final for its
+	 * evaluation; an invalid or failed outcome can still be replaced by a valid
+	 * report for the same evaluation (another delivery path). Returns true only
+	 * when the displayed state changed (the caller redraws).
 	 */
-	capture(sessionId: string | undefined, ref: PromotionCaptureRef, report: PromotionReport): PromotionReport | undefined {
-		if (!sessionId) return undefined;
+	settle(sessionId: string | undefined, ref: PromotionCaptureRef, outcome: PromotionOutcome): boolean {
+		if (!sessionId) return false;
 		const session = this.sessions.get(sessionId);
-		if (!session) return undefined;
+		if (!session) return false;
 		let evaluation = ref.toolCallId !== undefined ? session.evaluations.find((candidate) => candidate.toolCallId === ref.toolCallId) : undefined;
 		if (!evaluation && ref.taskId !== undefined) evaluation = session.evaluations.find((candidate) => candidate.taskId === ref.taskId);
 		// Fail closed: no tracked evaluation to correlate, or a stale one.
-		if (!evaluation || evaluation !== session.evaluations.at(-1)) return undefined;
-		if (ref.taskId !== undefined) {
-			if (session.capturedTasks.includes(ref.taskId)) return undefined;
-			session.capturedTasks.push(ref.taskId);
-			while (session.capturedTasks.length > MAX_TRACKED_TASKS) session.capturedTasks.shift();
-			evaluation.taskId ??= ref.taskId;
-		}
-		session.report = report;
-		return report;
+		if (!evaluation || evaluation !== session.evaluations.at(-1)) return false;
+		if (ref.taskId !== undefined && evaluation.taskId !== undefined && evaluation.taskId !== ref.taskId) return false;
+		// Replays and late noise never displace a captured report.
+		if (evaluation.outcome === "captured") return false;
+		if (outcome.kind !== "captured" && evaluation.outcome === outcome.kind) return false;
+		if (ref.taskId !== undefined) evaluation.taskId ??= ref.taskId;
+		evaluation.outcome = outcome.kind;
+		session.state = outcome;
+		return true;
 	}
 
-	/** The session's captured report, or undefined before any completed verifier run. */
+	/**
+	 * Records a completed verifier report (the captured outcome). Returns the
+	 * stored report, or undefined when the capture fails closed (uncorrelated,
+	 * stale, contradictory, or a replay).
+	 */
+	capture(sessionId: string | undefined, ref: PromotionCaptureRef, report: PromotionReport): PromotionReport | undefined {
+		return this.settle(sessionId, ref, { kind: "captured", report }) ? report : undefined;
+	}
+
+	/** The session's promotion state; idle before any verifier run. */
+	state(sessionId: string | undefined): PromotionState {
+		return (sessionId ? this.sessions.get(sessionId)?.state : undefined) ?? IDLE;
+	}
+
+	/** The session's captured report, or undefined unless the latest evaluation captured one. */
 	get(sessionId: string | undefined): PromotionReport | undefined {
-		return sessionId ? this.sessions.get(sessionId)?.report : undefined;
+		const state = this.state(sessionId);
+		return state.kind === "captured" ? state.report : undefined;
 	}
 
 	/** Drops a session's capture (session switch or shutdown). */
@@ -322,11 +415,12 @@ export interface PromotionEventBus {
  * emitting an extension `message_end` for the result message, which pi skips
  * when an idle parent stores it with triggerTurn: false. The same fail-closed
  * rules apply as on every other path: the event must name the active session,
- * the completed ddata-promotion-verifier, and a task id correlated to that
- * session's latest evaluation. Capture is keyed by task id, so the event, the
- * result message and a later subagent_result pull never capture twice.
- * `onCapture` runs only when a report was actually stored (to redraw).
- * Returns the unsubscribe function.
+ * the ddata-promotion-verifier, and a task id correlated to that session's
+ * latest evaluation. A completed task settles as captured (valid report) or
+ * invalid (no valid last line); a failed/cancelled/timed-out one as failed.
+ * Once captured, the event, the result message and a later subagent_result
+ * pull for the same task never capture twice. `onCapture` runs only when the
+ * displayed state changed (to redraw). Returns the unsubscribe function.
  */
 export function installPromotionCompletionCapture(
 	events: PromotionEventBus,
@@ -336,29 +430,41 @@ export function installPromotionCompletionCapture(
 ): () => void {
 	return events.on(SUBAGENT_COMPLETED_EVENT, (data) => {
 		const event = readSubagentCompletedEvent(data);
-		if (!event || event.agent !== PROMOTION_VERIFIER_AGENT || event.status !== "completed") return;
+		if (!event || event.agent !== PROMOTION_VERIFIER_AGENT) return;
+		const failed = FAILED_STATUSES.has(event.status);
+		if (!failed && event.status !== "completed") return;
 		const sessionId = activeSessionId();
 		if (!sessionId || sessionId !== event.parentSessionId) return;
-		const report = parsePromotionReport(event.result);
-		if (report && registry.capture(sessionId, { taskId: event.taskId }, report)) onCapture();
+		if (registry.settle(sessionId, { taskId: event.taskId }, settledOutcome({ failed, text: event.result }))) onCapture();
 	});
 }
 
+/** Semantic tone of a row value; the shell maps it to a theme role. */
+export type PromotionRowTone = "warning" | "failure";
+
+/** One label/value row, with an optional tone for its value. */
+export type PromotionRow = readonly [label: string, value: string, tone?: PromotionRowTone];
+
 export interface PromotionSidebarRows {
 	/** Label/value rows rendered in the group's pair layout. */
-	pairs: Array<readonly [string, string]>;
-	/** Plain text rows under the pairs. */
-	lines: string[];
+	pairs: PromotionRow[];
 }
 
 /**
- * The Promoción group's rows. Before any capture the group says "sin
- * candidato"; an explicit no-candidate report says so with its verdict; a
- * candidate report names the candidate, its step and the advisory verdict.
+ * The Promoción group's rows. Every state the latest evaluation can be in has
+ * its own Estado row — no run yet, still evaluating, completed without a valid
+ * report, verifier error — so none of them reads as another. Only a captured
+ * report shows a verdict: an explicit no-candidate report says so with its
+ * verdict; a candidate report names the candidate, its step and the advisory
+ * verdict.
  */
-export function promotionSidebarRows(report: PromotionReport | null | undefined): PromotionSidebarRows {
-	if (!report) return { pairs: [], lines: ["sin candidato"] };
+export function promotionSidebarRows(state: PromotionState | undefined): PromotionSidebarRows {
+	if (!state || state.kind === "idle") return { pairs: [["Estado", "sin candidato"]] };
+	if (state.kind === "evaluating") return { pairs: [["Estado", "evaluando"]] };
+	if (state.kind === "invalid") return { pairs: [["Estado", "sin reporte válido", "warning"]] };
+	if (state.kind === "failed") return { pairs: [["Estado", "error del verificador", "failure"]] };
+	const { report } = state;
 	const verdict = `${report.verdict} · ${PROMOTION_ADVISORY_QUALIFIER}`;
-	if (report.candidateId === null) return { pairs: [["Candidato", "sin candidato"], ["Veredicto", verdict]], lines: [] };
-	return { pairs: [["Candidato", report.candidateId], ["Paso", report.step], ["Veredicto", verdict]], lines: [] };
+	if (report.candidateId === null) return { pairs: [["Candidato", "sin candidato"], ["Veredicto", verdict]] };
+	return { pairs: [["Candidato", report.candidateId], ["Paso", report.step], ["Veredicto", verdict]] };
 }

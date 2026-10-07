@@ -1093,6 +1093,59 @@ test("background completion messages fail closed without exact source or correla
 	}
 });
 
+test("every delivery path drives the explicit promotion state for the latest evaluation", async () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	const { ctx } = fakeContext();
+	const state = () => promotionStatusRegistry.state("shell-session");
+	const queued = { details: { gentleAgents: { taskId: "task-1", agent: "ddata-promotion-verifier", status: "queued" } } };
+	try {
+		await fire(handlers, "session_start", ctx);
+		assert.deepEqual(state(), { kind: "idle" }, "never run");
+		assert.deepEqual(buildShellBarModel(pi, ctx, emptyFooterData).promotion, { kind: "idle" }, "the sidebar model carries the state");
+		// Uncorrelated failures and unparseable completions are ignored.
+		await fireToolResult(handlers, promotionEvent({ isError: true }), ctx);
+		await fireMessageEnd(handlers, backgroundCompletion({ content: "no report" }), ctx);
+		assert.deepEqual(state(), { kind: "idle" }, "nothing to correlate: still idle");
+		// tool_result path: running, then an unparseable (fenced-twice) completion, then a failure.
+		await fireExecutionStart(handlers, verifierStart("call-1"), ctx);
+		assert.deepEqual(state(), { kind: "evaluating" });
+		await fireToolResult(handlers, promotionEvent(queued), ctx);
+		assert.deepEqual(state(), { kind: "evaluating" }, "a queued background start is still evaluating");
+		await fireToolResult(handlers, promotionEvent({ toolName: "subagent_result", toolCallId: "pull-1", content: [{ type: "text", text: "no report line" }] }), ctx);
+		assert.deepEqual(state(), { kind: "invalid" }, "a completed result without a valid last line");
+		await fireToolResult(handlers, promotionEvent({ toolName: "subagent_result", toolCallId: "pull-2", details: { gentleAgents: { taskId: "task-1", agent: "ddata-promotion-verifier", status: "failed" } } }), ctx);
+		assert.deepEqual(state(), { kind: "failed" }, "a failed task");
+		// A newer evaluation supersedes; an aborted foreground run is a failure.
+		await fireExecutionStart(handlers, verifierStart("call-2"), ctx);
+		assert.deepEqual(state(), { kind: "evaluating" });
+		await fireToolResult(handlers, promotionEvent({ toolCallId: "call-2", isError: true, details: undefined }), ctx);
+		assert.deepEqual(state(), { kind: "failed" }, "an aborted run");
+		// message_end path for a background evaluation.
+		await fireExecutionStart(handlers, verifierStart("call-3"), ctx);
+		await fireToolResult(handlers, promotionEvent({ toolCallId: "call-3", details: { gentleAgents: { taskId: "task-3", agent: "ddata-promotion-verifier", status: "queued" } } }), ctx);
+		const message = (status: string, content: string) => backgroundCompletion({ content, details: { gentleAgents: { taskId: "task-3", agent: "ddata-promotion-verifier", status, mode: "background" } } });
+		await fireMessageEnd(handlers, message("timed_out", "timed out"), ctx);
+		assert.deepEqual(state(), { kind: "failed" });
+		await fireMessageEnd(handlers, message("completed", "chatter only"), ctx);
+		assert.deepEqual(state(), { kind: "invalid" });
+		await fireMessageEnd(handlers, message("completed", `ok\n\`\`\`\n${PROMOTION_REPORT_MARKER} ${JSON.stringify({ candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "APTO" })}\n\`\`\``), ctx);
+		assert.deepEqual(state(), { kind: "captured", report: { candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "APTO" } }, "a fenced report captures");
+		// pi.events path for the next evaluation.
+		await fireExecutionStart(handlers, verifierStart("call-4"), ctx);
+		await fireToolResult(handlers, promotionEvent({ toolCallId: "call-4", details: { gentleAgents: { taskId: "task-4", agent: "ddata-promotion-verifier", status: "queued" } } }), ctx);
+		const event = (overrides: Record<string, unknown>) => ({ schema: SUBAGENT_COMPLETED_EVENT, parentSessionId: "shell-session", taskId: "task-4", agent: "ddata-promotion-verifier", status: "completed", mode: "background", ...overrides });
+		pi.events.emit(SUBAGENT_COMPLETED_EVENT, event({ result: "no report" }));
+		assert.deepEqual(state(), { kind: "invalid" });
+		pi.events.emit(SUBAGENT_COMPLETED_EVENT, event({ status: "failed" }));
+		assert.deepEqual(state(), { kind: "failed" });
+		pi.events.emit(SUBAGENT_COMPLETED_EVENT, event({ taskId: "task-3", status: "failed" }));
+		assert.deepEqual(state(), { kind: "failed" }, "the superseded task is ignored");
+	} finally {
+		promotionStatusRegistry.clear("shell-session");
+	}
+});
+
 test("a completed verifier evaluation is captured for the session and reaches the sidebar model", async () => {
 	const { pi, handlers } = fakePi();
 	gentleShell(pi, {});
@@ -1105,7 +1158,7 @@ test("a completed verifier evaluation is captured for the session and reaches th
 		oddPhaseRegistry.report("shell-session", "checking");
 		const built = buildShellBarModel(pi, ctx, emptyFooterData);
 		assert.equal(built.oddPhase, "checking", "the phase comes from oddPhaseRegistry.get, not prose");
-		assert.deepEqual(built.promotionReport, { candidateId: "lib/shell-bar.ts", step: "validacion-stage", verdict: "APTO" });
+		assert.deepEqual(built.promotion, { kind: "captured", report: { candidateId: "lib/shell-bar.ts", step: "validacion-stage", verdict: "APTO" } });
 	} finally {
 		oddPhaseRegistry.clear("shell-session");
 		promotionStatusRegistry.clear("shell-session");

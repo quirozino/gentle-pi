@@ -86,12 +86,17 @@ test("float cards, rail panels, the top bar and the prompt row paint only throug
 	// actual font is chosen by the terminal emulator and no theme can set it —
 	// so the gate only decides visibility and the roles do all the painting.
 	const promotion = renderShellSidebarBar(
-		{ ...model(), directory: directoryLevels("/srv/repo/lib", undefined, "/srv/repo"), oddPhase: "checking", promotionReport: { candidateId: "lib/x.ts", step: "validacion-stage", verdict: "APTO" } },
+		{ ...model(), directory: directoryLevels("/srv/repo/lib", undefined, "/srv/repo"), oddPhase: "checking", promotion: { kind: "captured", report: { candidateId: "lib/x.ts", step: "validacion-stage", verdict: "APTO" } } },
 		{ ...theme, name: "Matrix-Green" },
 		46,
 	);
 	assert.match(promotion.join("\n"), /Promoci/, "Matrix-Green paints the promotion group");
 	assertRolesOnly(promotion, "Matrix-Green promotion group");
+	for (const state of [{ kind: "evaluating" }, { kind: "invalid" }, { kind: "failed" }] as const) {
+		const rows = renderShellSidebarBar({ ...model(), promotion: state }, { ...theme, name: "Matrix-Green" }, 46);
+		assert.match(rows.join("\n"), /Estado/, `${state.kind}: the state row is painted`);
+		assertRolesOnly(rows, `Matrix-Green promotion ${state.kind} state`);
+	}
 
 	const header = renderShellHeaderChrome(buildShellHeaderModel(model()), theme, 120, "alt+u", undefined, 3);
 	assert.equal(header.headerRow, 1, "the float top bar is in effect");

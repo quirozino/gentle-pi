@@ -31,7 +31,7 @@ import { GentleAiDevBinaryOverrideError, resolveGentleAiDevBinaryOverride } from
 import { DOUBLE_ESC_CANCEL_HINT, floatPromptRow, framePromptLines, resolvePromptLayout, IDLE_ESC_CLEAR_HINT, PROMPT_HINT, PROMPT_STATE, SHELL_PULSE_MS, withPromptHint, type PromptState } from "../lib/shell-prompt.ts";
 import { SHELL_GLYPHS } from "../lib/shell-glyphs.ts";
 import { oddPhaseRegistry } from "../lib/odd-phase.ts";
-import { completedVerifierMessage, completedVerifierResult, installPromotionCompletionCapture, parsePromotionReport, promotionStatusRegistry, verifierRunStart, verifierRunTaskId } from "../lib/promotion-report.ts";
+import { installPromotionCompletionCapture, promotionStatusRegistry, settledOutcome, settledVerifierMessage, settledVerifierResult, verifierRunStart, verifierRunTaskId } from "../lib/promotion-report.ts";
 import { inferOddPhase } from "../lib/odd-phase-inference.ts";
 import { isInteractiveMode } from "../lib/rpc-host.ts";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
@@ -432,7 +432,7 @@ export function buildShellBarModel(
 		// findRepoRoot caches per cwd, so the per-frame rebuild never walks the disk twice.
 		directory: directoryLevels(ctx.sessionManager.getCwd(), home, findRepoRoot(ctx.sessionManager.getCwd())),
 		oddPhase: oddPhaseRegistry.get(ctx.sessionManager.getSessionId()),
-		promotionReport: promotionStatusRegistry.get(ctx.sessionManager.getSessionId()) ?? null,
+		promotion: promotionStatusRegistry.state(ctx.sessionManager.getSessionId()),
 		profile: options.profile,
 		profileModels: options.profileModels,
 		orchestratorModel: options.orchestratorModel,
@@ -2863,8 +2863,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	});
 	pi.on("tool_execution_start", (event, ctx) => {
 		// A ddata-promotion-verifier run opening opens a chronological
-		// evaluation: the fresh evaluation clears the stale candidate while it
-		// runs, and only this latest evaluation may later capture its report.
+		// evaluation: the panel says "evaluando" (the stale candidate is
+		// cleared) while it runs, and only this latest evaluation may settle.
 		if (!ctx.hasUI || !isInteractiveMode(ctx.mode)) return;
 		const start = verifierRunStart(event);
 		if (start) promotionStatusRegistry.beginEvaluation(ctx.sessionManager.getSessionId(), start.toolCallId);
@@ -2879,12 +2879,12 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		// subagent_result pull can be matched to its evaluation.
 		const running = verifierRunTaskId(event);
 		if (running) promotionStatusRegistry.correlate(ctx.sessionManager.getSessionId(), running.toolCallId, running.taskId);
-		const completed = completedVerifierResult(event);
-		if (!completed) return;
-		const report = parsePromotionReport(completed.text);
-		// The registry correlates the completion (run call id, else task id) and
-		// fails closed when it cannot, so stale or uncorrelated reports never win.
-		if (report) promotionStatusRegistry.capture(ctx.sessionManager.getSessionId(), { toolCallId: completed.toolCallId, taskId: completed.taskId }, report);
+		// A settled run — completed (valid report, or "sin reporte válido"),
+		// failed, cancelled or aborted — sets the panel's state. The registry
+		// correlates it (run call id, else task id) and fails closed when it
+		// cannot, so stale or uncorrelated outcomes never win.
+		const settled = settledVerifierResult(event);
+		if (settled) promotionStatusRegistry.settle(ctx.sessionManager.getSessionId(), { toolCallId: settled.toolCallId, taskId: settled.taskId }, settledOutcome(settled));
 	});
 	pi.on("message_end", (event, ctx) => {
 		// A background verifier's completion arrives as a gentle-agents result
@@ -2899,10 +2899,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		if (!ctx.hasUI || !isInteractiveMode(ctx.mode)) return;
 		const message = (event as { message?: unknown }).message;
 		if (typeof message !== "object" || message === null) return;
-		const completed = completedVerifierMessage(message);
-		if (!completed) return;
-		const report = parsePromotionReport(completed.text);
-		if (report) promotionStatusRegistry.capture(ctx.sessionManager.getSessionId(), { taskId: completed.taskId }, report);
+		const settled = settledVerifierMessage(message);
+		if (settled) promotionStatusRegistry.settle(ctx.sessionManager.getSessionId(), { taskId: settled.taskId }, settledOutcome(settled));
 	});
 	pi.on("agent_settled", (_event, ctx) => {
 		// Pi clears its own run-active flag before emitting agent_settled, so

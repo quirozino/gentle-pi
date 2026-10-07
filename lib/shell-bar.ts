@@ -11,7 +11,7 @@ import type { VisualSettings } from "./visual-customization-policy.ts";
 import { renderChangesWidget, type ChangesModel } from "./shell-changes.ts";
 import { renderDirectoryTree, type DirectoryLevel } from "./directory-tree.ts";
 import { oddPhaseLabel, type OddPhase } from "./odd-phase.ts";
-import { promotionSidebarRows, type PromotionReport } from "./promotion-report.ts";
+import { promotionSidebarRows, type PromotionRowTone, type PromotionState } from "./promotion-report.ts";
 
 type Presentation = Pick<VisualSettings, "density" | "visibility">;
 type HeaderPresentation = Presentation & Partial<Pick<VisualSettings, "headerPlacement" | "statusPlacement">>;
@@ -64,8 +64,8 @@ export interface ShellBarModel {
 	directory?: readonly DirectoryLevel[];
 	/** Session ODD phase read straight from oddPhaseRegistry; undefined is the idle "En espera". */
 	oddPhase?: OddPhase;
-	/** Captured advisory promotion verifier report; absent/null shows the neutral no-candidate state. */
-	promotionReport?: PromotionReport | null;
+	/** Promotion verifier state for the session; absent is idle ("sin candidato"). */
+	promotion?: PromotionState;
 }
 
 // The live header row above the fullscreen rail: session identity plus the
@@ -132,7 +132,13 @@ const ROLE = {
 	VALUE: "text",
 	STATUS: "muted",
 	SESSION: "dim",
+	// Promotion state words: yellow warning for an invalid report, red for a
+	// verifier failure; every other state is a plain VALUE.
+	WARNING: "warning",
+	FAILURE: "error",
 } as const;
+
+const PROMOTION_TONE_ROLE: Record<PromotionRowTone, string> = { warning: ROLE.WARNING, failure: ROLE.FAILURE };
 
 export const SHELL_BAR_BRAND = "✿ gentle shell";
 export const SHELL_BAR_SEPARATOR = "⟡";
@@ -389,7 +395,7 @@ export function renderShellSidebarCard(model: ShellBarModel, theme: ShellBarThem
 	// Capture and row-shaping stay theme-independent; only the group's
 	// visibility reads the live theme's name (Matrix-Green-only, see
 	// promotionGroupVisible).
-	const promotion = promotionGroupVisible(theme) ? promotionSidebarRows(model.promotionReport) : undefined;
+	const promotion = promotionGroupVisible(theme) ? promotionSidebarRows(model.promotion) : undefined;
 	const allGroups: StatusGroup[] = [
 		{
 			title: "Project",
@@ -431,17 +437,19 @@ export function renderShellSidebarCard(model: ShellBarModel, theme: ShellBarThem
 		// The cwd as a tree, sized at render time so long names clip, never wrap.
 		...(model.directory?.length ? [{ title: "Directorio", lines: [], fitted: (lineWidth: number) => renderDirectoryTree(model.directory ?? [], theme, lineWidth) }] : []),
 		// ODD phase + advisory promotion evidence in one group, directly after
-		// Directorio — only while Matrix-Green is the live theme. The verdict is
-		// displayed exactly as reported — never dressed up as deploy authority —
-		// and the idle phase is the neutral "En espera".
+		// Directorio — only while Matrix-Green is the live theme. The ODD row is
+		// the session's workflow phase (labelled so, never read as a promotion
+		// step; idle is the neutral "En espera"); the Estado row says which state
+		// the latest verifier evaluation is in, and a verdict is displayed
+		// exactly as reported — never dressed up as deploy authority.
 		...(promotion
 			? [{
 					title: "Promoción",
 					pairs: [
-						["Fase", model.oddPhase ? oddPhaseLabel(model.oddPhase) : "En espera"] as const,
-						...promotion.pairs,
+						["Fase ODD", model.oddPhase ? oddPhaseLabel(model.oddPhase) : "En espera"] as const,
+						...promotion.pairs.map(([key, text, tone]) => (tone ? [key, text, PROMOTION_TONE_ROLE[tone]] as const : [key, text] as const)),
 					],
-					lines: promotion.lines.map((line) => label(line)),
+					lines: [],
 				}]
 			: []),
 	];
@@ -455,7 +463,7 @@ export function renderShellSidebarCard(model: ShellBarModel, theme: ShellBarThem
 		const body = groups.flatMap((group, index) => [
 			...(index && (!presentation || presentation.density === "comfortable") ? [""] : []),
 			...(presentation?.density === "minimal" ? [] : [label(group.title)]),
-			...[...(group.value ? [value(group.value)] : []), ...(group.pairs ?? []).map(([key, text]) => `${label(key)} ${value(text)}`), ...group.lines]
+			...[...(group.value ? [value(group.value)] : []), ...(group.pairs ?? []).map(([key, text, role]) => `${label(key)} ${role ? theme.fg(role, theme.bold(text)) : value(text)}`), ...group.lines]
 				.flatMap((line) => wrapTextWithAnsi(line, innerWidth - inset).map((part) => " ".repeat(inset) + part)),
 			...(group.fitted?.(innerWidth - inset) ?? []).map((line) => " ".repeat(inset) + line),
 		]);
@@ -499,8 +507,8 @@ interface StatusGroup {
 	title: string;
 	/** Shown flush right on the heading row, e.g. the project path. */
 	value?: string;
-	/** Label/value rows: the value sits flush right when both fit on one row. */
-	pairs?: ReadonlyArray<readonly [string, string]>;
+	/** Label/value rows: the value sits flush right when both fit on one row; an optional third entry is the value's theme role. */
+	pairs?: ReadonlyArray<readonly [string, string, string?]>;
 	lines: string[];
 	/** Rows drawn for an exact line width instead of wrapped, e.g. the cwd tree. */
 	fitted?: (width: number) => string[];
@@ -546,9 +554,9 @@ function statusBoxRows(groups: StatusGroup[], theme: ShellBarTheme, boxWidth: nu
 	};
 	const rule = (left: string, right: string, line: string = PANEL.horizontal) => frame(left + line.repeat(boxWidth - 2) + right);
 	const row = (text: string) => `${frame(PANEL.vertical)} ${fit(text, content)} ${frame(PANEL.vertical)}`;
-	const pair = (key: string, text: string, keyRole: string = ROLE.LABEL): string[] => {
+	const pair = (key: string, text: string, keyRole: string = ROLE.LABEL, valueRole: string = ROLE.VALUE): string[] => {
 		const keyText = theme.fg(keyRole, theme.bold(key));
-		const valueText = theme.fg(ROLE.VALUE, theme.bold(text));
+		const valueText = theme.fg(valueRole, theme.bold(text));
 		const gap = content - visibleWidth(key) - visibleWidth(text);
 		if (gap >= 1) return [`${keyText}${" ".repeat(gap)}${valueText}`];
 		return [keyText, ...wrapTextWithAnsi(valueText, content - 1).map((part) => ` ${part}`)];
@@ -565,7 +573,7 @@ function statusBoxRows(groups: StatusGroup[], theme: ShellBarTheme, boxWidth: nu
 		...(presentation?.density === "minimal"
 			? group.value ? pair("", group.value) : []
 			: group.value ? pair(group.title, group.value, STATUS_PANEL_ROLE.HEADING) : [theme.fg(STATUS_PANEL_ROLE.HEADING, theme.bold(group.title))]),
-		...(group.pairs ?? []).flatMap(([key, text]) => pair(key, text)),
+		...(group.pairs ?? []).flatMap(([key, text, role]) => pair(key, text, ROLE.LABEL, role)),
 		...group.lines.flatMap((line) => wrapTextWithAnsi(line, content - 1).map((part) => ` ${part}`)),
 		...(group.fitted?.(content - 1) ?? []).map((line) => ` ${line}`),
 	]).filter((section) => section.length > 0);
