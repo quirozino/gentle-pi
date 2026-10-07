@@ -167,6 +167,57 @@ test("clearly mutating shell commands infer implementing", () => {
 	}
 });
 
+// A write counts as implementing only when it can touch the project: temp
+// and sink targets (/tmp, /var/tmp, $TMPDIR, a scratchpad, /dev/null, or a
+// path from $(mktemp)) are scratch work, not implementation.
+test("writes whose targets are all temp or sink paths never infer implementing", () => {
+	for (const command of [
+		"echo hi > /tmp/out.txt",
+		"cat f >> /var/tmp/log",
+		`echo x > "$TMPDIR/a"`,
+		"echo x > ${TMPDIR}/a",
+		"echo x > $TMPDIR",
+		"cp lib/a.ts /tmp/a.ts",
+		"mkdir -p /tmp/claude-1000/repo/scratchpad/run",
+		"touch /home/u/.cache/session/scratchpad/marker",
+		"rm -rf /tmp/build-x",
+		"rm -f /tmp/a /var/tmp/b",
+		"mv /tmp/a /tmp/b",
+		"sed -i 's/a/b/' /tmp/f",
+		"sort -o /tmp/s in.txt",
+		"git diff | tee /tmp/d.diff",
+		"git diff | tee /dev/null",
+		"t=$(mktemp); echo x > $t",
+		`d=$(mktemp -d) && cp lib/a.ts "$d/a.ts"`,
+		"f=$(mktemp /tmp/x.XXXX) && echo x > \"${f}\"",
+		`echo x > "$(mktemp)"`,
+		"cat <<'EOF' > /tmp/plan.md\nrm -rf dist\nEOF",
+	]) {
+		assert.notEqual(inferOddPhase("bash", { command }), "implementing", command);
+	}
+	// A read-only command that saves its output to scratch is still exploring.
+	assert.equal(inferOddPhase("bash", { command: "git diff > /tmp/x.diff" }), "exploring");
+	assert.equal(inferOddPhase("bash", { command: "git log --oneline | tee /tmp/log.txt" }), "exploring");
+});
+
+test("a write that reaches any project path still infers implementing", () => {
+	for (const command of [
+		"cp lib/a.ts /tmp/a && cp lib/a.ts lib/b.ts",
+		"echo x | tee /tmp/a lib/b.ts",
+		"rm -rf /tmp/x dist",
+		"mv /tmp/a lib/a.ts",
+		"cp /tmp/a lib/a.ts",
+		"echo x > /tmp/a; echo y > out.txt",
+		`t=$(mktemp); cp lib/a.ts "$t" && mv "$t" lib/a.ts`,
+		"echo x > /tmp/../home/u/repo/f",
+		"echo x > /tmpx/a",
+		"echo x > $HOME/repo/f",
+		"git add /tmp/x",
+	]) {
+		assert.equal(inferOddPhase("bash", { command }), "implementing", command);
+	}
+});
+
 test("a checking segment still wins over a mutating segment", () => {
 	assert.equal(inferOddPhase("bash", { command: "pnpm install && pnpm test" }), "checking");
 	assert.equal(inferOddPhase("bash", { command: "rm -rf dist && npm run build" }), "checking");

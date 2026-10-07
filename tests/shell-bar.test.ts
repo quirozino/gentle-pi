@@ -1137,15 +1137,45 @@ test("narrow widths keep the badge intact or fall back to the plain value, never
 // theme role so the live phase reads at a glance. Roles only, never a state
 // role, so a phase never looks like a verdict or a warning.
 const EXPECTED_ODD_PHASE_ROLE = {
-	authorizing: "mdHeading",
+	authorizing: "syntaxVariable",
 	exploring: "syntaxType",
 	researching: "syntaxNumber",
 	deciding: "syntaxVariable",
-	planning: "syntaxFunction",
+	planning: "syntaxNumber",
 	implementing: "accent",
-	checking: "syntaxType",
-	closing: "syntaxVariable",
+	checking: "syntaxVariable",
+	closing: "syntaxNumber",
 } as const;
+// The ODD transitions a session commonly makes, in either direction. Each pair
+// must change colour in Matrix-Green, compared by resolved hex, not role name.
+const COMMON_ODD_TRANSITIONS = [
+	["exploring", "checking"],
+	["implementing", "checking"],
+	["exploring", "implementing"],
+	["exploring", "planning"],
+	["planning", "implementing"],
+	["deciding", "exploring"],
+	["checking", "closing"],
+	["authorizing", "exploring"],
+	["researching", "exploring"],
+] as const;
+// Matrix-Green ships with gentle-studio, not this package; override the path
+// with GENTLE_MATRIX_GREEN_THEME when it lives elsewhere.
+const MATRIX_GREEN_THEME_PATH = process.env.GENTLE_MATRIX_GREEN_THEME ?? "/srv/workspaces/gentle-studio/themes/Matrix-Green.json";
+function readMatrixGreen(): { colors: Record<string, string>; vars: Record<string, string> } | undefined {
+	try {
+		return JSON.parse(readFileSync(MATRIX_GREEN_THEME_PATH, "utf8"));
+	} catch {
+		return undefined;
+	}
+}
+/** A theme colour value resolved through its vars to a lowercase hex. */
+function resolveThemeHex(theme: { colors: Record<string, string>; vars: Record<string, string> }, role: string): string {
+	let value = theme.colors[role];
+	for (let hops = 0; value !== undefined && !value.startsWith("#") && hops < 8; hops++) value = theme.vars[value];
+	assert.ok(value?.startsWith("#"), `${role} resolves to a hex colour`);
+	return value!.toLowerCase();
+}
 const PI_THEME_ROLES = new Set(Object.keys(JSON.parse(readFileSync(new URL("../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme-schema.json", import.meta.url), "utf8")).properties.colors.properties));
 
 test("each ODD phase renders the Fase ODD value as an inverse badge in its mapped theme role", (t) => {
@@ -1168,8 +1198,22 @@ test("the ODD phase badge map covers every phase with Pi theme roles only, never
 		assert.ok(PI_THEME_ROLES.has(role), `${phase}: ${role} is a Pi theme role`);
 		assert.doesNotMatch(role, /#|^(?:warning|error|success|syntaxString)$|Bg$/, `${phase}: ${role} is not hex, a state role, or yellow`);
 	}
-	// Adjacent phases never share a role, so a transition is always visible.
-	ODD_PHASES.slice(1).forEach((phase, index) => assert.notEqual(ODD_PHASE_BADGE_ROLE[phase], ODD_PHASE_BADGE_ROLE[ODD_PHASES[index]!], `${ODD_PHASES[index]} → ${phase}`));
+});
+
+test("every common ODD transition changes the badge colour in Matrix-Green", (t) => {
+	const theme = readMatrixGreen();
+	if (!theme) return t.skip(`Matrix-Green theme not found at ${MATRIX_GREEN_THEME_PATH}`);
+	for (const [phase, role] of Object.entries(ODD_PHASE_BADGE_ROLE)) {
+		assert.ok(Object.hasOwn(theme.colors, role), `${phase}: Matrix-Green defines ${role}`);
+		for (const state of ["warning", "error", "success", "syntaxString"]) {
+			assert.notEqual(resolveThemeHex(theme, role), resolveThemeHex(theme, state), `${phase}: ${role} never shares the ${state} colour`);
+		}
+	}
+	for (const [from, to] of COMMON_ODD_TRANSITIONS) {
+		const a = resolveThemeHex(theme, ODD_PHASE_BADGE_ROLE[from]);
+		const b = resolveThemeHex(theme, ODD_PHASE_BADGE_ROLE[to]);
+		assert.notEqual(a, b, `${from} (${ODD_PHASE_BADGE_ROLE[from]} ${a}) ↔ ${to} (${ODD_PHASE_BADGE_ROLE[to]} ${b}) must change colour`);
+	}
 });
 
 test("an idle ODD phase, or a theme without inverse video, keeps the Fase ODD value plain", () => {

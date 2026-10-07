@@ -155,19 +155,25 @@ const PHASE_TONE_ROLE: ReadonlyMap<string, string> = new Map([
 ]);
 
 // The theme role each ODD phase's Fase ODD badge is drawn in. Presentation
-// only, never a state role (warning/error/success) and never the yellow
-// syntaxString, so a phase never reads as a verdict or a warning. Adjacent
-// phases use different roles (and, in Matrix-Green, different colours), so a
-// transition is always visible. Idle ("En espera") stays plain text.
+// only: never a state role (warning/error/success) or the yellow
+// syntaxString, and no role here resolves to a state colour in Matrix-Green
+// (its success, which paints the running "evaluando" state, is the same
+// accSoft as mdHeading and syntaxFunction, so those are not used). Roles
+// repeat across phases. What is guaranteed, and tested against Matrix-Green's
+// resolved hex, is that the common transitions change colour: exploring,
+// implementing and checking are three distinct colours; planning differs from
+// exploring and implementing; authorizing, researching and deciding differ
+// from exploring; closing differs from checking. Other pairs, such as
+// deciding and checking, may share a colour. Idle ("En espera") stays plain.
 export const ODD_PHASE_BADGE_ROLE: Readonly<Record<OddPhase, string>> = Object.freeze({
-	authorizing: "mdHeading",
+	authorizing: "syntaxVariable",
 	exploring: "syntaxType",
 	researching: "syntaxNumber",
 	deciding: "syntaxVariable",
-	planning: "syntaxFunction",
+	planning: "syntaxNumber",
 	implementing: "accent",
-	checking: "syntaxType",
-	closing: "syntaxVariable",
+	checking: "syntaxVariable",
+	closing: "syntaxNumber",
 });
 
 /** The value's badge text: one space of padding each side. */

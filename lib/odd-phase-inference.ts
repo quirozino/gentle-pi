@@ -5,8 +5,10 @@
 //
 // The mapping is deliberately conservative: an unknown tool, unknown subagent
 // role, or an ambiguous shell command returns undefined so the caller leaves
-// the current label unchanged. A shell command that clearly writes (files,
-// the git index, dependencies) is implementing work, as an edit tool is. This module is pure (no Pi or registry
+// the current label unchanged. A shell command that clearly writes to the
+// project (files, the git index, dependencies) is implementing work, as an
+// edit tool is; a write whose targets are all scratch (/tmp, /var/tmp,
+// $TMPDIR, a scratchpad, /dev/null, a $(mktemp) path) is not. This module is pure (no Pi or registry
 // imports); precedence against explicit reports lives in OddPhaseRegistry.
 
 import type { OddPhase } from "./odd-phase.ts";
@@ -89,6 +91,8 @@ const EXPLORING_COMMANDS: readonly RegExp[] = [
 // command substitutions are classified as commands of their own).
 const NEUTRAL_COMMANDS: readonly RegExp[] = [
 	/^(cd|pushd|popd|echo|printf|sleep|true|false|export|set)\b/,
+	// Creates only a temp file or directory; its path is scratch (see below).
+	/^mktemp\b/,
 	/^(done|fi|esac|\}|\))$/,
 	/^for\s+\w+(\s+in\b.*)?$/,
 	// Each assignment must end at whitespace or the end: an optional separator
@@ -137,13 +141,46 @@ function isOddTaskPath(path: string | undefined): boolean {
  */
 function inferShellPhase(command: string | undefined): OddPhase | undefined {
 	if (command === undefined) return undefined;
-	const segments = splitShellCommands(command)
+	const raw = splitShellCommands(command);
+	const scratch = scratchVariables(raw);
+	const segments = raw
 		.map(stripSegment)
-		.filter((segment) => segment.length > 0 && !isNeutral(segment));
+		.filter((segment) => segment.length > 0 && !isNeutral(segment, scratch));
 	if (segments.length === 0) return undefined;
 	if (segments.some((segment) => matchesAny(CHECKING_COMMANDS, segment))) return "checking";
-	if (segments.some(isMutation)) return "implementing";
-	return segments.every(isReadOnlyInspection) ? "exploring" : undefined;
+	if (segments.some((segment) => isMutation(segment, scratch))) return "implementing";
+	return segments.every((segment) => isReadOnlyInspection(segment, scratch)) ? "exploring" : undefined;
+}
+
+// Stands in for a `$(mktemp ...)` substitution, so its path stays scratch.
+const MKTEMP_VARIABLE = "__GENTLE_MKTEMP";
+
+/**
+ * Variables that hold a scratch path: TMPDIR, plus any assigned from
+ * `$(mktemp ...)` or from another scratch path earlier in the command
+ * (`t=$(mktemp); cp a "$t"`).
+ */
+function scratchVariables(segments: readonly string[]): Set<string> {
+	const scratch = new Set(["TMPDIR", MKTEMP_VARIABLE]);
+	for (const segment of segments) {
+		const prefix = /^\s*(?:(?:export|local|readonly)\s+)?((?:[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|[^\s"'])*(?:\s+|$))+)/.exec(segment);
+		if (!prefix) continue;
+		for (const [, name, value] of prefix[1]!.matchAll(/([A-Za-z_]\w*)=((?:"[^"]*"|'[^']*'|[^\s"'])*)/g)) {
+			if (isScratchTarget(value!, scratch)) scratch.add(name!);
+			else scratch.delete(name!);
+		}
+	}
+	return scratch;
+}
+
+// A temp or sink path, never the project. Quotes are dropped, and a path
+// that climbs out with `..` is never scratch.
+function isScratchTarget(word: string, scratch: ReadonlySet<string>): boolean {
+	const target = word.replace(/["']/g, "");
+	if (/(^|\/)\.\.(\/|$)/.test(target)) return false;
+	if (target === "/dev/null" || /^\/(var\/)?tmp(\/|$)/.test(target) || target.includes("/scratchpad/")) return true;
+	const variable = /^\$(?:\{(\w+)\}|(\w+))(?=\/|$)/.exec(target);
+	return variable !== null && scratch.has((variable[1] ?? variable[2])!);
 }
 
 /**
@@ -170,8 +207,9 @@ function splitShellCommands(command: string): string[] {
 		} else if (char === "$" && command[i + 1] === "(") {
 			const end = findSubstitutionEnd(command, i + 2);
 			if (end < 0) return [...commands, current + command.slice(i)];
-			commands.push(...splitShellCommands(command.slice(i + 2, end)));
-			current += "$_";
+			const body = command.slice(i + 2, end);
+			commands.push(...splitShellCommands(body));
+			current += /^\s*mktemp\b/.test(body) ? `$${MKTEMP_VARIABLE}` : "$_";
 			i = end;
 		} else if (quote === '"') {
 			current += char;
@@ -251,32 +289,134 @@ function stripSegment(segment: string): string {
 		.replace(/^git\s+((-C|-c)\s+\S+\s+|--no-pager\s+)+/, "git ");
 }
 
-// A segment that writes a file (`echo x > out`) is never a no-op.
-function isNeutral(segment: string): boolean {
-	return !writesFile(segment) && matchesAny(NEUTRAL_COMMANDS, segment);
+// A segment that writes the project (`echo x > out`) is never a no-op; one
+// whose only writes are scratch (`tee /tmp/log`, `rm -rf /tmp/x`) is.
+function isNeutral(segment: string, scratch: ReadonlySet<string>): boolean {
+	if (writesProject(segment, scratch)) return false;
+	return matchesAny(NEUTRAL_COMMANDS, segment) || (matchesAny(IMPLEMENTING_COMMANDS, segment) && !isMutation(segment, scratch));
 }
 
-function isMutation(segment: string): boolean {
-	return writesFile(segment) || matchesAny(IMPLEMENTING_COMMANDS, segment);
+function isMutation(segment: string, scratch: ReadonlySet<string>): boolean {
+	return writesProject(segment, scratch) ||
+		(matchesAny(IMPLEMENTING_COMMANDS, segment) && commandWriteTargets(segment).some((target) => !isScratchTarget(target, scratch)));
 }
 
-function isReadOnlyInspection(segment: string): boolean {
-	return !writesFile(segment) && matchesAny(EXPLORING_COMMANDS, segment);
+function isReadOnlyInspection(segment: string, scratch: ReadonlySet<string>): boolean {
+	return !writesProject(segment, scratch) && matchesAny(EXPLORING_COMMANDS, segment);
 }
 
 // Stream merges and discarded output; neither writes a file.
 const HARMLESS_REDIRECTS = /\s*(\d?>&\d|&?\d?>\s*\/dev\/null)/g;
 
-// Output redirection to a file is a write. Quoted text and escaped
-// characters are data, so a `>` there is not a redirection; neither is the
-// string comparison inside `[[ ... ]]`.
-function writesFile(segment: string): boolean {
-	if (/^\[\[\s/.test(segment)) return false;
-	return segment
-		.replace(/\\./g, "")
-		.replace(/'[^']*'|"(?:\\.|[^"\\])*"/g, "")
-		.replace(HARMLESS_REDIRECTS, "")
-		.includes(">");
+// True when an output redirection targets anything but a scratch path.
+function writesProject(segment: string, scratch: ReadonlySet<string>): boolean {
+	return shellWords(segment).redirects.some((target) => !isScratchTarget(target, scratch));
+}
+
+/**
+ * The segment's words and its output-redirection targets, quotes kept.
+ * Quoted text and escaped characters are data, so a `>` there is not a
+ * redirection; neither is a fd duplication (`2>&1`), a process substitution
+ * (`>(cmd)`), or the string comparison inside `[[ ... ]]`.
+ */
+function shellWords(segment: string): { words: string[]; redirects: string[] } {
+	const words: string[] = [];
+	const redirects: string[] = [];
+	if (/^\[\[\s/.test(segment)) return { words: segment.split(/\s+/), redirects };
+	let i = 0;
+	const readWord = (): string => {
+		let word = "";
+		while (i < segment.length && !/[\s<>]/.test(segment[i]!)) {
+			const char = segment[i]!;
+			if (char === "\\") { word += segment.slice(i, i + 2); i += 2; continue; }
+			if (char === "'" || char === '"') {
+				const close = segment.indexOf(char, i + 1);
+				const end = close < 0 ? segment.length : close + 1;
+				word += segment.slice(i, end);
+				i = end;
+				continue;
+			}
+			word += char;
+			i++;
+		}
+		return word;
+	};
+	while (i < segment.length) {
+		const char = segment[i]!;
+		if (/\s/.test(char)) { i++; continue; }
+		if (char === "<") { i++; continue; }
+		if (char === ">") {
+			i++;
+			if (segment[i] === ">" || segment[i] === "|") i++;
+			if (segment[i] === "&" || segment[i] === "(") { i++; continue; }
+			while (/[ \t]/.test(segment[i] ?? "")) i++;
+			const target = readWord();
+			if (target) redirects.push(target);
+			continue;
+		}
+		const word = readWord();
+		// A fd number or `&` glued to the next `>` belongs to the redirection.
+		if (segment[i] === ">" && /^(\d|&)$/.test(word)) continue;
+		if (word) words.push(word);
+		else i++;
+	}
+	return { words, redirects };
+}
+
+/**
+ * The paths a mutating command writes, as far as can be read: every operand
+ * of rm/rmdir/mkdir/touch/mv/tee, the destination of cp/ln, the files of
+ * `sed -i`, the `-o` file of sort. Commands that change the repository or
+ * its dependencies (git, package managers, patch) always reach the project.
+ */
+function commandWriteTargets(segment: string): string[] {
+	const [command, ...args] = shellWords(segment).words;
+	const PROJECT = ["."];
+	const optionValue = (short: string, long: string): string | undefined => {
+		for (let k = 0; k < args.length; k++) {
+			if (args[k] === short) return args[k + 1];
+			if (args[k]!.startsWith(`${long}=`)) return args[k]!.slice(long.length + 1);
+		}
+		return undefined;
+	};
+	const operands = (skipValueOf: readonly string[] = []): string[] => {
+		const result: string[] = [];
+		let flags = true;
+		for (let k = 0; k < args.length; k++) {
+			const arg = args[k]!;
+			if (flags && arg === "--") { flags = false; continue; }
+			if (flags && arg.startsWith("-") && arg !== "-") {
+				if (skipValueOf.includes(arg)) k++;
+				continue;
+			}
+			result.push(arg);
+		}
+		return result;
+	};
+	let targets: string[];
+	switch (command) {
+		case "rm": case "rmdir": case "mkdir": case "touch": case "mv": case "tee":
+			targets = operands();
+			break;
+		case "cp": case "ln": {
+			const directory = optionValue("-t", "--target-directory");
+			targets = directory !== undefined ? [directory] : operands().slice(-1);
+			break;
+		}
+		case "sed": {
+			const files = operands(["-e", "-f", "--expression", "--file"]).filter((arg) => arg !== "''" && arg !== '""');
+			targets = args.some((arg) => /^(-e|-f|--expression|--file)(=|$)/.test(arg)) ? files : files.slice(1);
+			break;
+		}
+		case "sort": {
+			const output = optionValue("-o", "--output");
+			targets = output !== undefined ? [output] : [];
+			break;
+		}
+		default:
+			return PROJECT;
+	}
+	return targets.length > 0 ? targets : PROJECT;
 }
 
 function matchesAny(patterns: readonly RegExp[], segment: string): boolean {
