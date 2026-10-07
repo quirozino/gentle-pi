@@ -29,8 +29,8 @@ in `ddata-topology-maps` is tracked separately (T5).
 
 ## Tasks
 - [x] T1 Neon badge per ODD phase in "Fase ODD" (8 phases → theme roles, via existing badge painter; narrow-layout fallback kept). Route: delegated writer.
-- [ ] T2 Idle state label "sin verificación"; keep "sin candidato" only for a captured report without candidate. Route: delegated writer.
-- [ ] T3 "evaluando" painted with a green running role. Route: delegated writer.
+- [x] T2 Idle state label "sin verificación"; keep "sin candidato" only for a captured report without candidate. Route: delegated writer.
+- [x] T3 "evaluando" painted with a green running role. Route: delegated writer.
 - [ ] T4 Explicit phase tracking: classify bash writes (git commit/add, mv, cp, rm, mkdir, redirections, sed -i, tee) as implementing; strengthen orchestrator prompt to call `gentle_odd_phase` at each ODD transition; explicit redraw after evaluation begin/settle. Route: delegated writer.
 - [x] T5 ddata-topology-maps: commit verifier model change; push `docs/ddata-topology-promotion-maps` to origin (needs explicit approval). Route: guia.
 
@@ -48,3 +48,5 @@ Strategy: ask-on-risk. Forecast ~250 authored lines. One work-unit commit per ta
 - 2026-10-07: document created; guia preflight READY (A), NEEDS_APPROVAL for push (B).
 - T5 done: ddata-topology-maps commit 0c2a3407 pushed as origin/docs/ddata-topology-promotion-maps (upstream re-pointed; PR not opened).
 - T1 done: `ODD_PHASE_BADGE_ROLE` in lib/shell-bar.ts (authorizing=mdHeading, exploring=syntaxType, researching=syntaxNumber, deciding=syntaxVariable, planning=syntaxFunction, implementing=accent, checking=syntaxType, closing=syntaxVariable; Matrix-Green has 5 usable non-state colours, only non-adjacent phases share; syntaxString excluded as yellow). Checks: shell-bar 82/82, odd-phase 29/29, odd-phase-inference 17/17, promotion-report 44/44, promotion-guard 32/32, check:pi-contracts 7/7 (parent spot check: shell-bar 82/82).
+- T1 commit: 77bcf39b (assess: medium, under_budget, no review due).
+- T2+T3 done: idle Estado "sin verificación"; "sin candidato" only for captured report without candidate; "evaluando" tone running → role success (green in Matrix-Green, dark, light). Checks: promotion-report 44/44, shell-bar 82/82, odd-phase 29/29, odd-phase-inference 17/17, promotion-guard 32/32, check:pi-contracts 7/7 (parent spot check: promotion-report 44/44).

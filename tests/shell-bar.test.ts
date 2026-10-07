@@ -1030,7 +1030,8 @@ test("the promotion group shows the idle ODD phase and no candidate by default",
 	const body = renderShellSidebarBar(model(), matrixTheme, 60).map(stripAnsi).join("\n");
 	assert.match(body, /Fase ODD +En espera/, "an idle session shows the neutral label, never a stale phase");
 	assert.doesNotMatch(body, /Fase +En espera/, "the ODD workflow phase is labelled as such, never as a promotion phase");
-	assert.match(body, /Estado +sin candidato/, "no verifier run yet shows the explicit no-candidate state");
+	assert.match(body, /Estado +sin verificación/, "no verifier run yet shows the explicit not-verified state");
+	assert.doesNotMatch(body, /sin candidato/, "idle never reads as a report without a candidate");
 	assert.doesNotMatch(body, /Candidato|Paso|Veredicto/, "no candidate id, step or verdict before a completed verifier run");
 });
 
@@ -1204,7 +1205,7 @@ test("an idle session with a captured report keeps En espera and the captured ev
 
 test("each non-captured promotion state renders its own Estado row and never a verdict", () => {
 	const cases = [
-		[{ kind: "idle" }, "sin candidato"],
+		[{ kind: "idle" }, "sin verificación"],
 		[{ kind: "evaluating" }, "evaluando"],
 		[{ kind: "invalid" }, "sin reporte válido"],
 		[{ kind: "failed" }, "error del verificador"],
@@ -1232,8 +1233,15 @@ test("promotion state words paint through semantic theme roles only", () => {
 	};
 	assert.equal(roleOf({ kind: "failed" }).get("error del verificador"), "error", "a failed verifier paints with the error role");
 	assert.equal(roleOf({ kind: "invalid" }).get("sin reporte válido"), "warning", "an invalid report paints with the warning role");
-	assert.equal(roleOf({ kind: "evaluating" }).get("evaluando"), "text", "evaluating is a plain value");
-	assert.equal(roleOf({ kind: "idle" }).get("sin candidato"), "text");
+	assert.equal(roleOf({ kind: "evaluating" }).get("evaluando"), "success", "evaluating is running: the green success role");
+	assert.equal(roleOf({ kind: "evaluating" }, 15).get("evaluando"), "success", "the narrow fallback keeps the running role");
+	assert.equal(roleOf({ kind: "idle" }).get("sin verificación"), "text");
+	for (const promotion of [{ kind: "evaluating" }, { kind: "failed" }, { kind: "invalid" }] as const) {
+		for (const [text, role] of roleOf(promotion)) {
+			assert.ok(PI_THEME_ROLES.has(role), `${promotion.kind}: ${JSON.stringify(text)} paints with the Pi theme role ${role}`);
+			assert.doesNotMatch(role, /#/, `${promotion.kind}: no hex`);
+		}
+	}
 	assert.equal(roleOf({ kind: "failed" }, 15).get("error del verificador"), "error", "the narrow fallback keeps the role");
 });
 

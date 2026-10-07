@@ -206,9 +206,12 @@ test("evaluations are bounded: a pushed-out generation can no longer capture", (
 });
 
 test("promotionSidebarRows distinguishes every state and an explicit no-candidate report", () => {
-	assert.deepEqual(promotionSidebarRows(undefined), { pairs: [["Estado", "sin candidato"]] });
-	assert.deepEqual(promotionSidebarRows({ kind: "idle" }), { pairs: [["Estado", "sin candidato"]] });
-	assert.deepEqual(promotionSidebarRows({ kind: "evaluating" }), { pairs: [["Estado", "evaluando"]] });
+	// Idle means the verifier has not run in this session: "sin verificación",
+	// never "sin candidato", which a captured report without a candidate keeps.
+	assert.deepEqual(promotionSidebarRows(undefined), { pairs: [["Estado", "sin verificación"]] });
+	assert.deepEqual(promotionSidebarRows({ kind: "idle" }), { pairs: [["Estado", "sin verificación"]] });
+	// Evaluating is a running state: its value carries the running tone.
+	assert.deepEqual(promotionSidebarRows({ kind: "evaluating" }), { pairs: [["Estado", "evaluando", "running"]] });
 	assert.deepEqual(promotionSidebarRows({ kind: "invalid" }), { pairs: [["Estado", "sin reporte válido", "warning"]] });
 	assert.deepEqual(promotionSidebarRows({ kind: "failed" }), { pairs: [["Estado", "error del verificador", "failure"]] });
 	const none: PromotionReport = { candidateId: null, step: "sin-candidato", verdict: "EVIDENCIA INSUFICIENTE" };
@@ -445,7 +448,7 @@ test("a task's first non-captured outcome is final across replays, but a valid c
 test("a refused verifier launch withdraws its evaluation and restores the prior state", () => {
 	const registry = new PromotionStatusRegistry();
 	const a: PromotionReport = { candidateId: "a", step: "listo-para-decision", verdict: "APTO" };
-	// Nothing before: a refused launch leaves the panel idle ("sin candidato"), not failed.
+	// Nothing before: a refused launch leaves the panel idle ("sin verificación"), not failed.
 	registry.beginEvaluation("s", "call-1");
 	assert.equal(registry.withdraw("s", "call-1"), true);
 	assert.deepEqual(registry.state("s"), { kind: "idle" });

@@ -64,7 +64,7 @@ export interface ShellBarModel {
 	directory?: readonly DirectoryLevel[];
 	/** Session ODD phase read straight from oddPhaseRegistry; undefined is the idle "En espera". */
 	oddPhase?: OddPhase;
-	/** Promotion verifier state for the session; absent is idle ("sin candidato"). */
+	/** Promotion verifier state for the session; absent is idle ("sin verificación"). */
 	promotion?: PromotionState;
 }
 
@@ -135,12 +135,14 @@ const ROLE = {
 	STATUS: "muted",
 	SESSION: "dim",
 	// Promotion state words: yellow warning for an invalid report, red for a
-	// verifier failure; every other state is a plain VALUE.
+	// verifier failure, green for a running evaluation; every other state is a
+	// plain VALUE.
 	WARNING: "warning",
 	FAILURE: "error",
+	RUNNING: "success",
 } as const;
 
-const PROMOTION_TONE_ROLE: Record<PromotionRowTone, string> = { warning: ROLE.WARNING, failure: ROLE.FAILURE };
+const PROMOTION_TONE_ROLE: Record<PromotionRowTone, string> = { warning: ROLE.WARNING, failure: ROLE.FAILURE, running: ROLE.RUNNING };
 
 // Map phase tones (from the map repo's phase-tones file, via the verifier
 // report) to the theme role their Fase badge is drawn in. Presentation only,

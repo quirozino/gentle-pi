@@ -739,8 +739,8 @@ export function installPromotionCompletionCapture(
 	});
 }
 
-/** Semantic tone of a row value; the shell maps it to a theme role. */
-export type PromotionRowTone = "warning" | "failure";
+/** Semantic tone of a row value; the shell maps it to a theme role. "running" marks a state in progress. */
+export type PromotionRowTone = "warning" | "failure" | "running";
 
 /**
  * One label/value row, with an optional tone for its value. The Fase row may
@@ -763,8 +763,10 @@ export interface PromotionSidebarRows {
  * advisory verdict.
  */
 export function promotionSidebarRows(state: PromotionState | undefined): PromotionSidebarRows {
-	if (!state || state.kind === "idle") return { pairs: [["Estado", "sin candidato"]] };
-	if (state.kind === "evaluating") return { pairs: [["Estado", "evaluando"]] };
+	// Idle: the verifier has not run in this session. "sin candidato" is kept
+	// for a captured report that found no candidate, so the two never collide.
+	if (!state || state.kind === "idle") return { pairs: [["Estado", "sin verificación"]] };
+	if (state.kind === "evaluating") return { pairs: [["Estado", "evaluando", "running"]] };
 	if (state.kind === "invalid") return { pairs: [["Estado", "sin reporte válido", "warning"]] };
 	if (state.kind === "failed") return { pairs: [["Estado", "error del verificador", "failure"]] };
 	const { report } = state;
