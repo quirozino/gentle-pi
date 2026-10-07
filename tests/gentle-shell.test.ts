@@ -28,7 +28,7 @@ import { resolveHistoryCapturePolicy, writeHistoryCapturePolicy } from "../lib/h
 import { readBannerConfig } from "../extensions/startup-banner.ts";
 import { listVisualProfiles, saveVisualProfile } from "../lib/visual-profiles.ts";
 import { oddPhaseRegistry } from "../lib/odd-phase.ts";
-import { PROMOTION_REPORT_MARKER, promotionStatusRegistry } from "../lib/promotion-report.ts";
+import { PROMOTION_REPORT_MARKER, PROMOTION_REPORT_MARKER_V2, promotionStatusRegistry } from "../lib/promotion-report.ts";
 import { SUBAGENT_COMPLETED_EVENT } from "../lib/subagent-completion-event.ts";
 import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
 import { resolveCardStyle, writeCardStyle } from "../lib/card-style-policy.ts";
@@ -1219,6 +1219,21 @@ test("a completed verifier evaluation is captured for the session and reaches th
 		assert.deepEqual(built.promotion, { kind: "captured", report: { candidateId: "lib/shell-bar.ts", step: "listo-para-decision", verdict: "APTO" } });
 	} finally {
 		oddPhaseRegistry.clear("shell-session");
+		promotionStatusRegistry.clear("shell-session");
+	}
+});
+
+test("a V2 verifier report's map phase reaches the sidebar model through the tool_result path", async () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	const { ctx } = fakeContext();
+	try {
+		const fields = { candidateId: "lib/x.ts", step: "validacion-stage", verdict: "EVIDENCIA INSUFICIENTE", phaseId: "validar", phaseLabel: "Validar en Stage" };
+		await fireExecutionStart(handlers, verifierStart(), ctx);
+		await fireToolResult(handlers, promotionEvent({ content: [{ type: "text", text: `verificación lista\n${PROMOTION_REPORT_MARKER_V2} ${JSON.stringify(fields)}` }] }), ctx);
+		const report = { candidateId: "lib/x.ts", step: "validacion-stage", verdict: "EVIDENCIA INSUFICIENTE", phase: { id: "validar", label: "Validar en Stage" } };
+		assert.deepEqual(buildShellBarModel(pi, ctx, emptyFooterData).promotion, { kind: "captured", report });
+	} finally {
 		promotionStatusRegistry.clear("shell-session");
 	}
 });

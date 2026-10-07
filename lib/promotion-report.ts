@@ -3,7 +3,8 @@
 // Promoción group.
 //
 // The ddata-promotion-verifier child ends its output with a single line
-// `DDATA_PROMOTION_REPORT_V1 {json}`. The report is untrusted advisory
+// `DDATA_PROMOTION_REPORT_V2 {json}` (or the older `_V1`, which carries no map
+// phase). The report is untrusted advisory
 // evidence, never durable proof: nothing here writes, reaches the network, or
 // infers any authority (a deployed candidate, say) from an APTO verdict.
 
@@ -11,6 +12,7 @@ import { SUBAGENT_COMPLETED_EVENT, readSubagentCompletedEvent } from "./subagent
 
 export const PROMOTION_VERIFIER_AGENT = "ddata-promotion-verifier";
 export const PROMOTION_REPORT_MARKER = "DDATA_PROMOTION_REPORT_V1";
+export const PROMOTION_REPORT_MARKER_V2 = "DDATA_PROMOTION_REPORT_V2";
 
 /** The subagent tools whose runs and results can carry verifier evaluations. */
 const CAPTURE_TOOLS = new Set(["subagent_run", "subagent_result"]);
@@ -43,16 +45,38 @@ export type PromotionVerdict = (typeof PROMOTION_VERDICTS)[number];
 
 export const PROMOTION_CANDIDATE_PATTERN = /^[A-Za-z0-9._/-]{1,80}$/;
 
+/**
+ * Shape of a V2 map phase id. The phase list itself belongs to the canonical
+ * workflow map (`phases[]` in ddata-promotion.workflow.json), which the
+ * verifier copies verbatim; this module only checks the shape, so a map that
+ * adds or renames a phase needs no change here.
+ */
+export const PROMOTION_PHASE_ID_PATTERN = /^[a-z0-9_-]{1,32}$/;
+/** Longest V2 phase label, in code points. */
+export const PROMOTION_PHASE_LABEL_MAX = 48;
+// Control (Cc: C0, DEL, C1) and format (Cf: bidi overrides, zero-width)
+// characters in a decoded label: it is painted as terminal text, so either one
+// is hostile or invisible and fails closed.
+const LABEL_CONTROL = /[\p{Cc}\p{Cf}]/u;
+
 /** Rendered after every verdict so an APTO never reads as deploy authority. */
 export const PROMOTION_ADVISORY_QUALIFIER = "asesor · no autoriza despliegue";
 
 /** The gentle-agents completion message type (extensions/gentle-agents.ts AGENTS_RESULT_TYPE). */
 export const AGENTS_RESULT_CUSTOM_TYPE = "gentle-agents.result";
 
+/** The candidate's phase on the canonical promotion map, as the verifier reported it. */
+export interface PromotionPhase {
+	id: string;
+	label: string;
+}
+
 export interface PromotionReport {
 	candidateId: string | null;
 	step: PromotionStep;
 	verdict: PromotionVerdict;
+	/** Present only for a V2 report whose phase was determined (both fields non-null). */
+	phase?: PromotionPhase;
 }
 
 // One report line, one bounded scan: 1024 columns cover the widest legal
@@ -62,7 +86,10 @@ const MAX_REPORT_LINE = 1024;
 // Control characters (C0 + DEL) anywhere in the line: the report is plain
 // terminal text, so an escape sequence or stray control byte is hostile.
 const CONTROL = /[\u{0000}-\u{001F}\u{007F}]/u;
-const REPORT_LINE = /^DDATA_PROMOTION_REPORT_V1 (\{.*\})$/;
+const REPORT_LINE = /^DDATA_PROMOTION_REPORT_V([12]) (\{.*\})$/;
+// Exact field sets: V1 has no phase fields, V2 always has both.
+const V1_FIELDS = ["candidateId", "step", "verdict"] as const;
+const V2_FIELDS = [...V1_FIELDS, "phaseId", "phaseLabel"] as const;
 // Last-line extraction touches at most this tail of the output: a legal report
 // line (≤ MAX_REPORT_LINE) plus trailing whitespace up to the same bound is
 // always inside; a report hidden beyond it fails closed instead of paying an
@@ -91,6 +118,23 @@ function isPromotionVerdict(value: unknown): value is PromotionVerdict {
 	return typeof value === "string" && (PROMOTION_VERDICTS as readonly string[]).includes(value);
 }
 
+function hasExactFields(fields: Record<string, unknown>, expected: readonly string[]): boolean {
+	return Object.keys(fields).length === expected.length && expected.every((key) => key in fields);
+}
+
+/**
+ * A V2 phase pair: both null (undetermined, returned as null) or a slug id
+ * with a short plain label. Anything else is undefined (the report fails).
+ */
+function parsePhase(phaseId: unknown, phaseLabel: unknown): PromotionPhase | null | undefined {
+	if (phaseId === null && phaseLabel === null) return null;
+	if (typeof phaseId !== "string" || !PROMOTION_PHASE_ID_PATTERN.test(phaseId)) return undefined;
+	if (typeof phaseLabel !== "string" || LABEL_CONTROL.test(phaseLabel)) return undefined;
+	const length = [...phaseLabel].length;
+	if (length < 1 || length > PROMOTION_PHASE_LABEL_MAX) return undefined;
+	return { id: phaseId, label: phaseLabel };
+}
+
 /**
  * Parses the last line of a verifier child's output into its advisory report,
  * or undefined when the output does not end with a well-formed one. Last line
@@ -98,7 +142,9 @@ function isPromotionVerdict(value: unknown): value is PromotionVerdict {
  * trailing closing code fence is not a line of its own),
  * control-character free, exact field set, and a null candidate must pair with
  * the sin-candidato step (and a candidate with any other step), or the report
- * is rejected as inconsistent.
+ * is rejected as inconsistent. V1 has exactly three fields; V2 exactly five,
+ * whose phase pair is both null (undetermined, and always with sin-candidato)
+ * or a valid id and label; a determined phase is returned as `phase`.
  */
 export function parsePromotionReport(output: string | undefined): PromotionReport | undefined {
 	if (typeof output !== "string") return undefined;
@@ -106,15 +152,16 @@ export function parsePromotionReport(output: string | undefined): PromotionRepor
 	if (last.length === 0 || last.length > MAX_REPORT_LINE || CONTROL.test(last)) return undefined;
 	const match = REPORT_LINE.exec(last);
 	if (!match) return undefined;
+	const isV2 = match[1] === "2";
 	let parsed: unknown;
 	try {
-		parsed = JSON.parse(match[1]!);
+		parsed = JSON.parse(match[2]!);
 	} catch {
 		return undefined;
 	}
 	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
 	const fields = parsed as Record<string, unknown>;
-	if (Object.keys(fields).length !== 3 || !("candidateId" in fields) || !("step" in fields) || !("verdict" in fields)) return undefined;
+	if (!hasExactFields(fields, isV2 ? V2_FIELDS : V1_FIELDS)) return undefined;
 	if (!isPromotionStep(fields.step) || !isPromotionVerdict(fields.verdict)) return undefined;
 	// A non-null candidate must be a plain path-ish id; the explicit typed
 	// variable keeps the narrowing for the consistency check and the return.
@@ -128,7 +175,12 @@ export function parsePromotionReport(output: string | undefined): PromotionRepor
 	// Consistency: a null candidate is the sin-candidato step, nothing else.
 	if ((candidateId === null) !== (step === "sin-candidato")) return undefined;
 	if (contradictsContract(step, verdict)) return undefined;
-	return { candidateId, step, verdict };
+	if (!isV2) return { candidateId, step, verdict };
+	const phase = parsePhase(fields.phaseId, fields.phaseLabel);
+	if (phase === undefined) return undefined;
+	// No candidate has no place on the map.
+	if (phase !== null && step === "sin-candidato") return undefined;
+	return phase === null ? { candidateId, step, verdict } : { candidateId, step, verdict, phase };
 }
 
 /**
@@ -578,8 +630,9 @@ export interface PromotionSidebarRows {
  * its own Estado row — no run yet, still evaluating, completed without a valid
  * report, verifier error — so none of them reads as another. Only a captured
  * report shows a verdict: an explicit no-candidate report says so with its
- * verdict; a candidate report names the candidate, its step and the advisory
- * verdict.
+ * verdict; a candidate report names the candidate, its map phase when the
+ * report carries one (a V2 Fase row, never inferred), its step and the
+ * advisory verdict.
  */
 export function promotionSidebarRows(state: PromotionState | undefined): PromotionSidebarRows {
 	if (!state || state.kind === "idle") return { pairs: [["Estado", "sin candidato"]] };
@@ -589,5 +642,12 @@ export function promotionSidebarRows(state: PromotionState | undefined): Promoti
 	const { report } = state;
 	const verdict = `${report.verdict} · ${PROMOTION_ADVISORY_QUALIFIER}`;
 	if (report.candidateId === null) return { pairs: [["Candidato", "sin candidato"], ["Veredicto", verdict]] };
-	return { pairs: [["Candidato", report.candidateId], ["Paso", report.step], ["Veredicto", verdict]] };
+	return {
+		pairs: [
+			["Candidato", report.candidateId],
+			...(report.phase ? [["Fase", report.phase.label] as const] : []),
+			["Paso", report.step],
+			["Veredicto", verdict],
+		],
+	};
 }

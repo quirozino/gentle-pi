@@ -4,6 +4,7 @@ import {
 	PROMOTION_ADVISORY_QUALIFIER,
 	PROMOTION_CANDIDATE_PATTERN,
 	PROMOTION_REPORT_MARKER,
+	PROMOTION_REPORT_MARKER_V2,
 	PROMOTION_STEPS,
 	PROMOTION_VERIFIER_AGENT,
 	PROMOTION_VERDICTS,
@@ -474,4 +475,106 @@ test("restorePromotionState rebuilds the latest evaluation's outcome from sessio
 	registry.beginEvaluation("other", "call-1");
 	restorePromotionState(registry, "s", []);
 	assert.deepEqual(registry.state("other"), { kind: "evaluating" });
+});
+
+// --- Report V2: the candidate's phase on the canonical promotion map ---
+// The verifier copies phaseId/phaseLabel verbatim from the workflow map's
+// phases[]; the parser only checks their shape (the map is the source, so no
+// phase list is hardcoded here) and fails closed on anything else.
+
+const lineV2 = (fields: Record<string, unknown>): string => `${PROMOTION_REPORT_MARKER_V2} ${JSON.stringify(fields)}`;
+const v2 = (candidateId: unknown, step: unknown, verdict: unknown, phaseId: unknown, phaseLabel: unknown): Record<string, unknown> => ({ candidateId, step, verdict, phaseId, phaseLabel });
+
+test("parsePromotionReport accepts a V2 report carrying the map phase", () => {
+	assert.deepEqual(parsePromotionReport(`done\n${lineV2(v2("lib/x.ts", "validacion-stage", "EVIDENCIA INSUFICIENTE", "validar", "Validar en Stage"))}`), {
+		candidateId: "lib/x.ts",
+		step: "validacion-stage",
+		verdict: "EVIDENCIA INSUFICIENTE",
+		phase: { id: "validar", label: "Validar en Stage" },
+	});
+	// Labels are copied verbatim, punctuation and accents included.
+	assert.deepEqual(parsePromotionReport(lineV2(v2("lib/x.ts", "listo-para-decision", "APTO", "promover", "Promoción — propuesta")))?.phase, { id: "promover", label: "Promoción — propuesta" });
+	// Any slug-shaped id parses: the phase list belongs to the map, not here.
+	assert.deepEqual(parsePromotionReport(lineV2(v2("lib/x.ts", "validacion-stage", "EVIDENCIA INSUFICIENTE", "new_phase-2", "Otra fase")))?.phase, { id: "new_phase-2", label: "Otra fase" });
+	assert.deepEqual(parsePromotionReport(lineV2(v2("x", "validacion-stage", "EVIDENCIA INSUFICIENTE", "a".repeat(32), "L".repeat(48))))?.phase, { id: "a".repeat(32), label: "L".repeat(48) }, "both bounds are inclusive");
+});
+
+test("parsePromotionReport accepts a V2 report whose phase could not be determined (both null)", () => {
+	assert.deepEqual(parsePromotionReport(lineV2(v2("lib/x.ts", "evidencia-pendiente", "EVIDENCIA INSUFICIENTE", null, null))), { candidateId: "lib/x.ts", step: "evidencia-pendiente", verdict: "EVIDENCIA INSUFICIENTE" });
+	assert.deepEqual(parsePromotionReport(lineV2(v2(null, "sin-candidato", "EVIDENCIA INSUFICIENTE", null, null))), { candidateId: null, step: "sin-candidato", verdict: "EVIDENCIA INSUFICIENTE" });
+});
+
+test("parsePromotionReport rejects malformed V2 phase fields", () => {
+	const ok = (phaseId: unknown, phaseLabel: unknown) => lineV2(v2("lib/x.ts", "validacion-stage", "EVIDENCIA INSUFICIENTE", phaseId, phaseLabel));
+	assert.ok(parsePromotionReport(ok("validar", "Validar en Stage")), "sanity: the base V2 report parses");
+	assert.equal(parsePromotionReport(ok("validar", null)), undefined, "mixed null: label missing");
+	assert.equal(parsePromotionReport(ok(null, "Validar en Stage")), undefined, "mixed null: id missing");
+	for (const bad of ["", "Validar", "val idar", "validar!", "a".repeat(33), "fase/1", 7, true, {}]) {
+		assert.equal(parsePromotionReport(ok(bad, "Validar en Stage")), undefined, `phaseId ${JSON.stringify(bad)} must be rejected`);
+	}
+	for (const bad of ["", "L".repeat(49), "a\tb", "a\nb", "\u001b[31mx", "a\u0085b", "a\u202eb", 7, false, []]) {
+		assert.equal(parsePromotionReport(ok("validar", bad)), undefined, `phaseLabel ${JSON.stringify(bad)} must be rejected`);
+	}
+	// sin-candidato has no place on the map: its phase must be null.
+	assert.equal(parsePromotionReport(lineV2(v2(null, "sin-candidato", "EVIDENCIA INSUFICIENTE", "validar", "Validar en Stage"))), undefined, "sin-candidato with a phase");
+	// The step/verdict consistency rule still applies to V2.
+	assert.equal(parsePromotionReport(lineV2(v2("lib/x.ts", "bloqueado", "APTO", "validar", "Validar en Stage"))), undefined, "contradictory step/verdict");
+	assert.equal(parsePromotionReport(lineV2(v2(null, "listo-para-decision", "APTO", null, null))), undefined, "null candidate with a real step");
+});
+
+test("parsePromotionReport keeps each version's exact field set", () => {
+	const base = report("lib/x.ts", "validacion-stage", "EVIDENCIA INSUFICIENTE");
+	// V2 needs exactly five fields: neither missing nor extra phase fields.
+	assert.equal(parsePromotionReport(lineV2(base)), undefined, "V2 without phase fields");
+	assert.equal(parsePromotionReport(lineV2({ ...base, phaseId: "validar" })), undefined, "V2 missing phaseLabel");
+	assert.equal(parsePromotionReport(lineV2({ ...base, phaseLabel: "Validar en Stage" })), undefined, "V2 missing phaseId");
+	assert.equal(parsePromotionReport(lineV2({ ...base, phaseId: "validar", phaseLabel: "Validar en Stage", extra: 1 })), undefined, "V2 with an extra field");
+	assert.equal(parsePromotionReport(lineV2({ step: "validacion-stage", verdict: "EVIDENCIA INSUFICIENTE", phaseId: "validar", phaseLabel: "Validar en Stage", extra: 1 })), undefined, "V2 with five fields but no candidateId");
+	// V1 needs exactly three: a phase on a V1 line is not a V1 report.
+	assert.equal(parsePromotionReport(line({ ...base, phaseId: "validar", phaseLabel: "Validar en Stage" })), undefined, "V1 carrying phase fields");
+	assert.equal(parsePromotionReport(line({ ...base, phaseId: null, phaseLabel: null })), undefined, "V1 carrying null phase fields");
+	// V1 is still accepted, with no phase.
+	assert.deepEqual(parsePromotionReport(line(base)), { candidateId: "lib/x.ts", step: "validacion-stage", verdict: "EVIDENCIA INSUFICIENTE" });
+	// Unknown versions are not reports.
+	assert.equal(parsePromotionReport(`DDATA_PROMOTION_REPORT_V3 ${JSON.stringify(v2("lib/x.ts", "validacion-stage", "EVIDENCIA INSUFICIENTE", "validar", "Validar en Stage"))}`), undefined, "V3");
+});
+
+test("a V2 phase travels through the event capture and the history restore", () => {
+	const good = lineV2(v2("lib/x.ts", "listo-para-decision", "APTO", "aprobar", "Aprobación"));
+	const expected: PromotionReport = { candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "APTO", phase: { id: "aprobar", label: "Aprobación" } };
+	// pi.events completion path.
+	const registry = new PromotionStatusRegistry();
+	const handlers: Array<(data: unknown) => void> = [];
+	installPromotionCompletionCapture({ on(_channel: string, handler: (data: unknown) => void) { handlers.push(handler); return () => {}; } }, () => "s", () => {}, registry);
+	registry.beginEvaluation("s", "call-1");
+	registry.correlate("s", "call-1", "task-1");
+	for (const handler of handlers) handler({ schema: SUBAGENT_COMPLETED_EVENT, parentSessionId: "s", taskId: "task-1", agent: PROMOTION_VERIFIER_AGENT, status: "completed", mode: "background", result: `ok\n${good}` });
+	assert.deepEqual(registry.get("s"), expected);
+	// tool_result path.
+	const settled = settledVerifierResult({ toolName: "subagent_run", toolCallId: "call-2", isError: false, content: [{ type: "text", text: `ok\n${good}` }], details: { gentleAgents: { taskId: "task-2", agent: PROMOTION_VERIFIER_AGENT, status: "completed" } } });
+	assert.ok(settled);
+	assert.deepEqual(parsePromotionReport(settled.text), expected);
+	// message_end custom-message path.
+	const message = settledVerifierMessage({ customType: "gentle-agents.result", content: `ok\n${good}`, details: { gentleAgents: { taskId: "task-3", agent: PROMOTION_VERIFIER_AGENT, status: "completed" } } });
+	assert.ok(message);
+	assert.deepEqual(parsePromotionReport(message.text), expected);
+	// History restore.
+	const restored = new PromotionStatusRegistry();
+	restorePromotionState(restored, "s", [
+		{ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "subagent_run", arguments: { agent: PROMOTION_VERIFIER_AGENT, task: "evalua" } }] } },
+		{ type: "message", message: { role: "toolResult", toolCallId: "call-1", toolName: "subagent_run", isError: false, content: [{ type: "text", text: `ok\n${good}` }], details: { gentleAgents: { taskId: "task-1", agent: PROMOTION_VERIFIER_AGENT, status: "completed" } } } },
+	]);
+	assert.deepEqual(restored.get("s"), expected);
+});
+
+test("promotionSidebarRows adds a Fase row after Candidato only when the report carries a map phase", () => {
+	const qualified = (verdict: string) => `${verdict} · ${PROMOTION_ADVISORY_QUALIFIER}`;
+	const withPhase: PromotionReport = { candidateId: "lib/x.ts", step: "validacion-stage", verdict: "EVIDENCIA INSUFICIENTE", phase: { id: "validar", label: "Validar en Stage" } };
+	assert.deepEqual(promotionSidebarRows({ kind: "captured", report: withPhase }), {
+		pairs: [["Candidato", "lib/x.ts"], ["Fase", "Validar en Stage"], ["Paso", "validacion-stage"], ["Veredicto", qualified("EVIDENCIA INSUFICIENTE")]],
+	});
+	const { phase: _omitted, ...withoutPhase } = withPhase;
+	assert.deepEqual(promotionSidebarRows({ kind: "captured", report: withoutPhase }), {
+		pairs: [["Candidato", "lib/x.ts"], ["Paso", "validacion-stage"], ["Veredicto", qualified("EVIDENCIA INSUFICIENTE")]],
+	}, "no phase, no Fase row");
 });

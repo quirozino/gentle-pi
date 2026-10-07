@@ -92,6 +92,13 @@ test("float cards, rail panels, the top bar and the prompt row paint only throug
 	);
 	assert.match(promotion.join("\n"), /Promoci/, "Matrix-Green paints the promotion group");
 	assertRolesOnly(promotion, "Matrix-Green promotion group");
+	const phased = renderShellSidebarBar(
+		{ ...model(), oddPhase: "checking", promotion: { kind: "captured", report: { candidateId: "lib/x.ts", step: "validacion-stage", verdict: "EVIDENCIA INSUFICIENTE", phase: { id: "validar", label: "Validar en Stage" } } } },
+		{ ...theme, name: "Matrix-Green" },
+		46,
+	);
+	assert.match(phased.join("\n"), /Validar en Stage/, "the map phase row is painted");
+	assertRolesOnly(phased, "Matrix-Green promotion map phase row");
 	for (const state of [{ kind: "evaluating" }, { kind: "invalid" }, { kind: "failed" }] as const) {
 		const rows = renderShellSidebarBar({ ...model(), promotion: state }, { ...theme, name: "Matrix-Green" }, 46);
 		assert.match(rows.join("\n"), /Estado/, `${state.kind}: the state row is painted`);

@@ -1043,6 +1043,26 @@ test("the promotion group shows phase, candidate, step and verdict once a report
 	assert.doesNotMatch(body, /desplegad[oa]|deployed|aprobado para/i);
 });
 
+test("a captured V2 report's map phase renders as a Fase row between Candidato and Paso", () => {
+	const phase = { id: "promover", label: "Promoción — propuesta" };
+	const data = model({ oddPhase: "checking", promotion: { kind: "captured", report: { candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "APTO", phase } } });
+	const body = renderShellSidebarBar(data, matrixTheme, 60).map(stripAnsi).join("\n");
+	assert.match(body, /Fase ODD +checking…/, "the ODD row is unchanged");
+	assert.match(body, /Fase +Promoción — propuesta/, "the map phase label is shown verbatim");
+	const order = ["Candidato", "Fase  ", "Paso", "Veredicto"].map((key) => body.search(new RegExp(`${key.trimEnd()} +(?!ODD)`)));
+	assert.ok(order.every((index) => index >= 0) && order.every((index, i) => i === 0 || order[i - 1]! < index), `Candidato, Fase, Paso, Veredicto in order (${order})`);
+	// No phase in the report, no Fase row: only the ODD phase is labelled "Fase".
+	const plain = model({ promotion: { kind: "captured", report: { candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "APTO" } } });
+	const without = renderShellSidebarBar(plain, matrixTheme, 60).map(stripAnsi).join("\n");
+	assert.equal(without.match(/Fase(?! ODD)/g), null, "an absent phase adds no row");
+	// The narrow single-panel fallback keeps the phase row inside the frame.
+	for (const width of [14, 15, 24]) {
+		const rows = renderShellSidebarBar(data, matrixTheme, width);
+		assert.match(flattened(rows), /Fase Promoción/, `width ${width} keeps the phase`);
+		assert.ok(rows.every((row) => visibleWidth(row) <= width), `width ${width} keeps the frame`);
+	}
+});
+
 test("an idle session with a captured report keeps En espera and the captured evidence", () => {
 	const data = model({ promotion: { kind: "captured", report: { candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "EVIDENCIA INSUFICIENTE" } } });
 	const body = flattened(renderShellSidebarBar(data, matrixTheme, 60));
