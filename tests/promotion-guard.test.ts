@@ -5,7 +5,9 @@ import {
 	classifyPromotionBash,
 	classifyPromotionTool,
 	createCachedGit,
+	createDdataScopeProbe,
 	decidePromotion,
+	PROMOTION_VERIFIER_RULE,
 	type PromotionAction,
 	type PromotionGuardDeps,
 } from "../lib/promotion-guard.ts";
@@ -496,4 +498,106 @@ test("the crash fallback blocks every mutating firebase subcommand the classifie
 		assert.match(result?.reason ?? "", /deps exploded/);
 	}
 	assert.equal(await handler(bash("cd ~ && ls"), ctx), undefined, "non-promotion commands survive a crash");
+});
+
+// --- G4 automatic verifier invocation rule ----------------------------------
+
+type BeforeAgentStartHandler = (event: { systemPromptOptions?: { appendSystemPrompt: string }; agentName?: string }, ctx: ExtensionContext) => unknown;
+
+function ruleHarness(options: { child?: boolean; deps?: PromotionGuardDeps; now?: () => number } = {}) {
+	const handlers: BeforeAgentStartHandler[] = [];
+	const pi = { on: (name: string, handler: BeforeAgentStartHandler) => { if (name === "before_agent_start") handlers.push(handler); } } as unknown as ExtensionAPI;
+	createPromotionGuardExtension({
+		env: { GENTLE_PI_AGENTS_CHILD: options.child ? "1" : "0" },
+		deps: options.deps ?? fakeDeps(),
+		registry: { latestVerdict: () => undefined },
+		now: options.now,
+	})(pi);
+	assert.equal(handlers.length, 1);
+	const run = async (cwd: string, event: { agentName?: string; systemPromptOptions?: { appendSystemPrompt: string } } = {}) => {
+		const systemPromptOptions = event.systemPromptOptions ?? { appendSystemPrompt: "" };
+		const result = await handlers[0]({ ...event, systemPromptOptions }, { cwd } as unknown as ExtensionContext);
+		assert.equal(result, undefined, "the rule is appended, never returned as a replacement prompt");
+		return systemPromptOptions.appendSystemPrompt;
+	};
+	return { run };
+}
+
+const WORKSPACE_CHILDREN: Record<string, readonly string[]> = {
+	[WS]: [".codegraph", "notes", "ddata-ci"],
+	"/home/u/projects": ["alpha", "beta"],
+};
+const workspaceFiles = {
+	[`${WS}/ddata-ci/.git`]: "gitdir: /srv/git/ddata.git/worktrees/ddata-ci\n",
+	[`${WS}/notes/.git`]: "gitdir: /home/u/notes.git/worktrees/notes\n",
+	"/home/u/projects/alpha/.git": "gitdir: /home/u/alpha.git/worktrees/alpha\n",
+};
+const ruleDeps = (options: FakeOptions & { listDirThrows?: boolean } = {}) => ({
+	...fakeDeps({ files: workspaceFiles, ...options }),
+	listDir: (path: string) => {
+		if (options.listDirThrows) throw new Error("EACCES");
+		return WORKSPACE_CHILDREN[path];
+	},
+});
+
+test("the verifier rule is injected in a DDATA worktree and in a workspace holding one", async () => {
+	const { run } = ruleHarness({ deps: ruleDeps() });
+	for (const cwd of [DDATA, `${DDATA}/hosting`, WS]) {
+		const prompt = await run(cwd);
+		assert.equal(prompt, PROMOTION_VERIFIER_RULE, cwd);
+	}
+	assert.match(PROMOTION_VERIFIER_RULE, /ddata-promotion-verifier/);
+	assert.match(PROMOTION_VERIFIER_RULE, /subagent_run/);
+	assert.match(PROMOTION_VERIFIER_RULE, /40-hex/);
+	assert.match(PROMOTION_VERIFIER_RULE, /aplicacion\|esquema/);
+	assert.match(PROMOTION_VERIFIER_RULE, /listo-para-decision/);
+	assert.match(PROMOTION_VERIFIER_RULE, /APTO/);
+	assert.match(PROMOTION_VERIFIER_RULE, /ddata-promotion-gate/);
+	assert.ok(PROMOTION_VERIFIER_RULE.split("\n").length <= 12, "the rule stays concise");
+});
+
+test("the verifier rule is not injected outside DDATA", async () => {
+	const { run } = ruleHarness({ deps: ruleDeps() });
+	for (const cwd of [OTHER, "/home/u/projects", "/srv/elsewhere"]) assert.equal(await run(cwd), "", cwd);
+});
+
+test("the verifier rule is never injected into child or named-agent sessions", async () => {
+	const child = ruleHarness({ child: true, deps: ruleDeps() });
+	assert.equal(await child.run(DDATA), "");
+	assert.equal(await child.run(WS), "");
+	const primary = ruleHarness({ deps: ruleDeps() });
+	assert.equal(await primary.run(DDATA, { agentName: "ddata-promotion-verifier" }), "");
+});
+
+test("the verifier rule is appended once per turn after existing prompt text", async () => {
+	const { run } = ruleHarness({ deps: ruleDeps() });
+	const options = { appendSystemPrompt: "harness" };
+	await run(DDATA, { systemPromptOptions: options });
+	await run(DDATA, { systemPromptOptions: options });
+	assert.equal(options.appendSystemPrompt, `harness\n\n${PROMOTION_VERIFIER_RULE}`);
+});
+
+test("git or filesystem failures inject nothing and never throw", async () => {
+	const gitBroken = ruleHarness({ deps: ruleDeps({ gitThrows: () => true }) });
+	assert.equal(await gitBroken.run(DDATA), "");
+	const listBroken = ruleHarness({ deps: ruleDeps({ gitThrows: () => true, listDirThrows: true }) });
+	assert.equal(await listBroken.run(WS), "");
+	const exploding = new Proxy({}, { get: () => { throw new Error("deps exploded"); } }) as PromotionGuardDeps;
+	assert.equal(await ruleHarness({ deps: exploding }).run(DDATA), "");
+});
+
+test("the DDATA scope probe is cached per directory for a short TTL", () => {
+	let now = 0;
+	const deps = ruleDeps();
+	let listings = 0;
+	const counted = { ...deps, listDir: (path: string) => { listings++; return deps.listDir(path); } };
+	const probe = createDdataScopeProbe(counted, { ttlMs: 60_000, now: () => now });
+	assert.equal(probe(WS), true);
+	assert.equal(probe(WS), true);
+	assert.equal(listings, 1, "a second lookup within the TTL is served from cache");
+	now = 60_001;
+	assert.equal(probe(WS), true);
+	assert.equal(listings, 2, "the cache expires");
+	const broken = createDdataScopeProbe(ruleDeps({ gitThrows: () => true }), { now: () => now });
+	assert.equal(broken(DDATA), false);
 });

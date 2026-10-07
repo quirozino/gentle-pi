@@ -30,13 +30,14 @@ Today the verifier is advisory and only runs when the model chooses it; the `dda
 - [x] G2 — gentle-pi parser V3 + registry keeps candidate identity; plus advisories R3-001/R3-002 from review-b51a718619569811. Route: delegated.
 - [x] G3 — gentle-pi guard (command classification, block/confirm, tests). Route: delegated.
 - [x] G3b — Guard hardening from review-fdde09d8761aa7de advisories: R4-001 (git cache never invalidates, caches failures), R3-001 (MCP schema tools blocked outside DDATA), R3-002/R2-005 (nesting depth >4 fails open), R2-001 (unused DDATA_PRODUCTION_PROJECT), R2-002 (fallback LOOKS_PRODUCTION regex drifts from classifier), R2-003 (duplicate errorText), R2-004 (duplicate ref-resolution dir), R2-006 (stale test comment). Route: delegated.
-- [ ] G4 — gentle-pi auto-invoke injection for DDATA worktrees. Route: delegated.
+- [x] G4 — gentle-pi auto-invoke injection for DDATA worktrees. Route: delegated.
 
 ## Depends on
 `odd/tasks/promotion-map-phase.md` P3 (same files) must land first.
 
 ## Progress
 - 2026-10-07: native review of the prior gentle-pi slice (994c1dbac..0c5f67223: profiles symlink fix, map phase, badge) approved and acknowledged (lineage review-b51a718619569811); reviewed boundary is now 0c5f67223. Advisory R3-001 (assert idle promotion state after a throwing restore) and R3-002 (reject U+2028/U+2029 in phase labels) folded into G2.
+- G4 done (delegated writer): `before_agent_start` appends PROMOTION_VERIFIER_RULE once per turn in primary sessions when cwd is a DDATA worktree or directly contains one (`.git` file `gitdir: /srv/git/ddata.git/worktrees/…`); 60s cache, errors inject nothing. RED (import) → GREEN 31/31; 572/572 across guard/ai/agents/child-safety/shell; typecheck no regressions. Real probe: /srv/workspaces and ddata-ci inject; $HOME and gentle-pi do not.
 - G3b done (delegated writer): git cache TTL 60s without caching failures; MCP schema tools scoped by project_id (DDATA refs incl. tlkfgroaswzmuozodtjn blocked, foreign refs allowed, no ref blocked only in DDATA/unknown cwd); MAX_NESTING_DEPTH=4 now fails closed for promotion-looking text; single keyword source shared by classifier and crash fallback; shared errorText/refDir; stale comment fixed. RED 5/5 → GREEN; 342/342 pass; typecheck 0 errors.
 - Native review G2+G3 (0c5f67223..cadd42040, high, granted): lineage review-fdde09d8761aa7de, 4 lenses, approved, acknowledged, authority burned; reviewed boundary cadd42040. 4 WARNING + 4 SUGGESTION advisories → G3b. (Parent slip: first concurrent launch read the wrong lines of the capture list, so reliability ran separately after STATUS reoffered its slot.)
 - G3 done (delegated writer + inline child wiring): lib/promotion-guard.ts classifier (wrappers, cd tracking, .firebaserc/firebase-use project resolution, gh dispatch inputs, target SHA via git), extensions/promotion-guard.ts tool_call handler; Stage allow, schema always block, Firebase production only with captured V3 listo-para-decision+APTO+aplicacion+same SHA then ctx.ui.confirm; children always blocked from production — guard added to childContextExtensionPaths (writer's surface lacked gentle-agents.ts; parent did the 2-line mechanical edit, RED observed). Checks: 659/659 pass across guard/agents/child-safety/manifest/report/shell/ai; typecheck no regressions. ~1140 lines (≈400 tests) — above the 400 heuristic because the classifier must handle wrapper/quoting forms. Known bypasses recorded: eval/variables/aliases/Makefiles/written scripts, gh run rerun, numeric workflow ids, curl dispatch, gcloud default project/run deploy, other firebase subcommands, dirty worktree (HEAD only). CI production reviewer remains the real gate.
@@ -45,4 +46,4 @@ Today the verifier is advisory and only runs when the model chooses it; the `dda
 - 2026-10-07: created after mapping and user approval of the permission table.
 
 ## Next step
-G4 auto-invoke injection.
+Live check after `/reload` in a DDATA context: ask for a promotion status and confirm the orchestrator runs the verifier with SHA/scope/objective, the panel shows the V3 report with the phase badge, and a production deploy attempt is blocked without APTO. Push/PR remain owner decisions.

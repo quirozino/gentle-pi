@@ -59,6 +59,8 @@ export interface PromotionGuardDeps {
 	homedir: string;
 	/** DDATA checkout used to resolve release tags when the command's cwd is not one. */
 	topologyRoot?: string;
+	/** Names of the directories directly inside `path`; undefined when unreadable. Used only by the verifier-rule scope probe. */
+	listDir?: (path: string) => readonly string[] | undefined;
 }
 
 export type PromotionActionKind = "stage" | "production-firebase" | "production-schema" | "read-only";
@@ -103,6 +105,57 @@ export function createCachedGit(git: GitRun, options: { ttlMs?: number; now?: ()
 		const value = git(cwd, args);
 		if (value !== undefined) cache.set(cacheKey, { value, expires: now() + ttlMs });
 		return value;
+	};
+}
+
+// --- Automatic verifier invocation rule (G4) --------------------------------
+
+/** Appended to the primary session's system prompt whenever DDATA is in play. */
+export const PROMOTION_VERIFIER_RULE = [
+	"## DDATA promotion flow (enforced by the Pi promotion guard)",
+	"- Before any DDATA Stage or production action (deploy, release, workflow dispatch, promotion, schema migration), and whenever the user asks about promotion status, run the `ddata-promotion-verifier` subagent with subagent_run in the foreground, declaring the candidate's full 40-hex commit SHA, its scope (aplicacion|esquema) and the exact objective.",
+	"- Never judge promotion evidence inline; the `ddata-promotion-gate` skill is the verifier's contract, not a substitute for running it.",
+	"- Follow the map order: Stage validation -> owner approval in Stage (manual, owner only; never approve on the owner's behalf) -> production.",
+	"- Production is allowed only after a verifier report with step listo-para-decision and verdict APTO for the same SHA; the guard enforces this and also asks the owner to confirm.",
+	"- If the guard blocks a command, do not try alternative commands or wrappers to get around it; report the block reason, then run the verifier or wait for the owner.",
+	"- The report is advisory and expires when the candidate SHA, the map or the evidence changes; re-run the verifier after new commits.",
+].join("\n");
+
+/** Upper bound on directory entries the scope probe inspects in a workspace parent. */
+export const MAX_SCOPE_PROBE_CHILDREN = 1024;
+
+/** A linked worktree's `.git` file points at `<common dir>/worktrees/<name>`. */
+const isDdataWorktreeGitFile = (content: string | undefined) =>
+	content !== undefined && /^gitdir:\s*(\S+)/.exec(content.trim())?.[1]?.startsWith(`${DDATA_GIT_COMMON_DIR}/worktrees/`) === true;
+
+function isDdataScope(cwd: string, deps: PromotionGuardDeps): boolean {
+	const common = deps.git(cwd, COMMON_DIR_ARGS);
+	if (common !== undefined && common.replace(/\/+$/, "") === DDATA_GIT_COMMON_DIR) return true;
+	// A workspace parent (e.g. /srv/workspaces) holding DDATA worktrees: read each
+	// child's `.git` file instead of spawning git once per child.
+	const children = deps.listDir?.(cwd) ?? [];
+	return children.slice(0, MAX_SCOPE_PROBE_CHILDREN).some((name) => isDdataWorktreeGitFile(deps.readFile(posix.join(cwd, name, ".git"))));
+}
+
+/**
+ * Whether DDATA is in play for `cwd`: it is a DDATA worktree, or it directly
+ * contains one. Answers are cached per directory for a short TTL; any error
+ * answers false (and is not cached), so the probe never throws.
+ */
+export function createDdataScopeProbe(deps: PromotionGuardDeps, options: { ttlMs?: number; now?: () => number } = {}): (cwd: string) => boolean {
+	const ttlMs = options.ttlMs ?? GIT_CACHE_TTL_MS;
+	const now = options.now ?? Date.now;
+	const cache = new Map<string, { value: boolean; expires: number }>();
+	return (cwd) => {
+		try {
+			const hit = cache.get(cwd);
+			if (hit && hit.expires > now()) return hit.value;
+			const value = isDdataScope(cwd, deps);
+			cache.set(cwd, { value, expires: now() + ttlMs });
+			return value;
+		} catch {
+			return false;
+		}
 	};
 }
 

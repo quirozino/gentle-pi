@@ -1,15 +1,18 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import type { ExtensionAPI, ExtensionContext, ToolCallEventResult } from "@earendil-works/pi-coding-agent";
+import { appendSystemPromptOnce, type AppendableSystemPromptOptions } from "../lib/append-system-prompt.ts";
 import {
 	classifyPromotionBash,
 	classifyPromotionTool,
 	createCachedGit,
+	createDdataScopeProbe,
 	decidePromotion,
 	errorText,
 	PROMOTION_KEYWORDS,
 	PROMOTION_VERIFIER_HINT,
+	PROMOTION_VERIFIER_RULE,
 	type GitRun,
 	type PromotionAction,
 	type PromotionGuardDeps,
@@ -22,11 +25,18 @@ import { promotionStatusRegistry, type LatestPromotionVerdict } from "../lib/pro
 // promotion registry that gentle-shell feeds). It never approves: production
 // still needs an owner confirmation, and CI's production reviewer stays the
 // real gate.
+//
+// It also appends PROMOTION_VERIFIER_RULE to the primary session's system
+// prompt on every turn where DDATA is in play (a DDATA worktree cwd, or a
+// workspace parent that directly holds one), so the orchestrator runs the
+// verifier on its own and the guard is the backstop, not the first contact.
 
 export interface PromotionGuardOptions {
 	env?: NodeJS.ProcessEnv;
 	deps?: PromotionGuardDeps;
 	registry?: { latestVerdict(sessionId: string | undefined): LatestPromotionVerdict | undefined };
+	/** Clock for the DDATA scope probe cache (tests). */
+	now?: () => number;
 }
 
 const GIT_TIMEOUT_MS = 5_000;
@@ -53,7 +63,23 @@ export function defaultPromotionGuardDeps(): PromotionGuardDeps {
 			}
 		},
 		homedir: homedir(),
+		listDir: (path) => {
+			try {
+				return readdirSync(path, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+			} catch {
+				return undefined;
+			}
+		},
 	};
+}
+
+/** Same named-agent shapes gentle-ai treats as a non-primary before_agent_start. */
+function isNamedAgentStart(event: unknown): boolean {
+	const record = (value: unknown) => value && typeof value === "object" ? value as Record<string, unknown> : undefined;
+	const named = (value: unknown) => typeof value === "string" && value.trim().length > 0;
+	const root = record(event);
+	return named(root?.agentName) || named(root?.agent) || named(root?.name)
+		|| named(record(root?.agent)?.name) || named(record(root?.subagent)?.name);
 }
 
 const blocked = (reason: string): ToolCallEventResult => ({ block: true, reason });
@@ -64,6 +90,17 @@ export function createPromotionGuardExtension(options: PromotionGuardOptions = {
 		const deps = options.deps ?? defaultPromotionGuardDeps();
 		const registry = options.registry ?? promotionStatusRegistry;
 		const child = env.GENTLE_PI_AGENTS_CHILD === "1";
+		const ddataInPlay = createDdataScopeProbe(deps, { now: options.now });
+
+		pi.on("before_agent_start", (event, ctx: ExtensionContext) => {
+			try {
+				if (child || isNamedAgentStart(event) || typeof ctx?.cwd !== "string" || !ddataInPlay(ctx.cwd)) return undefined;
+				appendSystemPromptOnce((event as { systemPromptOptions?: AppendableSystemPromptOptions } | undefined)?.systemPromptOptions, PROMOTION_VERIFIER_RULE);
+			} catch {
+				// Best-effort guidance only: the tool_call guard below still enforces the order.
+			}
+			return undefined;
+		});
 
 		pi.on("tool_call", async (event, ctx: ExtensionContext) => {
 			const toolName: unknown = event?.toolName;
