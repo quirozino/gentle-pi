@@ -11,8 +11,10 @@ import {
 	completedVerifierMessage,
 	completedVerifierResult,
 	installPromotionCompletionCapture,
+	bareToolName,
 	parsePromotionReport,
 	promotionSidebarRows,
+	restorePromotionState,
 	promotionStatusRegistry,
 	settledVerifierMessage,
 	settledVerifierResult,
@@ -33,42 +35,45 @@ const line = (report: Record<string, unknown>): string => `${PROMOTION_REPORT_MA
 const report = (candidateId: unknown, step: unknown, verdict: unknown): Record<string, unknown> => ({ candidateId, step, verdict });
 
 test("parsePromotionReport reads the last line only", () => {
-	const parsed = parsePromotionReport(`mid-run chatter\nmore work output\n${line(report("lib/shell-bar.ts", "validacion-stage", "APTO"))}\n`);
-	assert.deepEqual(parsed, { candidateId: "lib/shell-bar.ts", step: "validacion-stage", verdict: "APTO" });
+	const parsed = parsePromotionReport(`mid-run chatter\nmore work output\n${line(report("lib/shell-bar.ts", "listo-para-decision", "APTO"))}\n`);
+	assert.deepEqual(parsed, { candidateId: "lib/shell-bar.ts", step: "listo-para-decision", verdict: "APTO" });
 	// A report line in the middle is not a report: only the last line counts.
-	assert.equal(parsePromotionReport(`${line(report("lib/shell-bar.ts", "validacion-stage", "APTO"))}\ntrailing chat`), undefined);
+	assert.equal(parsePromotionReport(`${line(report("lib/shell-bar.ts", "listo-para-decision", "APTO"))}\ntrailing chat`), undefined);
 });
 
 test("parsePromotionReport extracts the last line from a bounded tail of a long output", () => {
-	const good = line(report("lib/x.ts", "validacion-stage", "APTO"));
+	const good = line(report("lib/x.ts", "listo-para-decision", "APTO"));
 	const many = Array.from({ length: 50_000 }, (_, i) => `chatter ${i}`).join("\n");
-	assert.deepEqual(parsePromotionReport(`${many}\n${good}`), { candidateId: "lib/x.ts", step: "validacion-stage", verdict: "APTO" }, "a report after many lines still parses");
-	assert.deepEqual(parsePromotionReport(`${many}\n${good}\n\n \n`), { candidateId: "lib/x.ts", step: "validacion-stage", verdict: "APTO" }, "trailing blank lines do not hide the report");
+	assert.deepEqual(parsePromotionReport(`${many}\n${good}`), { candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "APTO" }, "a report after many lines still parses");
+	assert.deepEqual(parsePromotionReport(`${many}\n${good}\n\n \n`), { candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "APTO" }, "trailing blank lines do not hide the report");
 	// A last line beyond the bound is never a report.
-	assert.equal(parsePromotionReport(`${many}\n${PROMOTION_REPORT_MARKER} {"candidateId":"${"a".repeat(3000)}","step":"validacion-stage","verdict":"APTO"}`), undefined);
+	assert.equal(parsePromotionReport(`${many}\n${PROMOTION_REPORT_MARKER} {"candidateId":"${"a".repeat(3000)}","step":"listo-para-decision","verdict":"APTO"}`), undefined);
 });
 
 test("parsePromotionReport accepts every step and verdict with a matching candidate shape", () => {
 	for (const step of PROMOTION_STEPS) {
 		const candidateId = step === "sin-candidato" ? null : "a/b.c-d";
-		const parsed = parsePromotionReport(line(report(candidateId, step, "EVIDENCIA INSUFICIENTE")));
+		// Known-negative steps carry BLOQUEADO only (the verifier contract).
+		const verdict = step === "bloqueado" || step === "destino-no-disponible" ? "BLOQUEADO" : "EVIDENCIA INSUFICIENTE";
+		const parsed = parsePromotionReport(line(report(candidateId, step, verdict)));
 		assert.ok(parsed, `step ${step} must parse`);
-		assert.deepEqual(parsed, { candidateId, step, verdict: "EVIDENCIA INSUFICIENTE" });
+		assert.deepEqual(parsed, { candidateId, step, verdict });
 	}
+	const stepFor = { APTO: "listo-para-decision", BLOQUEADO: "bloqueado", "EVIDENCIA INSUFICIENTE": "validacion-stage" } as const;
 	for (const verdict of PROMOTION_VERDICTS) {
-		assert.deepEqual(parsePromotionReport(line(report("x", "validacion-stage", verdict))), { candidateId: "x", step: "validacion-stage", verdict });
+		assert.deepEqual(parsePromotionReport(line(report("x", stepFor[verdict], verdict))), { candidateId: "x", step: stepFor[verdict], verdict });
 	}
 });
 
 test("parsePromotionReport enforces the candidate id shape", () => {
 	assert.match("lib/shell-bar.ts", PROMOTION_CANDIDATE_PATTERN);
 	for (const bad of ["", "bad id!", "a".repeat(81), "x\\ny", "x\\ty"]) {
-		assert.equal(parsePromotionReport(line(report(bad, "validacion-stage", "APTO"))), undefined, `candidateId ${JSON.stringify(bad)} must be rejected`);
+		assert.equal(parsePromotionReport(line(report(bad, "listo-para-decision", "APTO"))), undefined, `candidateId ${JSON.stringify(bad)} must be rejected`);
 	}
 });
 
 test("parsePromotionReport rejects malformed reports", () => {
-	const good = line(report("lib/x.ts", "validacion-stage", "APTO"));
+	const good = line(report("lib/x.ts", "listo-para-decision", "APTO"));
 	assert.equal(parsePromotionReport("no report here\njust chat"), undefined);
 	assert.equal(parsePromotionReport(""), undefined);
 	assert.equal(parsePromotionReport(undefined as unknown as string), undefined);
@@ -78,23 +83,23 @@ test("parsePromotionReport rejects malformed reports", () => {
 	assert.equal(parsePromotionReport(`${PROMOTION_REPORT_MARKER} null`), undefined);
 	assert.equal(parsePromotionReport(`${PROMOTION_REPORT_MARKER} "a string"`), undefined);
 	assert.equal(parsePromotionReport(line({ candidateId: "x", step: "validacion-stage" })), undefined, "missing verdict");
-	assert.equal(parsePromotionReport(line({ ...report("x", "validacion-stage", "APTO"), extra: 1 })), undefined, "extra fields");
-	assert.equal(parsePromotionReport(line(report(7, "validacion-stage", "APTO"))), undefined, "non-string candidateId");
+	assert.equal(parsePromotionReport(line({ ...report("x", "listo-para-decision", "APTO"), extra: 1 })), undefined, "extra fields");
+	assert.equal(parsePromotionReport(line(report(7, "listo-para-decision", "APTO"))), undefined, "non-string candidateId");
 	assert.equal(parsePromotionReport(line(report("x", "nope", "APTO"))), undefined, "unknown step");
 	assert.equal(parsePromotionReport(line(report("x", "validacion-stage", "apto"))), undefined, "unknown verdict");
-	assert.equal(parsePromotionReport(`${PROMOTION_REPORT_MARKER}  ${JSON.stringify(report("x", "validacion-stage", "APTO"))}`), undefined, "two spaces before the JSON");
+	assert.equal(parsePromotionReport(`${PROMOTION_REPORT_MARKER}  ${JSON.stringify(report("x", "listo-para-decision", "APTO"))}`), undefined, "two spaces before the JSON");
 });
 
 test("parsePromotionReport rejects inconsistent null/non-null candidates and control characters", () => {
-	assert.equal(parsePromotionReport(line(report(null, "validacion-stage", "APTO"))), undefined, "null candidate with a real step");
+	assert.equal(parsePromotionReport(line(report(null, "listo-para-decision", "APTO"))), undefined, "null candidate with a real step");
 	assert.equal(parsePromotionReport(line(report("x", "sin-candidato", "APTO"))), undefined, "candidate with the no-candidate step");
 	// ANSI escapes and other control characters never pass, anywhere in the line.
-	assert.equal(parsePromotionReport(`${PROMOTION_REPORT_MARKER} {"candidateId":"\\u001b[31mx\\u001b[0m","step":"validacion-stage","verdict":"APTO"}`), undefined, "ANSI escape in the JSON");
-	assert.equal(parsePromotionReport(`${PROMOTION_REPORT_MARKER} ${JSON.stringify(report("x", "validacion-stage", "APTO"))}\\u0007`), undefined, "control character after the JSON");
+	assert.equal(parsePromotionReport(`${PROMOTION_REPORT_MARKER} {"candidateId":"\\u001b[31mx\\u001b[0m","step":"listo-para-decision","verdict":"APTO"}`), undefined, "ANSI escape in the JSON");
+	assert.equal(parsePromotionReport(`${PROMOTION_REPORT_MARKER} ${JSON.stringify(report("x", "listo-para-decision", "APTO"))}\\u0007`), undefined, "control character after the JSON");
 	// A JSON string escape decodes into a control character before the check.
-	assert.equal(parsePromotionReport(`${PROMOTION_REPORT_MARKER} {"candidateId":"a\\tb","step":"validacion-stage","verdict":"APTO"}`), undefined, "decoded control character in candidateId");
+	assert.equal(parsePromotionReport(`${PROMOTION_REPORT_MARKER} {"candidateId":"a\\tb","step":"listo-para-decision","verdict":"APTO"}`), undefined, "decoded control character in candidateId");
 	// Bounded: an oversized line is rejected outright.
-	assert.equal(parsePromotionReport(`${PROMOTION_REPORT_MARKER} {"candidateId":"${"a".repeat(2000)}","step":"validacion-stage","verdict":"APTO"}`), undefined);
+	assert.equal(parsePromotionReport(`${PROMOTION_REPORT_MARKER} {"candidateId":"${"a".repeat(2000)}","step":"listo-para-decision","verdict":"APTO"}`), undefined);
 });
 
 test("verifierRunStart recognizes only a ddata-promotion-verifier subagent_run start", () => {
@@ -107,7 +112,7 @@ test("verifierRunStart recognizes only a ddata-promotion-verifier subagent_run s
 });
 
 test("completedVerifierResult only accepts clean completed verifier subagent results", () => {
-	const content = [{ type: "text", text: `work done\n${line(report("a", "aprobacion-pendiente", "APTO"))}` }];
+	const content = [{ type: "text", text: `work done\n${line(report("a", "listo-para-decision", "APTO"))}` }];
 	const details = { gentleAgents: { taskId: "task-1", agent: PROMOTION_VERIFIER_AGENT, status: "completed" } };
 	assert.deepEqual(completedVerifierResult({ toolName: "subagent_run", toolCallId: "call-1", isError: false, content, details }), { toolCallId: "call-1", taskId: "task-1", text: content[0]!.text });
 	assert.deepEqual(completedVerifierResult({ toolName: "subagent_result", toolCallId: "call-2", isError: false, content, details }), { toolCallId: "call-2", taskId: "task-1", text: content[0]!.text });
@@ -128,7 +133,7 @@ test("verifierRunTaskId correlates a verifier run's own result to its task id", 
 });
 
 test("promotionStatusRegistry scopes captures to one session and fails closed without an evaluation", () => {
-	const first: PromotionReport = { candidateId: "a", step: "validacion-stage", verdict: "APTO" };
+	const first: PromotionReport = { candidateId: "a", step: "listo-para-decision", verdict: "APTO" };
 	promotionStatusRegistry.clear("session-a");
 	promotionStatusRegistry.clear("session-b");
 	assert.equal(promotionStatusRegistry.get("session-a"), undefined, "nothing captured yet");
@@ -149,7 +154,7 @@ test("promotionStatusRegistry scopes captures to one session and fails closed wi
 });
 
 test("the latest evaluation wins: a fresh run clears the stale candidate and older completions cannot overwrite", () => {
-	const a: PromotionReport = { candidateId: "a", step: "validacion-stage", verdict: "APTO" };
+	const a: PromotionReport = { candidateId: "a", step: "listo-para-decision", verdict: "APTO" };
 	const b: PromotionReport = { candidateId: "b", step: "bloqueado", verdict: "BLOQUEADO" };
 	promotionStatusRegistry.clear("session-a");
 	// The first evaluation completes.
@@ -178,7 +183,7 @@ test("the latest evaluation wins: a fresh run clears the stale candidate and old
 });
 
 test("correlate learns a background run's task id, and a later subagent_result pull completes it", () => {
-	const a: PromotionReport = { candidateId: "a", step: "aprobacion-pendiente", verdict: "APTO" };
+	const a: PromotionReport = { candidateId: "a", step: "listo-para-decision", verdict: "APTO" };
 	promotionStatusRegistry.clear("session-a");
 	promotionStatusRegistry.beginEvaluation("session-a", "call-1");
 	promotionStatusRegistry.correlate("session-a", "call-1", "task-1");
@@ -191,7 +196,7 @@ test("correlate learns a background run's task id, and a later subagent_result p
 test("evaluations are bounded: a pushed-out generation can no longer capture", () => {
 	promotionStatusRegistry.clear("session-a");
 	for (let i = 0; i < 9; i++) promotionStatusRegistry.beginEvaluation("session-a", `call-${i}`);
-	const a: PromotionReport = { candidateId: "a", step: "validacion-stage", verdict: "APTO" };
+	const a: PromotionReport = { candidateId: "a", step: "listo-para-decision", verdict: "APTO" };
 	assert.equal(promotionStatusRegistry.capture("session-a", { toolCallId: "call-0" }, a), undefined, "the oldest generation aged out");
 	assert.ok(promotionStatusRegistry.capture("session-a", { toolCallId: "call-8" }, a), "the newest generation still captures");
 	promotionStatusRegistry.clear("session-a");
@@ -205,12 +210,12 @@ test("promotionSidebarRows distinguishes every state and an explicit no-candidat
 	assert.deepEqual(promotionSidebarRows({ kind: "failed" }), { pairs: [["Estado", "error del verificador", "failure"]] });
 	const none: PromotionReport = { candidateId: null, step: "sin-candidato", verdict: "EVIDENCIA INSUFICIENTE" };
 	assert.deepEqual(promotionSidebarRows({ kind: "captured", report: none }), { pairs: [["Candidato", "sin candidato"], ["Veredicto", `EVIDENCIA INSUFICIENTE · ${PROMOTION_ADVISORY_QUALIFIER}`]] });
-	const some: PromotionReport = { candidateId: "lib/x.ts", step: "validacion-stage", verdict: "APTO" };
-	assert.deepEqual(promotionSidebarRows({ kind: "captured", report: some }), { pairs: [["Candidato", "lib/x.ts"], ["Paso", "validacion-stage"], ["Veredicto", `APTO · ${PROMOTION_ADVISORY_QUALIFIER}`]] });
+	const some: PromotionReport = { candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "APTO" };
+	assert.deepEqual(promotionSidebarRows({ kind: "captured", report: some }), { pairs: [["Candidato", "lib/x.ts"], ["Paso", "listo-para-decision"], ["Veredicto", `APTO · ${PROMOTION_ADVISORY_QUALIFIER}`]] });
 });
 
 test("completedVerifierMessage recognizes only a completed verifier result message", () => {
-	const text = `Subagent ${PROMOTION_VERIFIER_AGENT} (task task-1, "evalua") finished.\n\n${line(report("a", "aprobacion-pendiente", "APTO"))}`;
+	const text = `Subagent ${PROMOTION_VERIFIER_AGENT} (task task-1, "evalua") finished.\n\n${line(report("a", "listo-para-decision", "APTO"))}`;
 	const message = { customType: "gentle-agents.result", content: text, details: { gentleAgents: { taskId: "task-1", agent: PROMOTION_VERIFIER_AGENT, status: "completed", mode: "background" } } };
 	assert.deepEqual(completedVerifierMessage(message), { taskId: "task-1", text });
 	assert.equal(completedVerifierMessage({ ...message, customType: "gentle-agents.notification" }), undefined, "another custom type");
@@ -223,8 +228,8 @@ test("completedVerifierMessage recognizes only a completed verifier result messa
 });
 
 test("parsePromotionReport tolerates the report line closing a trailing code fence", () => {
-	const good = line(report("lib/x.ts", "validacion-stage", "APTO"));
-	const expected = { candidateId: "lib/x.ts", step: "validacion-stage", verdict: "APTO" };
+	const good = line(report("lib/x.ts", "listo-para-decision", "APTO"));
+	const expected = { candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "APTO" };
 	assert.deepEqual(parsePromotionReport(`done\n\`\`\`\n${good}\n\`\`\``), expected, "fenced report");
 	assert.deepEqual(parsePromotionReport(`done\n\`\`\`text\n${good}\n\n\`\`\`\n\n`), expected, "blank lines around the closing fence");
 	assert.deepEqual(parsePromotionReport(`${good}\n  \`\`\`  `), expected, "an indented closing fence with trailing spaces");
@@ -235,11 +240,11 @@ test("parsePromotionReport tolerates the report line closing a trailing code fen
 	assert.equal(parsePromotionReport(`${good}\n\`\`\`json`), undefined, "an opening fence is not a closing one");
 	assert.equal(parsePromotionReport("\`\`\`"), undefined, "a lone fence");
 	assert.equal(parsePromotionReport(`\`\`\`\n${PROMOTION_REPORT_MARKER} {broken\n\`\`\``), undefined, "a fenced malformed report");
-	assert.equal(parsePromotionReport(`\`\`\`\n${PROMOTION_REPORT_MARKER} {"candidateId":"${"a".repeat(3000)}","step":"validacion-stage","verdict":"APTO"}\n\`\`\``), undefined, "a fenced oversized line");
+	assert.equal(parsePromotionReport(`\`\`\`\n${PROMOTION_REPORT_MARKER} {"candidateId":"${"a".repeat(3000)}","step":"listo-para-decision","verdict":"APTO"}\n\`\`\``), undefined, "a fenced oversized line");
 });
 
 test("settledVerifierResult reports completed text and terminal failures of verifier results", () => {
-	const content = [{ type: "text", text: `work\n${line(report("a", "aprobacion-pendiente", "APTO"))}` }];
+	const content = [{ type: "text", text: `work\n${line(report("a", "listo-para-decision", "APTO"))}` }];
 	const gentle = (status: string, agent = PROMOTION_VERIFIER_AGENT) => ({ gentleAgents: { taskId: "task-1", agent, status } });
 	assert.deepEqual(settledVerifierResult({ toolName: "subagent_run", toolCallId: "call-1", isError: false, content, details: gentle("completed") }), { toolCallId: "call-1", taskId: "task-1", failed: false, text: content[0]!.text });
 	assert.deepEqual(settledVerifierResult({ toolName: "subagent_run", toolCallId: "call-1", isError: false, content: [], details: gentle("completed") }), { toolCallId: "call-1", taskId: "task-1", failed: false, text: "" }, "a completed run without text is settled, with nothing to parse");
@@ -275,7 +280,7 @@ test("settledVerifierMessage reports completed text and terminal failures of ver
 
 test("the registry models idle, evaluating, invalid, failed and captured, and a newer evaluation supersedes", () => {
 	const registry = new PromotionStatusRegistry();
-	const a: PromotionReport = { candidateId: "a", step: "validacion-stage", verdict: "APTO" };
+	const a: PromotionReport = { candidateId: "a", step: "listo-para-decision", verdict: "APTO" };
 	assert.deepEqual(registry.state("s"), { kind: "idle" }, "never run");
 	assert.deepEqual(registry.state(undefined), { kind: "idle" });
 	assert.equal(registry.settle("s", { toolCallId: "call-1" }, { kind: "failed" }), false, "uncorrelated outcomes are ignored");
@@ -334,8 +339,139 @@ test("the pi.events completion capture drives invalid, failed and captured state
 	assert.deepEqual(registry.state("s"), { kind: "invalid" }, "a completed run without any result text");
 	assert.equal(redraws, 1, "redraws only when the state changes");
 	emit({ status: "cancelled" });
+	assert.deepEqual(registry.state("s"), { kind: "invalid" }, "the first non-captured outcome is final: a failure replay does not flip it");
+	emit({ result: `ok\n\`\`\`\n${line(report("lib/x.ts", "listo-para-decision", "APTO"))}\n\`\`\`` });
+	assert.deepEqual(registry.state("s"), { kind: "captured", report: { candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "APTO" } }, "a fenced report captures");
+	assert.equal(redraws, 2, "invalid, then captured");
+});
+
+// --- T3: step/verdict consistency, namespaced tools, buffering, final outcomes, restore ---
+
+test("parsePromotionReport rejects step/verdict pairs the verifier contract contradicts", () => {
+	const contradictory: Array<[string, string]> = [
+		["evidencia-pendiente", "APTO"],
+		["validacion-stage", "APTO"],
+		["aprobacion-pendiente", "APTO"],
+		["destino-no-disponible", "APTO"],
+		["bloqueado", "APTO"],
+		["bloqueado", "EVIDENCIA INSUFICIENTE"],
+		["destino-no-disponible", "EVIDENCIA INSUFICIENTE"],
+		["listo-para-decision", "BLOQUEADO"],
+	];
+	for (const [step, verdict] of contradictory) {
+		assert.equal(parsePromotionReport(line(report("lib/x.ts", step, verdict))), undefined, `${step} + ${verdict} contradicts the contract`);
+	}
+	assert.equal(parsePromotionReport(line(report(null, "sin-candidato", "APTO"))), undefined, "APTO without a candidate");
+	const consistent: Array<[string | null, string, string]> = [
+		["lib/x.ts", "listo-para-decision", "APTO"],
+		["lib/x.ts", "listo-para-decision", "EVIDENCIA INSUFICIENTE"],
+		["lib/x.ts", "bloqueado", "BLOQUEADO"],
+		["lib/x.ts", "destino-no-disponible", "BLOQUEADO"],
+		["lib/x.ts", "validacion-stage", "EVIDENCIA INSUFICIENTE"],
+		["lib/x.ts", "validacion-stage", "BLOQUEADO"],
+		["lib/x.ts", "aprobacion-pendiente", "EVIDENCIA INSUFICIENTE"],
+		["lib/x.ts", "evidencia-pendiente", "EVIDENCIA INSUFICIENTE"],
+		[null, "sin-candidato", "EVIDENCIA INSUFICIENTE"],
+		[null, "sin-candidato", "BLOQUEADO"],
+	];
+	for (const [candidateId, step, verdict] of consistent) {
+		assert.deepEqual(parsePromotionReport(line(report(candidateId, step, verdict))), { candidateId, step, verdict }, `${step} + ${verdict} is consistent`);
+	}
+});
+
+test("verifier tracking accepts MCP-namespaced subagent tool names like ODD phase inference", () => {
+	const gentle = (status: string) => ({ gentleAgents: { taskId: "task-1", agent: PROMOTION_VERIFIER_AGENT, status } });
+	assert.equal(bareToolName("mcp__gentle__subagent_run"), "subagent_run");
+	assert.equal(bareToolName("subagent_run"), "subagent_run");
+	assert.deepEqual(verifierRunStart({ toolName: "mcp__gentle__subagent_run", toolCallId: "call-1", args: { agent: PROMOTION_VERIFIER_AGENT } }), { toolCallId: "call-1" });
+	assert.deepEqual(verifierRunTaskId({ toolName: "mcp__gentle__subagent_run", toolCallId: "call-1", details: gentle("queued") }), { toolCallId: "call-1", taskId: "task-1" });
+	assert.deepEqual(settledVerifierResult({ toolName: "mcp__gentle__subagent_result", toolCallId: "pull-1", isError: false, content: "x", details: gentle("completed") }), { toolCallId: "pull-1", taskId: "task-1", failed: false, text: "x" });
+	assert.deepEqual(settledVerifierResult({ toolName: "mcp__gentle__subagent_run", toolCallId: "call-1", isError: true }), { toolCallId: "call-1", taskId: undefined, failed: true, text: "" }, "a namespaced run that threw failed");
+	assert.equal(verifierRunTaskId({ toolName: "mcp__gentle__subagent_result", toolCallId: "pull-1", details: gentle("completed") }), undefined, "a namespaced pull is still not the run");
+	assert.equal(verifierRunStart({ toolName: "mcp_subagent_run", toolCallId: "call-1", args: { agent: PROMOTION_VERIFIER_AGENT } }), undefined, "not the MCP proxy shape");
+});
+
+test("a completion event that arrives before its task id is correlated settles once the run correlates", () => {
+	const registry = new PromotionStatusRegistry();
+	const handlers: Array<(data: unknown) => void> = [];
+	const bus = { on(_channel: string, handler: (data: unknown) => void) { handlers.push(handler); return () => {}; } };
+	let redraws = 0;
+	installPromotionCompletionCapture(bus, () => "s", () => { redraws += 1; }, registry);
+	const emit = (overrides: Record<string, unknown> = {}) => {
+		for (const handler of handlers) handler({ schema: SUBAGENT_COMPLETED_EVENT, parentSessionId: "s", taskId: "task-1", agent: PROMOTION_VERIFIER_AGENT, status: "completed", mode: "background", result: line(report("lib/x.ts", "listo-para-decision", "APTO")), ...overrides });
+	};
+	registry.beginEvaluation("s", "call-1");
+	emit();
+	assert.deepEqual(registry.state("s"), { kind: "evaluating" }, "not correlated yet: still evaluating");
+	assert.equal(registry.correlate("s", "call-1", "task-1"), true, "correlation applies the buffered completion");
+	assert.deepEqual(registry.state("s"), { kind: "captured", report: { candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "APTO" } });
+	// A buffered event for another task never settles the evaluation it does not belong to.
+	registry.beginEvaluation("s", "call-2");
+	emit({ taskId: "task-other" });
+	assert.equal(registry.correlate("s", "call-2", "task-2"), false);
+	assert.deepEqual(registry.state("s"), { kind: "evaluating" });
+	// A buffered event from before a newer evaluation began is dropped with it.
+	registry.beginEvaluation("s", "call-3");
+	emit({ taskId: "task-3" });
+	registry.beginEvaluation("s", "call-4");
+	assert.equal(registry.correlate("s", "call-4", "task-3"), false, "the buffer belonged to the superseded evaluation");
+	assert.deepEqual(registry.state("s"), { kind: "evaluating" });
+	assert.equal(redraws, 0, "buffering itself never redraws");
+});
+
+test("a task's first non-captured outcome is final across replays, but a valid capture still replaces it", () => {
+	const registry = new PromotionStatusRegistry();
+	const a: PromotionReport = { candidateId: "a", step: "listo-para-decision", verdict: "APTO" };
+	registry.beginEvaluation("s", "call-1");
+	assert.equal(registry.settle("s", { toolCallId: "call-1", taskId: "task-1" }, { kind: "invalid" }), true);
+	assert.equal(registry.settle("s", { taskId: "task-1" }, { kind: "failed" }), false, "invalid does not flip to failed");
+	assert.equal(registry.settle("s", { taskId: "task-1" }, { kind: "invalid" }), false);
+	assert.deepEqual(registry.state("s"), { kind: "invalid" });
+	registry.beginEvaluation("s", "call-2");
+	assert.equal(registry.settle("s", { toolCallId: "call-2", taskId: "task-2" }, { kind: "failed" }), true);
+	assert.equal(registry.settle("s", { taskId: "task-2" }, { kind: "invalid" }), false, "failed does not flip to invalid");
 	assert.deepEqual(registry.state("s"), { kind: "failed" });
-	emit({ result: `ok\n\`\`\`\n${line(report("lib/x.ts", "validacion-stage", "APTO"))}\n\`\`\`` });
-	assert.deepEqual(registry.state("s"), { kind: "captured", report: { candidateId: "lib/x.ts", step: "validacion-stage", verdict: "APTO" } }, "a fenced report captures");
-	assert.equal(redraws, 3);
+	assert.equal(registry.settle("s", { taskId: "task-2" }, { kind: "captured", report: a }), true, "a valid capture still wins");
+	assert.deepEqual(registry.state("s"), { kind: "captured", report: a });
+});
+
+test("restorePromotionState rebuilds the latest evaluation's outcome from session history", () => {
+	const verifierCall = (id: string, toolName = "subagent_run") => ({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "delegating" }, { type: "toolCall", id, name: toolName, arguments: { agent: PROMOTION_VERIFIER_AGENT, task: "evalua" } }] } });
+	const toolResult = (toolCallId: string, taskId: string, status: string, text = "", toolName = "subagent_run") => ({ type: "message", message: { role: "toolResult", toolCallId, toolName, isError: false, content: [{ type: "text", text }], details: { gentleAgents: { taskId, agent: PROMOTION_VERIFIER_AGENT, status } } } });
+	const customResult = (taskId: string, status: string, text: string) => ({ type: "custom_message", customType: "gentle-agents.result", content: text, display: true, details: { gentleAgents: { taskId, agent: PROMOTION_VERIFIER_AGENT, status, mode: "background" } } });
+	const good = line(report("lib/x.ts", "listo-para-decision", "APTO"));
+	const registry = new PromotionStatusRegistry();
+
+	// A background run whose result arrived as a gentle-agents custom message.
+	restorePromotionState(registry, "s", [verifierCall("call-1"), toolResult("call-1", "task-1", "queued"), customResult("task-1", "completed", `done\n${good}`)]);
+	assert.deepEqual(registry.state("s"), { kind: "captured", report: { candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "APTO" } });
+
+	// A foreground (namespaced) run that completed; a later run that produced no valid report wins.
+	restorePromotionState(registry, "s", [
+		verifierCall("call-1", "mcp__gentle__subagent_run"),
+		toolResult("call-1", "task-1", "completed", `ok\n${good}`, "mcp__gentle__subagent_run"),
+		verifierCall("call-2"),
+		toolResult("call-2", "task-2", "completed", `ok\n${line(report("lib/x.ts", "bloqueado", "APTO"))}`),
+	]);
+	assert.deepEqual(registry.state("s"), { kind: "invalid" }, "the latest evaluation is restored, and an inconsistent report stays invalid");
+
+	// A custom message wrapped as a pi message entry is read too; foreign agents and noise are ignored.
+	restorePromotionState(registry, "s", [
+		verifierCall("call-1"),
+		toolResult("call-1", "task-1", "queued"),
+		{ type: "message", message: { role: "custom", customType: "gentle-agents.result", content: `x\n${good}`, details: { gentleAgents: { taskId: "task-1", agent: PROMOTION_VERIFIER_AGENT, status: "completed" } } } },
+		customResult("task-9", "failed", ""),
+		{ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "call-x", name: "subagent_run", arguments: { agent: "other-agent" } }] } },
+		null,
+		{ type: "compaction" },
+	]);
+	assert.deepEqual(registry.get("s"), { candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "APTO" });
+
+	// No verifier activity in history: idle, and a previous capture never leaks.
+	restorePromotionState(registry, "s", [{ type: "message", message: { role: "user", content: "hola" } }]);
+	assert.deepEqual(registry.state("s"), { kind: "idle" });
+	// Only this session is touched.
+	registry.beginEvaluation("other", "call-1");
+	restorePromotionState(registry, "s", []);
+	assert.deepEqual(registry.state("other"), { kind: "evaluating" });
 });

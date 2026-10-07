@@ -15,6 +15,18 @@ export const PROMOTION_REPORT_MARKER = "DDATA_PROMOTION_REPORT_V1";
 /** The subagent tools whose runs and results can carry verifier evaluations. */
 const CAPTURE_TOOLS = new Set(["subagent_run", "subagent_result"]);
 
+/**
+ * A tool name without its MCP proxy namespace. Some runtimes expose tools as
+ * `mcp__<server>__<tool>`; this is the same normalisation ODD phase inference
+ * applies (lib/odd-phase-inference.ts normalizeToolName), so promotion
+ * tracking and the ODD phase recognise exactly the same subagent runs.
+ */
+export function bareToolName(toolName: string): string {
+	return toolName.replace(/^mcp__.+?__/, "");
+}
+
+const toolNameOf = (toolName: unknown): string | undefined => (typeof toolName === "string" ? bareToolName(toolName) : undefined);
+
 export const PROMOTION_STEPS = [
 	"sin-candidato",
 	"evidencia-pendiente",
@@ -115,7 +127,31 @@ export function parsePromotionReport(output: string | undefined): PromotionRepor
 	const verdict = fields.verdict;
 	// Consistency: a null candidate is the sin-candidato step, nothing else.
 	if ((candidateId === null) !== (step === "sin-candidato")) return undefined;
+	if (contradictsContract(step, verdict)) return undefined;
 	return { candidateId, step, verdict };
+}
+
+/**
+ * Step/verdict pairs the verifier contract rules out
+ * (ddata-topology-maps/.pi/agents/ddata-promotion-verifier.md). The contract
+ * gives no explicit table, so this is the minimal clearly-contradictory set:
+ *  - APTO only with `listo-para-decision`: line 55 defines it as "toda
+ *    evidencia requerida presente"; every other step names missing or negative
+ *    evidence, which line 49 maps to EVIDENCIA INSUFICIENTE or BLOQUEADO (and
+ *    a null candidate is a declaration gap, line 37).
+ *  - `bloqueado` ("fallo o denegación conocidos", line 55) and
+ *    `destino-no-disponible` ("destino conocido ausente", line 55) are known
+ *    negatives, which line 49 maps to BLOQUEADO only.
+ *  - BLOQUEADO is never `listo-para-decision`: a known negative is reported as
+ *    the `bloqueado` or `destino-no-disponible` step (line 55), so a step that
+ *    says all evidence is present cannot carry it.
+ * Anything else (e.g. EVIDENCIA INSUFICIENTE with listo-para-decision, for
+ * contradictory evidence per line 49) is left to the verifier.
+ */
+function contradictsContract(step: PromotionStep, verdict: PromotionVerdict): boolean {
+	if (verdict === "APTO") return step !== "listo-para-decision";
+	if (step === "bloqueado" || step === "destino-no-disponible") return verdict !== "BLOQUEADO";
+	return verdict === "BLOQUEADO" && step === "listo-para-decision";
 }
 
 /** A verifier run starting: the tool call whose completion will be correlated. */
@@ -129,7 +165,7 @@ export interface VerifierRunStart {
  * Anything else — other tools, other agents, missing ids — yields undefined.
  */
 export function verifierRunStart(event: { toolName?: unknown; toolCallId?: unknown; args?: unknown }): VerifierRunStart | undefined {
-	if (event.toolName !== "subagent_run") return undefined;
+	if (toolNameOf(event.toolName) !== "subagent_run") return undefined;
 	if (typeof event.toolCallId !== "string" || event.toolCallId.length === 0) return undefined;
 	if ((event.args as { agent?: unknown } | undefined)?.agent !== PROMOTION_VERIFIER_AGENT) return undefined;
 	return { toolCallId: event.toolCallId };
@@ -170,14 +206,15 @@ function textParts(content: unknown): string {
  * session's latest evaluation is the registry's job.
  */
 export function settledVerifierResult(event: { toolName?: unknown; toolCallId?: unknown; isError?: unknown; content?: unknown; details?: unknown }): SettledVerifierResult | undefined {
-	if (typeof event.toolName !== "string" || !CAPTURE_TOOLS.has(event.toolName)) return undefined;
+	const toolName = toolNameOf(event.toolName);
+	if (toolName === undefined || !CAPTURE_TOOLS.has(toolName)) return undefined;
 	if (typeof event.isError !== "boolean") return undefined;
 	const toolCallId = typeof event.toolCallId === "string" && event.toolCallId.length > 0 ? event.toolCallId : undefined;
 	const raw = (event.details as { gentleAgents?: unknown } | undefined)?.gentleAgents;
 	const gentle = typeof raw === "object" && raw !== null ? (raw as { agent?: unknown; status?: unknown; taskId?: unknown }) : undefined;
 	if (gentle && gentle.agent !== PROMOTION_VERIFIER_AGENT) return undefined;
 	const taskId = typeof gentle?.taskId === "string" && gentle.taskId.length > 0 ? gentle.taskId : undefined;
-	const isRun = event.toolName === "subagent_run";
+	const isRun = toolName === "subagent_run";
 	// A run that threw, or returned without ever creating a task, failed.
 	if (event.isError || !gentle) return isRun ? { toolCallId, taskId, failed: true, text: "" } : undefined;
 	if (gentle.status === "completed") return { toolCallId, taskId, failed: false, text: textParts(event.content) };
@@ -254,7 +291,7 @@ export function completedVerifierMessage(message: { customType?: unknown; conten
  * correlated through it. Not the result pull itself (subagent_result).
  */
 export function verifierRunTaskId(event: { toolName?: unknown; toolCallId?: unknown; details?: unknown }): { toolCallId: string; taskId: string } | undefined {
-	if (event.toolName !== "subagent_run") return undefined;
+	if (toolNameOf(event.toolName) !== "subagent_run") return undefined;
 	if (typeof event.toolCallId !== "string" || event.toolCallId.length === 0) return undefined;
 	const gentle = (event.details as { gentleAgents?: unknown } | undefined)?.gentleAgents;
 	if (typeof gentle !== "object" || gentle === null) return undefined;
@@ -270,6 +307,10 @@ export function verifierRunTaskId(event: { toolName?: unknown; toolCallId?: unkn
 // later noise for it are ignored, and an outcome that cannot be correlated to
 // the latest tracked evaluation fails closed. Bounded: generations age out FIFO.
 const MAX_TRACKED_EVALUATIONS = 8;
+// Completion outcomes that named only a task id the latest evaluation has not
+// correlated yet (a fast background task can finish before its run's own
+// tool_result reports the task id). They wait, bounded, for that correlation.
+const MAX_PENDING_OUTCOMES = 4;
 
 /** How a settled evaluation ended. */
 export type PromotionOutcome =
@@ -296,6 +337,8 @@ interface Evaluation {
 interface SessionCapture {
 	state: PromotionState;
 	evaluations: Evaluation[];
+	/** Uncorrelated task-id outcomes for the latest evaluation, oldest first. */
+	pending: Array<{ taskId: string; outcome: PromotionOutcome }>;
 }
 
 /** Where a settled evaluation came from: the run's call id, its task id, or both. */
@@ -315,7 +358,7 @@ export class PromotionStatusRegistry {
 	private session(sessionId: string): SessionCapture {
 		let session = this.sessions.get(sessionId);
 		if (!session) {
-			session = { state: IDLE, evaluations: [] };
+			session = { state: IDLE, evaluations: [], pending: [] };
 			this.sessions.set(sessionId, session);
 		}
 		return session;
@@ -334,14 +377,28 @@ export class PromotionStatusRegistry {
 		if (session.evaluations.at(-1)?.toolCallId === toolCallId) return;
 		session.evaluations.push({ toolCallId });
 		while (session.evaluations.length > MAX_TRACKED_EVALUATIONS) session.evaluations.shift();
+		// Buffered outcomes belonged to the superseded evaluation.
+		session.pending = [];
 		session.state = { kind: "evaluating" };
 	}
 
-	/** Learns the task id of the evaluation behind a verifier run's own result. */
-	correlate(sessionId: string | undefined, toolCallId: string | undefined, taskId: string | undefined): void {
-		if (!sessionId || !toolCallId || !taskId) return;
-		const evaluation = this.sessions.get(sessionId)?.evaluations.find((candidate) => candidate.toolCallId === toolCallId);
-		if (evaluation) evaluation.taskId ??= taskId;
+	/**
+	 * Learns the task id of the evaluation behind a verifier run's own result,
+	 * then applies any outcome buffered for that task while it was still
+	 * uncorrelated. Returns true only when the displayed state changed.
+	 */
+	correlate(sessionId: string | undefined, toolCallId: string | undefined, taskId: string | undefined): boolean {
+		if (!sessionId || !toolCallId || !taskId) return false;
+		const session = this.sessions.get(sessionId);
+		const evaluation = session?.evaluations.find((candidate) => candidate.toolCallId === toolCallId);
+		if (!session || !evaluation) return false;
+		evaluation.taskId ??= taskId;
+		if (evaluation !== session.evaluations.at(-1)) return false;
+		const buffered = session.pending.filter((entry) => entry.taskId === evaluation.taskId);
+		session.pending = [];
+		let changed = false;
+		for (const entry of buffered) changed = this.settle(sessionId, { taskId: entry.taskId }, entry.outcome) || changed;
+		return changed;
 	}
 
 	/**
@@ -349,9 +406,12 @@ export class PromotionStatusRegistry {
 	 * a tracked evaluation — by the run's toolCallId, else by a previously
 	 * correlated task id — that is still the latest one, and must not
 	 * contradict its correlated task id. A captured report is final for its
-	 * evaluation; an invalid or failed outcome can still be replaced by a valid
-	 * report for the same evaluation (another delivery path). Returns true only
-	 * when the displayed state changed (the caller redraws).
+	 * evaluation; the first invalid or failed outcome is final too (replays on
+	 * other delivery paths never flip it between the two), but a valid report
+	 * for the same evaluation can still replace it. An outcome that names only
+	 * a task id while the latest evaluation has no task id yet is buffered and
+	 * applied by correlate(). Returns true only when the displayed state
+	 * changed (the caller redraws).
 	 */
 	settle(sessionId: string | undefined, ref: PromotionCaptureRef, outcome: PromotionOutcome): boolean {
 		if (!sessionId) return false;
@@ -359,12 +419,21 @@ export class PromotionStatusRegistry {
 		if (!session) return false;
 		let evaluation = ref.toolCallId !== undefined ? session.evaluations.find((candidate) => candidate.toolCallId === ref.toolCallId) : undefined;
 		if (!evaluation && ref.taskId !== undefined) evaluation = session.evaluations.find((candidate) => candidate.taskId === ref.taskId);
+		if (!evaluation && ref.toolCallId === undefined && ref.taskId !== undefined) {
+			const latest = session.evaluations.at(-1);
+			// Not correlated yet: wait (bounded) for the run's own result.
+			if (latest && latest.taskId === undefined && latest.outcome !== "captured") {
+				session.pending.push({ taskId: ref.taskId, outcome });
+				while (session.pending.length > MAX_PENDING_OUTCOMES) session.pending.shift();
+			}
+			return false;
+		}
 		// Fail closed: no tracked evaluation to correlate, or a stale one.
 		if (!evaluation || evaluation !== session.evaluations.at(-1)) return false;
 		if (ref.taskId !== undefined && evaluation.taskId !== undefined && evaluation.taskId !== ref.taskId) return false;
 		// Replays and late noise never displace a captured report.
 		if (evaluation.outcome === "captured") return false;
-		if (outcome.kind !== "captured" && evaluation.outcome === outcome.kind) return false;
+		if (outcome.kind !== "captured" && evaluation.outcome !== undefined) return false;
 		if (ref.taskId !== undefined) evaluation.taskId ??= ref.taskId;
 		evaluation.outcome = outcome.kind;
 		session.state = outcome;
@@ -395,6 +464,60 @@ export class PromotionStatusRegistry {
 	clear(sessionId: string | undefined): void {
 		if (sessionId) this.sessions.delete(sessionId);
 	}
+}
+
+/** A session entry as pi stores it (SessionManager.getBranch()), read defensively. */
+interface HistoryEntry {
+	type?: unknown;
+	customType?: unknown;
+	content?: unknown;
+	details?: unknown;
+	message?: { role?: unknown; content?: unknown; toolCallId?: unknown; toolName?: unknown; isError?: unknown; customType?: unknown; details?: unknown };
+}
+
+/**
+ * Rebuilds a session's promotion state from its history, for a session that
+ * starts fresh, resumed or reloaded. The capture itself is in-memory, but the
+ * evidence is still in the session: assistant tool calls that start a
+ * verifier run, their tool results (correlation and settlement, including
+ * subagent_result pulls), and gentle-agents result custom messages for
+ * background runs. They are replayed in order through the same recognisers
+ * and registry rules as the live events, so the latest evaluation wins, only
+ * a valid report is captured, and everything else fails closed. Replaces
+ * whatever the session showed before.
+ */
+export function restorePromotionState(registry: PromotionStatusRegistry, sessionId: string | undefined, entries: readonly unknown[]): void {
+	if (!sessionId) return;
+	registry.clear(sessionId);
+	for (const raw of entries) {
+		if (typeof raw !== "object" || raw === null) continue;
+		const entry = raw as HistoryEntry;
+		if (entry.type === "custom_message") {
+			settleMessage(registry, sessionId, entry);
+			continue;
+		}
+		const message = entry.type === "message" ? entry.message : undefined;
+		if (typeof message !== "object" || message === null) continue;
+		if (message.role === "assistant" && Array.isArray(message.content)) {
+			for (const part of message.content as Array<{ type?: unknown; id?: unknown; name?: unknown; arguments?: unknown }>) {
+				if (typeof part !== "object" || part === null || part.type !== "toolCall") continue;
+				const start = verifierRunStart({ toolName: part.name, toolCallId: part.id, args: part.arguments });
+				if (start) registry.beginEvaluation(sessionId, start.toolCallId);
+			}
+		} else if (message.role === "toolResult") {
+			const running = verifierRunTaskId(message);
+			if (running) registry.correlate(sessionId, running.toolCallId, running.taskId);
+			const settled = settledVerifierResult(message);
+			if (settled) registry.settle(sessionId, { toolCallId: settled.toolCallId, taskId: settled.taskId }, settledOutcome(settled));
+		} else if (message.role === "custom") {
+			settleMessage(registry, sessionId, message);
+		}
+	}
+}
+
+function settleMessage(registry: PromotionStatusRegistry, sessionId: string, message: { customType?: unknown; content?: unknown; details?: unknown }): void {
+	const settled = settledVerifierMessage(message);
+	if (settled) registry.settle(sessionId, { taskId: settled.taskId }, settledOutcome(settled));
 }
 
 // Same bridge as oddPhaseRegistry: pi loads extensions with separate jiti

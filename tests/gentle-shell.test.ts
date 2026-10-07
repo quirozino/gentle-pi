@@ -182,6 +182,7 @@ function fakeContext(options: { hasUI?: boolean; entries?: unknown[]; oauth?: bo
 			getCwd: () => "/repo",
 			getSessionName: () => "Release notes",
 			getEntries: () => entries,
+			getBranch: () => entries,
 			getSessionId: () => "shell-session",
 		},
 		modelRegistry: { isUsingOAuth: () => options.oauth ?? true, getApiKeyForProvider: async () => options.token },
@@ -962,7 +963,7 @@ test("session_shutdown stops requesting redraws for a since-closed session", () 
 
 // --- Advisory DDATA promotion verifier report (session-scoped, chronological) ---
 
-const promotionEvent = (overrides: Record<string, unknown> = {}, report: Record<string, unknown> = { candidateId: "lib/shell-bar.ts", step: "validacion-stage", verdict: "APTO" }) => ({
+const promotionEvent = (overrides: Record<string, unknown> = {}, report: Record<string, unknown> = { candidateId: "lib/shell-bar.ts", step: "listo-para-decision", verdict: "APTO" }) => ({
 	type: "tool_result",
 	toolCallId: "call-1",
 	toolName: "subagent_run",
@@ -1093,6 +1094,50 @@ test("background completion messages fail closed without exact source or correla
 	}
 });
 
+test("session start restores the latest promotion outcome from the session's history, and a switch clears it", async () => {
+	const good = `${PROMOTION_REPORT_MARKER} ${JSON.stringify({ candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "APTO" })}`;
+	const entries = [
+		{ type: "message", message: { role: "user", content: "verifica la promoción" } },
+		{ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "mcp__gentle__subagent_run", arguments: { agent: "ddata-promotion-verifier", task: "evalúa" } }] } },
+		{ type: "message", message: { role: "toolResult", toolCallId: "call-1", toolName: "mcp__gentle__subagent_run", isError: false, content: [{ type: "text", text: "queued" }], details: { gentleAgents: { taskId: "task-1", agent: "ddata-promotion-verifier", status: "queued" } } } },
+		{ type: "custom_message", customType: "gentle-agents.result", content: `finished\n${good}`, display: true, details: { gentleAgents: { taskId: "task-1", agent: "ddata-promotion-verifier", status: "completed", mode: "background" } } },
+	];
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	const { ctx } = fakeContext({ entries });
+	try {
+		await fire(handlers, "session_start", ctx);
+		assert.deepEqual(promotionStatusRegistry.state("shell-session"), { kind: "captured", report: { candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "APTO" } }, "the reloaded session shows its last valid report");
+		await fire(handlers, "session_before_switch", ctx);
+		assert.deepEqual(promotionStatusRegistry.state("shell-session"), { kind: "idle" }, "leaving the session drops its capture");
+		// A non-interactive host never restores (nor captures) promotion state.
+		const { ctx: headless } = fakeContext({ entries, hasUI: false });
+		await fire(handlers, "session_start", headless);
+		assert.deepEqual(promotionStatusRegistry.state("shell-session"), { kind: "idle" });
+		// An inconsistent report in history restores as invalid, never as a verdict.
+		const { ctx: inconsistent } = fakeContext({ entries: [...entries.slice(0, 3), { ...entries[3], content: `${PROMOTION_REPORT_MARKER} ${JSON.stringify({ candidateId: "lib/x.ts", step: "bloqueado", verdict: "APTO" })}` }] });
+		await fire(handlers, "session_start", inconsistent);
+		assert.deepEqual(promotionStatusRegistry.state("shell-session"), { kind: "invalid" });
+	} finally {
+		promotionStatusRegistry.clear("shell-session");
+	}
+});
+
+test("a namespaced subagent_run tracks the verifier like the plain tool name", async () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	const { ctx } = fakeContext();
+	try {
+		await fire(handlers, "session_start", ctx);
+		await fireExecutionStart(handlers, { ...verifierStart("call-1"), toolName: "mcp__gentle__subagent_run" }, ctx);
+		assert.deepEqual(promotionStatusRegistry.state("shell-session"), { kind: "evaluating" });
+		await fireToolResult(handlers, promotionEvent({ toolName: "mcp__gentle__subagent_run" }), ctx);
+		assert.deepEqual(promotionStatusRegistry.get("shell-session"), { candidateId: "lib/shell-bar.ts", step: "listo-para-decision", verdict: "APTO" });
+	} finally {
+		promotionStatusRegistry.clear("shell-session");
+	}
+});
+
 test("every delivery path drives the explicit promotion state for the latest evaluation", async () => {
 	const { pi, handlers } = fakePi();
 	gentleShell(pi, {});
@@ -1115,7 +1160,7 @@ test("every delivery path drives the explicit promotion state for the latest eva
 		await fireToolResult(handlers, promotionEvent({ toolName: "subagent_result", toolCallId: "pull-1", content: [{ type: "text", text: "no report line" }] }), ctx);
 		assert.deepEqual(state(), { kind: "invalid" }, "a completed result without a valid last line");
 		await fireToolResult(handlers, promotionEvent({ toolName: "subagent_result", toolCallId: "pull-2", details: { gentleAgents: { taskId: "task-1", agent: "ddata-promotion-verifier", status: "failed" } } }), ctx);
-		assert.deepEqual(state(), { kind: "failed" }, "a failed task");
+		assert.deepEqual(state(), { kind: "invalid" }, "the task's first non-captured outcome is final: a failure replay does not flip it");
 		// A newer evaluation supersedes; an aborted foreground run is a failure.
 		await fireExecutionStart(handlers, verifierStart("call-2"), ctx);
 		assert.deepEqual(state(), { kind: "evaluating" });
@@ -1128,7 +1173,7 @@ test("every delivery path drives the explicit promotion state for the latest eva
 		await fireMessageEnd(handlers, message("timed_out", "timed out"), ctx);
 		assert.deepEqual(state(), { kind: "failed" });
 		await fireMessageEnd(handlers, message("completed", "chatter only"), ctx);
-		assert.deepEqual(state(), { kind: "invalid" });
+		assert.deepEqual(state(), { kind: "failed" }, "an invalid replay does not flip the failure");
 		await fireMessageEnd(handlers, message("completed", `ok\n\`\`\`\n${PROMOTION_REPORT_MARKER} ${JSON.stringify({ candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "APTO" })}\n\`\`\``), ctx);
 		assert.deepEqual(state(), { kind: "captured", report: { candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "APTO" } }, "a fenced report captures");
 		// pi.events path for the next evaluation.
@@ -1138,9 +1183,9 @@ test("every delivery path drives the explicit promotion state for the latest eva
 		pi.events.emit(SUBAGENT_COMPLETED_EVENT, event({ result: "no report" }));
 		assert.deepEqual(state(), { kind: "invalid" });
 		pi.events.emit(SUBAGENT_COMPLETED_EVENT, event({ status: "failed" }));
-		assert.deepEqual(state(), { kind: "failed" });
+		assert.deepEqual(state(), { kind: "invalid" }, "a failure replay does not flip the invalid outcome");
 		pi.events.emit(SUBAGENT_COMPLETED_EVENT, event({ taskId: "task-3", status: "failed" }));
-		assert.deepEqual(state(), { kind: "failed" }, "the superseded task is ignored");
+		assert.deepEqual(state(), { kind: "invalid" }, "the superseded task is ignored");
 	} finally {
 		promotionStatusRegistry.clear("shell-session");
 	}
@@ -1153,12 +1198,12 @@ test("a completed verifier evaluation is captured for the session and reaches th
 	try {
 		await fireExecutionStart(handlers, verifierStart(), ctx);
 		await fireToolResult(handlers, promotionEvent(), ctx);
-		assert.deepEqual(promotionStatusRegistry.get("shell-session"), { candidateId: "lib/shell-bar.ts", step: "validacion-stage", verdict: "APTO" });
+		assert.deepEqual(promotionStatusRegistry.get("shell-session"), { candidateId: "lib/shell-bar.ts", step: "listo-para-decision", verdict: "APTO" });
 		// The sidebar model reads both sources straight from the registries.
 		oddPhaseRegistry.report("shell-session", "checking");
 		const built = buildShellBarModel(pi, ctx, emptyFooterData);
 		assert.equal(built.oddPhase, "checking", "the phase comes from oddPhaseRegistry.get, not prose");
-		assert.deepEqual(built.promotion, { kind: "captured", report: { candidateId: "lib/shell-bar.ts", step: "validacion-stage", verdict: "APTO" } });
+		assert.deepEqual(built.promotion, { kind: "captured", report: { candidateId: "lib/shell-bar.ts", step: "listo-para-decision", verdict: "APTO" } });
 	} finally {
 		oddPhaseRegistry.clear("shell-session");
 		promotionStatusRegistry.clear("shell-session");
@@ -1175,7 +1220,7 @@ test("a fresh verifier run clears the stale candidate without inventing one, and
 		assert.ok(promotionStatusRegistry.get("shell-session"));
 		// Another agent's run starting never clears the captured candidate.
 		await fireExecutionStart(handlers, { ...verifierStart("call-2"), args: { agent: "other-agent", task: "x" } }, ctx);
-		assert.deepEqual(promotionStatusRegistry.get("shell-session"), { candidateId: "lib/shell-bar.ts", step: "validacion-stage", verdict: "APTO" });
+		assert.deepEqual(promotionStatusRegistry.get("shell-session"), { candidateId: "lib/shell-bar.ts", step: "listo-para-decision", verdict: "APTO" });
 		// A fresh verifier evaluation clears the stale candidate: the panel shows
 		// the neutral no-candidate state until this evaluation completes.
 		await fireExecutionStart(handlers, verifierStart("call-3"), ctx);
@@ -1206,7 +1251,7 @@ test("capture fails closed without a correlated evaluation and keeps the result 
 		await fireToolResult(handlers, promotionEvent({ details: { gentleAgents: { taskId: "task-1", agent: "ddata-promotion-verifier", status: "failed" } } }), ctx);
 		await fireToolResult(handlers, promotionEvent({ details: {} }), ctx);
 		await fireToolResult(handlers, promotionEvent({ content: [{ type: "text", text: `${PROMOTION_REPORT_MARKER} {broken` }] }), ctx);
-		await fireToolResult(handlers, promotionEvent({ details: { gentleAgents: { taskId: "task-1", agent: "ddata-promotion-verifier", status: "completed" } } }, { candidateId: null, step: "validacion-stage", verdict: "APTO" }), ctx);
+		await fireToolResult(handlers, promotionEvent({ details: { gentleAgents: { taskId: "task-1", agent: "ddata-promotion-verifier", status: "completed" } } }, { candidateId: null, step: "listo-para-decision", verdict: "APTO" }), ctx);
 		assert.equal(promotionStatusRegistry.get("shell-session"), undefined, "nothing may be captured from any of those");
 	} finally {
 		promotionStatusRegistry.clear("shell-session");
@@ -1224,7 +1269,7 @@ test("latest evaluation wins: async correlation completes via subagent_result, a
 		await fireToolResult(handlers, promotionEvent({ details: { gentleAgents: { taskId: "task-1", agent: "ddata-promotion-verifier", status: "queued" } } }), ctx);
 		assert.equal(promotionStatusRegistry.get("shell-session"), undefined, "a running evaluation shows no candidate yet");
 		await fireToolResult(handlers, promotionEvent({ toolName: "subagent_result", toolCallId: "pull-1" }), ctx);
-		assert.deepEqual(promotionStatusRegistry.get("shell-session"), { candidateId: "lib/shell-bar.ts", step: "validacion-stage", verdict: "APTO" });
+		assert.deepEqual(promotionStatusRegistry.get("shell-session"), { candidateId: "lib/shell-bar.ts", step: "listo-para-decision", verdict: "APTO" });
 		// A second evaluation starts and completes with a different candidate.
 		await fireExecutionStart(handlers, verifierStart("call-2"), ctx);
 		await fireToolResult(handlers, promotionEvent({ toolCallId: "call-2", details: { gentleAgents: { taskId: "task-2", agent: "ddata-promotion-verifier", status: "completed" } } }, { candidateId: "other.ts", step: "bloqueado", verdict: "BLOQUEADO" }), ctx);
@@ -1254,7 +1299,7 @@ test("promotion capture is interactive-only, session-scoped, and cleared on swit
 		// Another session's evaluation and capture never land in this one.
 		await fireExecutionStart(handlers, verifierStart("call-9"), ctx, { ...ctx, sessionManager: { ...ctx.sessionManager, getSessionId: () => "other-session" } });
 		await fireToolResult(handlers, promotionEvent({ toolCallId: "call-9", details: { gentleAgents: { taskId: "task-9", agent: "ddata-promotion-verifier", status: "completed" } } }, { candidateId: "other.ts", step: "bloqueado", verdict: "BLOQUEADO" }), ctx, { ...ctx, sessionManager: { ...ctx.sessionManager, getSessionId: () => "other-session" } });
-		assert.deepEqual(promotionStatusRegistry.get("shell-session"), { candidateId: "lib/shell-bar.ts", step: "validacion-stage", verdict: "APTO" });
+		assert.deepEqual(promotionStatusRegistry.get("shell-session"), { candidateId: "lib/shell-bar.ts", step: "listo-para-decision", verdict: "APTO" });
 		// Switching sessions clears the leaving session's capture.
 		for (const handler of handlers.get("session_before_switch") ?? []) await handler({}, ctx);
 		assert.equal(promotionStatusRegistry.get("shell-session"), undefined, "a session switch clears the capture");

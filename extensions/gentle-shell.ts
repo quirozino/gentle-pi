@@ -31,7 +31,7 @@ import { GentleAiDevBinaryOverrideError, resolveGentleAiDevBinaryOverride } from
 import { DOUBLE_ESC_CANCEL_HINT, floatPromptRow, framePromptLines, resolvePromptLayout, IDLE_ESC_CLEAR_HINT, PROMPT_HINT, PROMPT_STATE, SHELL_PULSE_MS, withPromptHint, type PromptState } from "../lib/shell-prompt.ts";
 import { SHELL_GLYPHS } from "../lib/shell-glyphs.ts";
 import { oddPhaseRegistry } from "../lib/odd-phase.ts";
-import { installPromotionCompletionCapture, promotionStatusRegistry, settledOutcome, settledVerifierMessage, settledVerifierResult, verifierRunStart, verifierRunTaskId } from "../lib/promotion-report.ts";
+import { bareToolName, installPromotionCompletionCapture, promotionStatusRegistry, restorePromotionState, settledOutcome, settledVerifierMessage, settledVerifierResult, verifierRunStart, verifierRunTaskId } from "../lib/promotion-report.ts";
 import { inferOddPhase } from "../lib/odd-phase-inference.ts";
 import { isInteractiveMode } from "../lib/rpc-host.ts";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
@@ -371,6 +371,12 @@ interface AssistantUsageEntry {
 function shortenHome(cwd: string, home: string | undefined): string {
 	if (home && cwd.startsWith(home)) return `~${cwd.slice(home.length)}`;
 	return cwd;
+}
+
+/** The session's current branch, oldest first (empty when the manager has none). */
+function sessionBranch(ctx: ExtensionContext): readonly unknown[] {
+	const manager = ctx.sessionManager as { getBranch?: () => readonly unknown[] };
+	return typeof manager.getBranch === "function" ? manager.getBranch() : [];
 }
 
 function sessionCost(ctx: ExtensionContext): number {
@@ -2361,13 +2367,19 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	pi.on("session_start", async (_event, ctx) => {
 		setUserMessageFrameTheme(ctx.hasUI && isInteractiveMode(ctx.mode) ? () => ctx.ui.theme : () => undefined);
 		shellChrome.begin();
-		// The promotion capture is in-memory only, so a session that starts —
-		// fresh or resumed — begins with no candidate evidence.
-		promotionStatusRegistry.clear(ctx.sessionManager.getSessionId());
+		// The promotion capture is in-memory, but its evidence is in the session:
+		// a session that starts — fresh, resumed, reloaded or switched to —
+		// rebuilds its own latest verifier outcome from its current branch,
+		// through the same fail-closed rules as the live events. Interactive UI
+		// only, like the live capture.
+		const sessionId = ctx.sessionManager.getSessionId();
+		if (ctx.hasUI && isInteractiveMode(ctx.mode)) restorePromotionState(promotionStatusRegistry, sessionId, sessionBranch(ctx));
+		else promotionStatusRegistry.clear(sessionId);
 		// Backstop: a throw before setFooter must never hold statuses back forever.
 		try { await startShellSession(ctx); } finally { shellChrome.ready(); }
 	});
-	// Leaving a session drops its capture: switching sessions starts clean.
+	// Leaving a session drops its capture; the session switched to restores its
+	// own history on session_start.
 	pi.on("session_before_switch", (_event, ctx) => {
 		promotionStatusRegistry.clear(ctx.sessionManager.getSessionId());
 	});
@@ -2857,7 +2869,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		if (!ctx.hasUI || !isInteractiveMode(ctx.mode) || event.toolName === "gentle_odd_phase") return;
 		const phase = inferOddPhase(event.toolName, event.args);
 		if (phase) {
-			const delegated = event.toolName === "subagent_run" || /^mcp__.+?__subagent_run$/.test(event.toolName);
+			const delegated = bareToolName(event.toolName) === "subagent_run";
 			oddPhaseRegistry.infer(ctx.sessionManager.getSessionId(), phase, delegated ? "delegation" : "tool");
 		}
 	});
@@ -2878,7 +2890,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		// completes (a background start reports queued), so a later async
 		// subagent_result pull can be matched to its evaluation.
 		const running = verifierRunTaskId(event);
-		if (running) promotionStatusRegistry.correlate(ctx.sessionManager.getSessionId(), running.toolCallId, running.taskId);
+		// Correlating may apply a completion that arrived first (redraw then).
+		if (running && promotionStatusRegistry.correlate(ctx.sessionManager.getSessionId(), running.toolCallId, running.taskId)) redrawReview();
 		// A settled run — completed (valid report, or "sin reporte válido"),
 		// failed, cancelled or aborted — sets the panel's state. The registry
 		// correlates it (run call id, else task id) and fails closed when it
