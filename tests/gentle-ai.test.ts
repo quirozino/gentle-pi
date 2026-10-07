@@ -2467,6 +2467,23 @@ for (const reader of ["readEffectiveModelConfig", "readEffectiveModelConfigAsync
 	});
 }
 
+for (const reader of ["readEffectiveModelConfig", "readEffectiveModelConfigAsync"] as const) {
+	test(`${reader} discovers a symlinked agent file like the subagent runtime does`, async (t) => {
+		const fixture = routingConsumerFixture(t, []);
+		// The definition lives in another repository and is linked into the
+		// global agents directory; the runtime already follows such links.
+		const target = join(fixture.root, "elsewhere", "linked.md");
+		writeMarkdown(target, "---\nname: linked\ndescription: Linked\nmodel: nan/deepseek-v4-flash\nthinking: high\n---\nbody\n");
+		symlinkSync(target, join(fixture.agentHome, "agents", "linked.md"));
+		// A dangling link is skipped, never fatal.
+		symlinkSync(join(fixture.root, "missing.md"), join(fixture.agentHome, "agents", "dangling.md"));
+
+		const effective = JSON.parse(JSON.stringify(await __testing[reader](fixture.root)));
+		assert.deepEqual(effective.linked, { model: "nan/deepseek-v4-flash", thinking: "high" });
+		assert.equal(effective.dangling, undefined);
+	});
+}
+
 test("effective routing prefers models.json over the materialized stores", (t) => {
 	const fixture = routingConsumerFixture(t, ["worker", "helper"]);
 	mkdirSync(fixture.configHome, { recursive: true });

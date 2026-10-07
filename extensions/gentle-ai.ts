@@ -16,6 +16,7 @@ import {
 	readdirSync,
 	readFileSync,
 	realpathSync,
+	statSync,
 	writeFileSync,
 } from "node:fs";
 import {
@@ -23,8 +24,10 @@ import {
 	mkdir,
 	readFile,
 	readdir,
+	stat,
 	writeFile,
 } from "node:fs/promises";
+import type { Dirent } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -2235,6 +2238,30 @@ async function parseAgentNameAsync(
 	return packageName ? `${packageName}.${name}` : name;
 }
 
+// Agent definitions may be symlinked in from another repository, and the
+// subagent runtime (lib/agents-config.ts) already follows such links. Follow
+// links to regular files only: directory links are not walked, so a link cycle
+// can never recurse, and a dangling link is skipped.
+function isAgentFileEntry(entry: Dirent, path: string): boolean {
+	if (entry.isFile()) return true;
+	if (!entry.isSymbolicLink()) return false;
+	try {
+		return statSync(path).isFile();
+	} catch {
+		return false;
+	}
+}
+
+async function isAgentFileEntryAsync(entry: Dirent, path: string): Promise<boolean> {
+	if (entry.isFile()) return true;
+	if (!entry.isSymbolicLink()) return false;
+	try {
+		return (await stat(path)).isFile();
+	} catch {
+		return false;
+	}
+}
+
 function listAgentFilesRecursive(dir: string): string[] {
 	if (!existsSync(dir)) return [];
 	const files: string[] = [];
@@ -2244,9 +2271,9 @@ function listAgentFilesRecursive(dir: string): string[] {
 			if (entry.name === "skills") continue;
 			files.push(...listAgentFilesRecursive(path));
 		} else if (
-			entry.isFile() &&
 			entry.name.endsWith(".md") &&
-			!entry.name.endsWith(".chain.md")
+			!entry.name.endsWith(".chain.md") &&
+			isAgentFileEntry(entry, path)
 		)
 			files.push(path);
 	}
@@ -2268,9 +2295,9 @@ async function listAgentFilesRecursiveAsync(dir: string): Promise<string[]> {
 			if (entry.name === "skills") continue;
 			files.push(...(await listAgentFilesRecursiveAsync(path)));
 		} else if (
-			entry.isFile() &&
 			entry.name.endsWith(".md") &&
-			!entry.name.endsWith(".chain.md")
+			!entry.name.endsWith(".chain.md") &&
+			(await isAgentFileEntryAsync(entry, path))
 		) {
 			files.push(path);
 		}
