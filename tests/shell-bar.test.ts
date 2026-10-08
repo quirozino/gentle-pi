@@ -19,6 +19,10 @@ import {
 	shellEnabled,
 	shellHeaderUsageHit,
 	ODD_PHASE_BADGE_ROLE,
+	renderShellSidebarCard,
+	createUsageCollapse,
+	USAGE_COLLAPSED_ROWS,
+	USAGE_AUTO_COLLAPSE_MS,
 	type ShellBarModel,
 	type ShellBarTheme,
 } from "../lib/shell-bar.ts";
@@ -663,6 +667,127 @@ test("modelUsageRows matches bare ids, keeps unknown models and labels the unlis
 	], "only the profile's models, each with its own provider's window or none");
 	// No usage at all still yields one row per model, with no percentage.
 	assert.deepEqual(modelUsageRows(["a", "b"], undefined, undefined, undefined), [{ name: "a" }, { name: "b" }]);
+});
+
+// Seven models: five with a quota percent, two without (one with local tokens).
+function crowdedUsageModel(overrides: Partial<ShellBarModel> = {}): ShellBarModel {
+	const window = (usedPercent: number) => [{ label: "5h", usedPercent, windowSeconds: 18_000, resetAt: null }];
+	const nan = {
+		provider: "nan",
+		plan: "pro",
+		fetchedAt: 0,
+		limits: [
+			{ name: "alpha", limitReached: false, windows: window(12) },
+			{ name: "bravo", limitReached: false, windows: window(88) },
+			{ name: "charlie", limitReached: false, windows: window(40) },
+			{ name: "delta", limitReached: false, windows: window(65) },
+			{ name: "echo", limitReached: false, windows: window(3) },
+		],
+	};
+	return model({
+		provider: "nan",
+		usageByProvider: new Map([["nan", nan]]),
+		profileModels: ["nan/alpha", "minimax/quiet", "nan/bravo", "nan/charlie", "minimax/busy", "nan/delta", "nan/echo"],
+		localTokens: new Map([["busy", 2_000_000]]),
+		...overrides,
+	});
+}
+
+/** Model names of the Usage rows, in painted order. */
+function usageNames(rows: string[]): string[] {
+	const text = rows.map((row) => stripAnsi(row));
+	const start = text.findIndex((row) => /Usage/.test(row));
+	const names: string[] = [];
+	for (const row of text.slice(start + 1)) {
+		const match = /[║│] +(alpha|bravo|charlie|delta|echo|quiet|busy) /.exec(row);
+		if (match) names.push(match[1]!);
+		else if (names.length > 0) break;
+	}
+	return names;
+}
+
+test("the Usage group collapses by default to the top rows by percent, quota-less rows last", () => {
+	assert.equal(USAGE_COLLAPSED_ROWS, 4);
+	const card = renderShellSidebarCard(crowdedUsageModel(), plainTheme, 60);
+	assert.deepEqual(usageNames(card.rows), ["bravo", "delta", "charlie", "alpha"], "highest used percent first");
+	assert.ok(card.rows.some((row) => /Usage ▸ \+3/.test(stripAnsi(row))), "the heading names the hidden rows and is a toggle");
+	const expanded = renderShellSidebarCard(crowdedUsageModel({ usageExpanded: true }), plainTheme, 60);
+	assert.deepEqual(usageNames(expanded.rows), ["bravo", "delta", "charlie", "alpha", "echo", "busy", "quiet"], "every row; no-percent rows by local tokens");
+	assert.ok(expanded.rows.some((row) => /Usage ▾/.test(stripAnsi(row))));
+	assert.ok(!expanded.rows.some((row) => /Usage ▸/.test(stripAnsi(row))));
+});
+
+test("a Usage group of four rows or fewer has a plain heading and no toggle", () => {
+	const few = crowdedUsageModel({ profileModels: ["nan/alpha", "nan/bravo", "minimax/quiet"] });
+	const card = renderShellSidebarCard(few, plainTheme, 60);
+	assert.deepEqual(usageNames(card.rows), ["bravo", "alpha", "quiet"]);
+	assert.ok(!card.rows.some((row) => /Usage [▸▾]/.test(stripAnsi(row))));
+	assert.equal(card.usageToggle, undefined);
+});
+
+test("the Usage toggle markers paint only through theme roles", () => {
+	const fg = (role: string, text: string) => `<${role}>${text}</${role}>`;
+	const theme: ShellBarTheme = { fg, bold: (text) => text };
+	const rows = renderShellSidebarCard(crowdedUsageModel(), theme, 60).rows.join("\n");
+	assert.match(rows, /<dim>▸ \+3<\/dim>/);
+	const heading = rows.split("\n").find((row) => row.includes("Usage"))!;
+	assert.doesNotMatch(heading, /\x1b\[|#[0-9a-f]{6}/i, "no raw colour in the heading row");
+});
+
+test("the card reports where the Usage heading sits in every panel style", (t) => {
+	const check = (theme: ShellBarTheme, width: number, label: string, expanded = false) => {
+		const card = renderShellSidebarCard(crowdedUsageModel({ usageExpanded: expanded }), theme, width);
+		const hit = card.usageToggle;
+		assert.ok(hit, `${label}: a toggle region`);
+		const row = stripAnsi(card.rows[hit.y]!);
+		let column = 0;
+		let index = 0;
+		while (column < hit.x) column += visibleWidth(row[index++]!);
+		const heading = expanded ? "Usage ▾" : "Usage ▸ +3";
+		assert.ok(row.slice(index).startsWith(heading), `${label}: ${JSON.stringify(row)} at ${hit.x}`);
+		assert.equal(hit.width, visibleWidth(heading), label);
+	};
+	check(plainTheme, 60, "neon");
+	check(plainTheme, 60, "neon expanded", true);
+	check(plainTheme, 16, "narrow single panel");
+	useCardStyle(t, CARD_STYLE.FLOAT);
+	check(withBackground(plainTheme), 60, "float");
+});
+
+test("the Usage collapse state toggles and collapses by itself after the timeout", () => {
+	assert.equal(USAGE_AUTO_COLLAPSE_MS, 5 * 60_000);
+	let now = 1_000;
+	const timers = new Map<number, { at: number; run: () => void }>();
+	let nextId = 1;
+	let renders = 0;
+	const collapse = createUsageCollapse({
+		now: () => now,
+		setTimer: (run, ms) => { const id = nextId++; timers.set(id, { at: now + ms, run }); return id; },
+		clearTimer: (id) => { timers.delete(id as number); },
+		requestRender: () => { renders++; },
+	});
+	const advance = (ms: number) => {
+		now += ms;
+		for (const [id, timer] of [...timers]) if (timer.at <= now) { timers.delete(id); timer.run(); }
+	};
+	assert.equal(collapse.expanded(), false, "collapsed by default");
+	collapse.toggle();
+	assert.equal(collapse.expanded(), true);
+	assert.equal(timers.size, 1, "one pending auto-collapse");
+	advance(USAGE_AUTO_COLLAPSE_MS - 1);
+	assert.equal(collapse.expanded(), true);
+	advance(1);
+	assert.equal(collapse.expanded(), false, "collapsed by itself");
+	assert.equal(renders, 1, "the auto-collapse repaints");
+	collapse.toggle();
+	advance(60_000);
+	collapse.toggle();
+	assert.equal(collapse.expanded(), false, "a second click collapses");
+	assert.equal(timers.size, 0, "collapsing by hand drops the pending timer");
+	collapse.toggle();
+	collapse.dispose();
+	assert.equal(timers.size, 0, "dispose clears the timer");
+	assert.equal(collapse.expanded(), false);
 });
 
 test("a model with no quota source shows what the session spent, or Unknown when nothing did", () => {

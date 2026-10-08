@@ -10,7 +10,7 @@ import { installStartupListingMargin } from "../lib/startup-listing-margin.ts";
 import { installUserMessageFrame, setUserMessageFrameTheme } from "../lib/user-message-frame.ts";
 import * as os from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { buildShellHeaderModel, renderShellBar, renderShellBelowInputFloat, renderShellBottomOnlyBar, renderShellHeaderChrome, renderShellSidebarCard, shellBarEnabled, shellEnabled, shellHeaderUsageHit, statusTitleText, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
+import { buildShellHeaderModel, createUsageCollapse, renderShellBar, renderShellBelowInputFloat, renderShellBottomOnlyBar, renderShellHeaderChrome, renderShellSidebarCard, shellBarEnabled, shellEnabled, shellHeaderUsageHit, statusTitleText, type ShellBarModel, type ShellBarTheme, type ShellSidebarCard } from "../lib/shell-bar.ts";
 import { directoryLevels, findRepoRoot } from "../lib/directory-tree.ts";
 import { CHANGE_STATUS, RootBranchLabels, renderChangesWidget, type ChangedFile, type ChangesModel, type GitRunner, type WorktreeChanges } from "../lib/shell-changes.ts";
 import { WorktreeChangesView } from "../lib/shell-changes-view.ts";
@@ -2263,6 +2263,18 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			// part for: model, effort, context, cost, session name and extension
 			// statuses. The digest is what keeps the fullscreen memo honest, and it
 			// rebuilds the model exactly as the narrow bottom bar does every frame.
+			// The Usage group's collapse state: collapsed by default, toggled by a
+			// click on its heading, and collapsed again by itself after a timeout.
+			const usageCollapse = createUsageCollapse({
+				now: () => deps.now(),
+				setTimer: (run, ms) => {
+					const timer = setTimeout(run, ms);
+					timer.unref?.();
+					return timer;
+				},
+				clearTimer: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
+				requestRender: () => tui.requestRender(),
+			});
 			const footerModel = (): ShellBarModel => ({
 				...buildShellBarModel(pi, ctx, footerData, {
 					dirty: tracker.model.files.length,
@@ -2277,6 +2289,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				changes: { files: tracker.model.files.length, added: tracker.model.added, deleted: tracker.model.deleted, notice: tracker.model.notice },
 				tick: gaugeAnimationEnabled() ? gaugeTick.value : undefined,
 				review,
+				usageExpanded: usageCollapse.expanded(),
 			});
 			// At narrow fullscreen widths only one status row paints: a top header
 			// suppresses the bottom bar in the layout, and otherwise the bottom bar
@@ -2322,6 +2335,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			const statusEmbed = tui.terminal ? createStatusEmbed(sidebarState(tui)) : undefined;
 			if (tui.terminal) sidebarState(tui).statusEmbed = true;
 			let embedSlot: StatusEmbedSlot | undefined;
+			let usageToggle: ShellSidebarCard["usageToggle"];
 			const part = sidebarPart(tui, "footer", bottomBar, {
 				digest: () => {
 					titleFrame = titleAnimator.frame();
@@ -2337,10 +2351,19 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 						...(statusEmbed ? { embed: (boxWidth: number) => statusEmbed.render(boxWidth) } : {}),
 					});
 					embedSlot = card.embed;
+					usageToggle = card.usageToggle;
 					return card.rows;
 				},
 				invalidate() {},
-				handleMouse: (event) => statusEmbed?.handleMouse(event, embedSlot),
+				handleMouse: (event) => {
+					// Coordinates are part-relative, like the embed slot's.
+					if (usageToggle && event.type === "click" && event.button === "left" && event.y === usageToggle.y
+						&& event.x >= usageToggle.x && event.x < usageToggle.x + usageToggle.width) {
+						usageCollapse.toggle();
+						return { handled: true, render: true };
+					}
+					return statusEmbed?.handleMouse(event, embedSlot);
+				},
 			});
 			// The header row carries everything that ticks every frame (model,
 			// effort, context, cost, usage) plus session identity; it never sees
@@ -2388,7 +2411,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					return rows.length === 0 && (tui as TUI & { mode?: string }).mode === "fullscreen" && sidebarState(tui).framed?.() !== true
 						&& resolvePromptLayout(width, cardStyle(), theme.bg?.bind(theme)).background ? [""] : rows;
 				},
-				dispose() { titleAnimator.dispose(); untrim(); ctx.ui.setWidget(HEADER_WIDGET_KEY, undefined); disposeHeader(); uninstall(); part.dispose();
+				dispose() { titleAnimator.dispose(); usageCollapse.dispose(); untrim(); ctx.ui.setWidget(HEADER_WIDGET_KEY, undefined); disposeHeader(); uninstall(); part.dispose();
 					// A newer Status card may already own the slot; only the last one out clears the flag.
 					if (tui.terminal && !sidebarState(tui).parts.has("footer")) sidebarState(tui).statusEmbed = false;
 					if (sidebarTui === tui) { sidebarTui = undefined; groupedChangesOwner = () => false; } } };

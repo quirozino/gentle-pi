@@ -1,7 +1,7 @@
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { GAUGE_CELLS, gaugeTone, paintGauge, renderGauge, type GaugeTone } from "./shell-gauge.ts";
 import { allowanceGroupsSupported, groupUsageLimits, modelUsageRows, renderUsageBar, selectUsageLimit, type ProviderUsage, type UsageWindow } from "./shell-usage.ts";
-import { sanitizeTerminalText } from "./terminal-theme.ts";
+import { sanitizeTerminalText, stripAnsi } from "./terminal-theme.ts";
 import { CARD_TONE, cardBottom, cardLine, floatRows, panelHeaderRow, panelInnerWidth, renderCard } from "./shell-card.ts";
 import { SHELL_GLYPHS } from "./shell-glyphs.ts";
 import { paintStatusTitle, type StatusTitleFrame } from "./status-title-animation.ts";
@@ -70,6 +70,8 @@ export interface ShellBarModel {
 	promotion?: PromotionState;
 	/** DDATA environment pipeline and backend; absent outside a DDATA worktree (rows hidden). */
 	ddataEnv?: DdataEnvView;
+	/** The Usage group lists every model row; absent or false shows the top USAGE_COLLAPSED_ROWS. */
+	usageExpanded?: boolean;
 }
 
 // The live header row above the fullscreen rail: session identity plus the
@@ -478,6 +480,69 @@ export interface SidebarBarOptions {
 export interface ShellSidebarCard {
 	rows: string[];
 	embed?: { x: number; y: number; width: number; height: number };
+	/** The Usage heading's cells (card-relative row and columns) while it is a toggle. */
+	usageToggle?: { x: number; y: number; width: number };
+}
+
+/** Model rows the collapsed Usage group keeps: the highest used percent first. */
+export const USAGE_COLLAPSED_ROWS = 4;
+/** An expanded Usage group collapses by itself this long after the click that opened it. */
+export const USAGE_AUTO_COLLAPSE_MS = 5 * 60_000;
+
+export interface UsageCollapseDeps {
+	now: () => number;
+	setTimer: (run: () => void, ms: number) => unknown;
+	clearTimer: (timer: unknown) => void;
+	/** Called when the group collapses by itself, so the card repaints without a click. */
+	requestRender: () => void;
+}
+
+export interface UsageCollapse {
+	expanded(): boolean;
+	toggle(): void;
+	dispose(): void;
+}
+
+/**
+ * The Usage group's expanded/collapsed state. Collapsed by default; a toggle
+ * that expands it arms one timer that collapses it again after
+ * USAGE_AUTO_COLLAPSE_MS. `expanded()` also checks the clock, so a late or
+ * lost timer never leaves the group open past the timeout.
+ */
+export function createUsageCollapse(deps: UsageCollapseDeps): UsageCollapse {
+	let expandedAt: number | undefined;
+	let timer: unknown;
+	const clear = () => {
+		if (timer !== undefined) deps.clearTimer(timer);
+		timer = undefined;
+	};
+	const expired = () => expandedAt !== undefined && deps.now() - expandedAt >= USAGE_AUTO_COLLAPSE_MS;
+	return {
+		expanded() {
+			if (expired()) {
+				expandedAt = undefined;
+				clear();
+			}
+			return expandedAt !== undefined;
+		},
+		toggle() {
+			clear();
+			if (this.expanded()) {
+				expandedAt = undefined;
+				return;
+			}
+			expandedAt = deps.now();
+			timer = deps.setTimer(() => {
+				timer = undefined;
+				expandedAt = undefined;
+				deps.requestRender();
+			}, USAGE_AUTO_COLLAPSE_MS);
+		},
+		dispose() {
+			clear();
+			expandedAt = undefined;
+		},
+	};
 }
 
 /**
@@ -506,6 +571,19 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 }
 
 export function renderShellSidebarCard(model: ShellBarModel, theme: ShellBarTheme, width: number, presentation?: Presentation, options: SidebarBarOptions = {}): ShellSidebarCard {
+	const { card, usageHeading } = sidebarCardRows(model, theme, width, presentation, options);
+	if (usageHeading === undefined) return card;
+	// Every panel style paints the heading as one run of text, so its cells are
+	// found in the rendered rows rather than re-derived per style.
+	for (const [y, row] of card.rows.entries()) {
+		const plain = stripAnsi(row);
+		const at = plain.indexOf(usageHeading);
+		if (at >= 0) return { ...card, usageToggle: { x: visibleWidth(plain.slice(0, at)), y, width: visibleWidth(usageHeading) } };
+	}
+	return card;
+}
+
+function sidebarCardRows(model: ShellBarModel, theme: ShellBarTheme, width: number, presentation: Presentation | undefined, options: SidebarBarOptions): { card: ShellSidebarCard; usageHeading?: string } {
 	const value = (text: string) => theme.fg(ROLE.VALUE, theme.bold(text));
 	const label = (text: string) => theme.fg(ROLE.LABEL, text);
 	const changes = model.changes;
@@ -530,16 +608,33 @@ export function renderShellSidebarCard(model: ShellBarModel, theme: ShellBarThem
 	// One row per model, worst window, animated bar. A model with no reported
 	// window says so instead of vanishing; a model the provider reports but the
 	// profile does not route to is labelled, so an unexpected model is visible.
-	const modelRows = (model.profileModels ?? []).length === 0
+	// Ranked on every render, so the order follows usage as it grows: the highest
+	// used percent first, then quota-less rows by what the session spent locally.
+	const localOf = (name: string) => model.localTokens?.get(name.toLowerCase()) ?? 0;
+	const rankedRows = (model.profileModels ?? []).length === 0
 		? []
-		: modelUsageRows(model.profileModels ?? [], model.usageByProvider, model.modelId, model.provider).map((row) => {
+		: modelUsageRows(model.profileModels ?? [], model.usageByProvider, model.modelId, model.provider)
+			.map((row, index) => ({ row, index }))
+			.sort((a, b) => {
+				if (a.row.percent !== undefined && b.row.percent !== undefined) return b.row.percent - a.row.percent || a.index - b.index;
+				if (a.row.percent !== undefined) return -1;
+				if (b.row.percent !== undefined) return 1;
+				return localOf(b.row.name) - localOf(a.row.name) || a.index - b.index;
+			})
+			.map(({ row }) => row);
+	// The heading is the toggle only when there is something to hide.
+	const usageToggles = rankedRows.length > USAGE_COLLAPSED_ROWS;
+	const usageExpanded = model.usageExpanded === true;
+	const usageHint = !usageToggles ? undefined : usageExpanded ? "▾" : `▸ +${rankedRows.length - USAGE_COLLAPSED_ROWS}`;
+	const usageHeading = usageHint === undefined ? undefined : `Usage ${usageHint}`;
+	const modelRows = (usageToggles && !usageExpanded ? rankedRows.slice(0, USAGE_COLLAPSED_ROWS) : rankedRows).map((row) => {
 				// The orchestrator's model is the one running now, so it carries the same
 				// mark the active provider uses elsewhere in this card.
 				const name = label(row.name);
 				if (row.percent === undefined) {
 					// No quota source for this provider: show what the session spent on the
 					// model, labelled as the local reading it is, rather than a blank.
-					const local = model.localTokens?.get(row.name.toLowerCase()) ?? 0;
+					const local = localOf(row.name);
 					const reading = local > 0 ? `${formatTokens(local)} tokens · local` : "Unknown";
 					return `${name} ${theme.fg("dim", reading)}`;
 				}
@@ -588,6 +683,7 @@ export function renderShellSidebarCard(model: ShellBarModel, theme: ShellBarThem
 		}]),
 		{
 			title: "Usage",
+			...(usageHint && modelRows.length > 0 ? { hint: usageHint } : {}),
 			// Context, capacity and cost now sit under the prompt field, so this
 			// block is only about quota: one row per model the profile routes to.
 			lines: modelRows.length > 0 ? modelRows : usageLines,
@@ -621,7 +717,7 @@ export function renderShellSidebarCard(model: ShellBarModel, theme: ShellBarThem
 		const lineWidth = innerWidth - inset;
 		const body = groups.flatMap((group, index) => [
 			...(index && (!presentation || presentation.density === "comfortable") ? [""] : []),
-			...(presentation?.density === "minimal" || group.untitled ? [] : [label(group.title)]),
+			...(presentation?.density === "minimal" || group.untitled ? [] : [headingText(group, label(group.title), theme)]),
 			...[...(group.value ? [value(group.value)] : []), ...(group.pairs ?? []).map(pairLine), ...group.lines].flatMap(wrapped),
 			...(group.fitted?.(lineWidth) ?? []).map((line) => " ".repeat(inset) + line),
 			...(group.sections ?? []).flatMap((section) => [
@@ -630,7 +726,7 @@ export function renderShellSidebarCard(model: ShellBarModel, theme: ShellBarThem
 				...(section.fitted?.(lineWidth) ?? []).map((line) => " ".repeat(inset) + line),
 			]),
 		]);
-		return { rows: renderCard({ title: "Status", body, tone: CARD_TONE.INFO, glyph: SHELL_GLYPHS.status }, theme, width, { expanded: true, panel: true }) };
+		return { card: { rows: renderCard({ title: "Status", body, tone: CARD_TONE.INFO, glyph: SHELL_GLYPHS.status }, theme, width, { expanded: true, panel: true }) }, usageHeading };
 	}
 	// The float style owns the outer chrome: the configured frame on the edge
 	// of its background (like every framed float card) holds the same boxed,
@@ -651,10 +747,15 @@ export function renderShellSidebarCard(model: ShellBarModel, theme: ShellBarThem
 			body: box.map((row) => cardLine(row, CARD_TONE.INFO, theme, inner)),
 			bottom: cardBottom(CARD_TONE.INFO, theme, inner),
 		}));
-		return { rows, ...slot(innerWidth, embedded.length) };
+		return { card: { rows, ...slot(innerWidth, embedded.length) }, usageHeading };
 	}
 	const embedded = embedRows(options.embed, width - 4);
-	return { rows: renderStatusPanel(groups, theme, width, presentation, model.statusTitle, embedded), ...slot(width - 4, embedded.length) };
+	return { card: { rows: renderStatusPanel(groups, theme, width, presentation, model.statusTitle, embedded), ...slot(width - 4, embedded.length) }, usageHeading };
+}
+
+// A painted group title followed by its dim hint, when it has one.
+function headingText(group: StatusGroup, title: string, theme: ShellBarTheme): string {
+	return group.hint === undefined ? title : `${title} ${theme.fg("dim", group.hint)}`;
 }
 
 // Embedded rows fitted to exactly `boxWidth` columns.
@@ -673,6 +774,8 @@ interface StatusGroup {
 	title: string;
 	/** Shown flush right on the heading row, e.g. the project path. */
 	value?: string;
+	/** Dim marker after the title, e.g. the Usage toggle's `▸ +3`; needs a theme to paint it. */
+	hint?: string;
 	/** Label/value rows: the value sits flush right when both fit on one row; an optional third entry is the value's theme role. */
 	pairs?: ReadonlyArray<StatusPair>;
 	lines: string[];
@@ -793,7 +896,7 @@ function statusBoxRows(groups: StatusGroup[], theme: ShellBarTheme, boxWidth: nu
 				? []
 				: presentation?.density === "minimal"
 					? group.value ? pair("", group.value) : []
-					: group.value ? pair(group.title, group.value, STATUS_PANEL_ROLE.HEADING) : [theme.fg(STATUS_PANEL_ROLE.HEADING, theme.bold(group.title))]),
+					: group.value ? pair(group.title, group.value, STATUS_PANEL_ROLE.HEADING) : [headingText(group, theme.fg(STATUS_PANEL_ROLE.HEADING, theme.bold(group.title)), theme)]),
 			...(group.pairs ?? []).flatMap(([key, text, role, badge]) => pair(key, text, ROLE.LABEL, role, badge)),
 			...group.lines.flatMap((line) => wrapTextWithAnsi(line, content - 1).map((part) => ` ${part}`)),
 			...(group.fitted?.(content - 1) ?? []).map((line) => ` ${line}`),

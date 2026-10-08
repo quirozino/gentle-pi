@@ -764,6 +764,64 @@ test("profile polling refreshes both fullscreen surfaces only on change and stop
 	}
 });
 
+test("a click on the Usage heading toggles the group and it collapses by itself after five minutes", async (t) => {
+	const home = mkdtempSync(join(tmpdir(), "shell-usage-toggle-"));
+	t.after(() => rmSync(home, { recursive: true, force: true }));
+	const realSetTimeout = globalThis.setTimeout;
+	const collapses: Array<{ run: () => void; delay: number; cleared: boolean }> = [];
+	t.mock.method(globalThis, "setTimeout", ((run: () => void, delay: number, ...rest: unknown[]) => {
+		if (delay !== 5 * 60_000) return realSetTimeout(run, delay, ...rest);
+		const timer = { run, delay, cleared: false, unref() {} };
+		collapses.push(timer);
+		return timer;
+	}) as typeof setTimeout);
+	const realClearTimeout = globalThis.clearTimeout;
+	t.mock.method(globalThis, "clearTimeout", ((timer: unknown) => {
+		const fake = collapses.find((entry) => entry === timer);
+		if (fake) fake.cleared = true;
+		else realClearTimeout(timer as ReturnType<typeof setTimeout>);
+	}) as typeof clearTimeout);
+	let now = 0;
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, {
+		now: () => now,
+		activeProfileModels: () => ["m1", "m2", "m3", "m4", "m5", "m6"],
+	});
+	const { ctx, ui } = fakeContext();
+	await fire(handlers, "session_start", ctx);
+	const tui = { terminal: { rows: 40, columns: 160 }, requestRender: t.mock.fn() };
+	const footerData = { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} };
+	const component = (ui.footerFactory as (tui: unknown, theme: ShellBarTheme, data: unknown) => { dispose(): void })(tui, plainTheme, footerData);
+	const part = sidebarState(tui as unknown as TUI).parts.get("footer") as SidebarRail;
+	const heading = () => {
+		const rows = part.render(60).map((row) => stripAnsi(row));
+		const y = rows.findIndex((row) => /Usage/.test(row));
+		return { y, text: rows[y]!, x: rows[y]!.indexOf("Usage"), models: rows.filter((row) => /\bm\d\b/.test(row)).length };
+	};
+	const click = (x: number, y: number) => part.handleMouse?.({ type: "click", button: "left", x, y, width: 60, height: 40 } as TuiMouseEvent & { width: number; height: number });
+	try {
+		const collapsed = heading();
+		assert.match(collapsed.text, /Usage ▸ \+2/);
+		assert.equal(collapsed.models, 4);
+		assert.equal(click(collapsed.x, collapsed.y + 1), undefined, "a click below the heading is not the toggle");
+		assert.equal(click(collapsed.x, collapsed.y)?.handled, true);
+		const expanded = heading();
+		assert.match(expanded.text, /Usage ▾/);
+		assert.equal(expanded.models, 6);
+		assert.equal(collapses.length, 1);
+		const renders = tui.requestRender.mock.callCount();
+		now += 5 * 60_000;
+		collapses[0]!.run();
+		assert.equal(tui.requestRender.mock.callCount(), renders + 1, "the auto-collapse repaints");
+		assert.match(heading().text, /Usage ▸ \+2/);
+		click(collapsed.x, collapsed.y);
+		assert.equal(collapses.length, 2);
+	} finally {
+		component.dispose();
+	}
+	assert.equal(collapses[1]!.cleared, true, "dispose clears the pending auto-collapse");
+});
+
 test("gentleShell stays out of the way without a UI or when disabled", () => {
 	const disabled = fakePi();
 	gentleShell(disabled.pi, { GENTLE_PI_SHELL: "0" });
