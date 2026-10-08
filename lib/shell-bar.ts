@@ -13,7 +13,7 @@ import { renderDirectoryTree, type DirectoryLevel } from "./directory-tree.ts";
 import { oddPhaseLabel, type OddPhase } from "./odd-phase.ts";
 import { promotionSidebarRows, type PromotionRowTone, type PromotionState } from "./promotion-report.ts";
 import type { DdataEnvTone, DdataPipeline } from "./ddata-env.ts";
-import type { BackendRow } from "./ddata-env-backend.ts";
+import type { DdataEnvView } from "./ddata-env-snapshot.ts";
 
 type Presentation = Pick<VisualSettings, "density" | "visibility">;
 type HeaderPresentation = Presentation & Partial<Pick<VisualSettings, "headerPlacement" | "statusPlacement">>;
@@ -69,7 +69,7 @@ export interface ShellBarModel {
 	/** Promotion verifier state for the session; absent is idle ("sin verificación"). */
 	promotion?: PromotionState;
 	/** DDATA environment pipeline and backend; absent outside a DDATA worktree (rows hidden). */
-	ddataEnv?: { pipeline: DdataPipeline; backend: BackendRow };
+	ddataEnv?: DdataEnvView;
 }
 
 // The live header row above the fullscreen rail: session identity plus the

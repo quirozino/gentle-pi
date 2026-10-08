@@ -3,8 +3,8 @@
 //
 // Precedence, highest first:
 //   1. a production action the promotion guard let through in this session
-//      ("Producción · Firebase | esquema", failure tone);
-//   2. a Stage action the guard let through ("Stage");
+//      and whose result succeeded ("Producción · Firebase | esquema", failure tone);
+//   2. a successful Stage action the guard let through ("Stage");
 //   3. every `.firebaserc` default under hosting/ or mi-backend-ddata/ is the
 //      Stage project ("Stage (por defecto)");
 //   4. otherwise "desconocido".
@@ -41,30 +41,54 @@ export function computeBackend(observed: ReadonlySet<ObservedPromotionKind>, fir
 	return { text: "desconocido" };
 }
 
-export type PromotionActionListener = (sessionId: string, kinds: ReadonlySet<ObservedPromotionKind>) => void;
+export type PromotionActionListener = (sessionId: string, kinds: ReadonlySet<ObservedPromotionKind>, toolCallId: string) => void;
+
+/** Calls remembered for `callKinds`, oldest dropped first. */
+export const MAX_TRACKED_CALLS = 256;
 
 /**
- * Environment-affecting action kinds the promotion guard let through, per pi
- * session. Recording is observation only; it never feeds a guard decision.
+ * Environment-affecting action kinds per pi session. The promotion guard
+ * `begin`s a call it lets through at tool_call and `settle`s it at that call's
+ * tool_result; only a successful result commits its kinds, so a failed or
+ * aborted deploy never reads as "Producción". Observation only: it never
+ * feeds a guard decision.
  */
 export class PromotionActionTracker {
 	readonly #bySession = new Map<string, Set<ObservedPromotionKind>>();
+	readonly #calls = new Map<string, { sessionId: string; kinds: ReadonlySet<ObservedPromotionKind>; settled: boolean }>();
 	readonly #listeners = new Set<PromotionActionListener>();
 
-	record(sessionId: string | undefined, kinds: readonly PromotionActionKind[]): void {
-		if (sessionId === undefined) return;
-		const added = kinds.filter(isObserved);
-		if (added.length === 0) return;
+	begin(sessionId: string | undefined, toolCallId: string | undefined, kinds: readonly PromotionActionKind[]): void {
+		if (sessionId === undefined || toolCallId === undefined) return;
+		const observed = new Set(kinds.filter(isObserved));
+		if (observed.size === 0) return;
+		this.#calls.delete(toolCallId);
+		this.#calls.set(toolCallId, { sessionId, kinds: observed, settled: false });
+		while (this.#calls.size > MAX_TRACKED_CALLS) this.#calls.delete(this.#calls.keys().next().value!);
+	}
+
+	settle(sessionId: string | undefined, toolCallId: string | undefined, succeeded: boolean): void {
+		if (sessionId === undefined || toolCallId === undefined) return;
+		const call = this.#calls.get(toolCallId);
+		if (!call || call.sessionId !== sessionId || call.settled) return;
+		call.settled = true;
+		if (!succeeded) return;
 		const set = this.#bySession.get(sessionId) ?? new Set<ObservedPromotionKind>();
-		for (const kind of added) set.add(kind);
+		for (const kind of call.kinds) set.add(kind);
 		this.#bySession.set(sessionId, set);
 		for (const listener of this.#listeners) {
 			try {
-				listener(sessionId, new Set(added));
+				listener(sessionId, new Set(call.kinds), toolCallId);
 			} catch {
 				// A broken listener never affects recording or other listeners.
 			}
 		}
+	}
+
+	/** Kinds of a call the guard let through (pending or settled); empty when unknown. */
+	callKinds(sessionId: string | undefined, toolCallId: string | undefined): ReadonlySet<ObservedPromotionKind> {
+		const call = toolCallId === undefined ? undefined : this.#calls.get(toolCallId);
+		return new Set(call && call.sessionId === sessionId ? call.kinds : []);
 	}
 
 	kinds(sessionId: string | undefined): ReadonlySet<ObservedPromotionKind> {
@@ -72,7 +96,9 @@ export class PromotionActionTracker {
 	}
 
 	clear(sessionId: string | undefined): void {
-		if (sessionId !== undefined) this.#bySession.delete(sessionId);
+		if (sessionId === undefined) return;
+		this.#bySession.delete(sessionId);
+		for (const [id, call] of this.#calls) if (call.sessionId === sessionId) this.#calls.delete(id);
 	}
 
 	subscribe(listener: PromotionActionListener): () => void {

@@ -13,6 +13,7 @@ import {
 } from "../lib/promotion-guard.ts";
 import type { LatestPromotionVerdict, PromotionReport } from "../lib/promotion-report.ts";
 import { createPromotionGuardExtension, type PromotionGuardOptions } from "../extensions/promotion-guard.ts";
+import { PromotionActionTracker } from "../lib/ddata-env-backend.ts";
 
 const WS = "/srv/workspaces";
 const DDATA = "/srv/workspaces/ddata-ci";
@@ -284,11 +285,12 @@ test("child sessions never deploy production, but Stage and read-only stay allow
 
 // --- Extension handler -----------------------------------------------------
 
-type ToolCallHandler = (event: { toolName: string; input: unknown }, ctx: ExtensionContext) => Promise<unknown>;
+type ToolCallHandler = (event: { toolName: string; input: unknown; toolCallId?: string }, ctx: ExtensionContext) => Promise<unknown>;
 
 function harness(options: { verdict?: LatestPromotionVerdict; child?: boolean; deps?: PromotionGuardDeps; registryThrows?: boolean; observer?: PromotionGuardOptions["observer"] } = {}) {
 	const handlers: ToolCallHandler[] = [];
-	const pi = { on: (name: string, handler: ToolCallHandler) => { if (name === "tool_call") handlers.push(handler); } } as unknown as ExtensionAPI;
+	const resultHandlers: ToolCallHandler[] = [];
+	const pi = { on: (name: string, handler: ToolCallHandler) => { if (name === "tool_call") handlers.push(handler); if (name === "tool_result") resultHandlers.push(handler); } } as unknown as ExtensionAPI;
 	const sessions: Array<string | undefined> = [];
 	createPromotionGuardExtension({
 		env: { GENTLE_PI_AGENTS_CHILD: options.child ? "1" : "0" },
@@ -303,7 +305,7 @@ function harness(options: { verdict?: LatestPromotionVerdict; child?: boolean; d
 		...(options.observer ? { observer: options.observer } : {}),
 	})(pi);
 	assert.equal(handlers.length, 1);
-	return { handler: handlers[0], sessions };
+	return { handler: handlers[0], resultHandler: resultHandlers[0], sessions };
 }
 
 function context(options: { hasUI?: boolean; confirm?: (title: string, message: string) => Promise<boolean>; cwd?: string } = {}) {
@@ -614,26 +616,42 @@ test("the DDATA scope probe is cached per directory for a short TTL", () => {
 	assert.equal(broken(DDATA), false);
 });
 
-test("the observer records the kinds of actions the guard lets through, without changing any decision", async () => {
-	const recorded: Array<[string | undefined, readonly string[]]> = [];
-	const observer = { record: (sessionId: string | undefined, kinds: readonly string[]) => void recorded.push([sessionId, [...kinds]]) };
+test("the observer begins allowed calls at tool_call without changing any decision", async () => {
+	const begun: Array<[string | undefined, string | undefined, readonly string[]]> = [];
+	const observer = {
+		begin: (sessionId: string | undefined, toolCallId: string | undefined, kinds: readonly string[]) => void begun.push([sessionId, toolCallId, [...kinds]]),
+		settle: () => {},
+	};
 	const commands = ["firebase deploy --project ddata-staging-iso", prodCommand, "git status", "firebase deploy --project ddata-f6721 --only hosting"];
 	for (const confirm of [true, false]) {
-		recorded.length = 0;
+		begun.length = 0;
 		const plain = harness({ verdict: approving });
 		const observed = harness({ verdict: approving, observer });
-		for (const command of commands) {
-			const a = await plain.handler(bash(command), context({ cwd: DDATA, confirm: async () => confirm }).ctx);
-			const b = await observed.handler(bash(command), context({ cwd: DDATA, confirm: async () => confirm }).ctx);
+		for (const [index, command] of commands.entries()) {
+			const event = { ...bash(command), toolCallId: `call-${index}` };
+			const a = await plain.handler(event, context({ cwd: DDATA, confirm: async () => confirm }).ctx);
+			const b = await observed.handler(event, context({ cwd: DDATA, confirm: async () => confirm }).ctx);
 			assert.deepEqual(b, a, `${command} (confirm ${confirm}): same decision`);
 		}
-		const kinds = recorded.flatMap(([, k]) => k);
-		assert.ok(recorded.every(([sessionId]) => sessionId === "session-1"));
-		assert.ok(kinds.includes("stage"), "an allowed Stage deploy is recorded");
-		if (confirm) assert.ok(kinds.includes("production-firebase"), "a confirmed production deploy is recorded");
-		else assert.ok(!kinds.includes("production-firebase"), "a blocked production deploy is not recorded");
+		assert.ok(begun.every(([sessionId]) => sessionId === "session-1"));
+		assert.ok(begun.some(([, id, kinds]) => id === "call-0" && kinds.includes("stage")), "an allowed Stage deploy is begun with its call id");
+		const prod = begun.some(([, , kinds]) => kinds.includes("production-firebase"));
+		assert.equal(prod, confirm, confirm ? "a confirmed production deploy is begun" : "a blocked production deploy is never begun");
 	}
-	// A throwing observer never changes the decision either.
-	const broken = harness({ verdict: approving, observer: { record: () => { throw new Error("observer down"); } } });
-	assert.equal(await broken.handler(bash("firebase deploy --project ddata-staging-iso"), context({ cwd: DDATA }).ctx), undefined);
+	const broken = harness({ verdict: approving, observer: { begin: () => { throw new Error("observer down"); }, settle: () => { throw new Error("down"); } } });
+	assert.equal(await broken.handler({ ...bash("firebase deploy --project ddata-staging-iso"), toolCallId: "x" }, context({ cwd: DDATA }).ctx), undefined);
+	await assert.doesNotReject(async () => broken.resultHandler({ type: "tool_result", toolCallId: "x", isError: false } as never, context({ cwd: DDATA }).ctx));
+});
+
+test("a guarded deploy commits its kinds only when its own result succeeded", async () => {
+	const tracker = new PromotionActionTracker();
+	const { handler, resultHandler } = harness({ verdict: approving, observer: tracker });
+	const { ctx } = context({ cwd: DDATA });
+	await handler({ ...bash(prodCommand), toolCallId: "deploy-1" }, ctx);
+	assert.deepEqual([...tracker.kinds("session-1")], [], "nothing is committed at tool_call");
+	await resultHandler({ type: "tool_result", toolCallId: "deploy-1", isError: true } as never, ctx);
+	assert.deepEqual([...tracker.kinds("session-1")], [], "a failed deploy never sets Producción");
+	await handler({ ...bash("firebase deploy --project ddata-staging-iso"), toolCallId: "stage-1" }, ctx);
+	await resultHandler({ type: "tool_result", toolCallId: "stage-1", isError: false } as never, ctx);
+	assert.deepEqual([...tracker.kinds("session-1")], ["stage"], "a successful Stage deploy is committed");
 });

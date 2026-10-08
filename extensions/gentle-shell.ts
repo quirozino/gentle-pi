@@ -214,11 +214,12 @@ export interface ShellDeps {
 	execFile: typeof execFile;
 	vimRuntimeVersion?(): string | undefined;
 	/**
-	 * DDATA environment refresher for the Promoción group. The default runs git
-	 * through nodeGitAsync only (a synchronous GitRun is for tests, never the
-	 * UI loop), plus ssh/gh reads inside DDATA worktrees.
+	 * Creates the DDATA environment refresher for the Promoción group, once per
+	 * interactive session. The default reads git only through the async
+	 * nodeGitAsync, plus ssh/gh inside DDATA worktrees, and never runs
+	 * anything synchronous on the UI loop.
 	 */
-	ddataEnv?: DdataEnvController;
+	ddataEnv?: () => DdataEnvController;
 }
 
 // The rail digest runs every frame. Cache parsing by file identity and metadata,
@@ -1811,7 +1812,9 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	};
 	// DDATA environment pipeline: background refreshes on session start and
 	// after settled bash; the render path only reads `view` (cached, no I/O).
-	const ddataEnv = deps.ddataEnv ?? createDdataEnvController({
+	// One controller per interactive session (re-created on every session_start,
+	// disposed on shutdown), so /new, /resume and /reload keep the panel live.
+	const createDdataEnv = deps.ddataEnv ?? (() => createDdataEnvController({
 		snapshot: createDdataEnvSnapshot({ git: nodeGitAsync, now: deps.now }),
 		firebase: createFirebaseDefaultsReader({
 			readFile: async (path) => {
@@ -1825,7 +1828,9 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		}),
 		tracker: promotionActionTracker,
 		now: deps.now,
-	});
+	}));
+	let ddataEnv: DdataEnvController | undefined;
+	let stopDdataEnv = () => {};
 	let closeCustomize: (() => void) | undefined;
 	let profilePoll: ReturnType<typeof setInterval> | undefined;
 	const stopProfilePoll = () => {
@@ -2135,16 +2140,25 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		renderHost?.invalidateSidebar?.();
 		renderHost?.requestRender();
 	};
-	const unsubscribeDdataEnv = ddataEnv.onChange(redrawReview);
-	// A Stage or production action the promotion guard let through in this
-	// session forces the next settled bash to reread the remote evidence, and
-	// changes the Backend row now.
-	let ddataForcePending = false;
-	const unsubscribeDdataActions = promotionActionTracker.subscribe((sessionId) => {
-		if (!currentContext || sessionId !== currentContext.sessionManager.getSessionId()) return;
-		ddataForcePending = true;
-		redrawReview();
-	});
+	const startDdataEnv = (ctx: ExtensionContext) => {
+		stopDdataEnv();
+		const controller = createDdataEnv();
+		ddataEnv = controller;
+		const sessionId = ctx.sessionManager.getSessionId();
+		const offChange = controller.onChange(redrawReview);
+		// A deploy the guard let through and whose result succeeded changes the Backend row.
+		const offActions = promotionActionTracker.subscribe((committedSession) => {
+			if (committedSession === sessionId) redrawReview();
+		});
+		stopDdataEnv = () => {
+			offChange();
+			offActions();
+			controller.dispose();
+			if (ddataEnv === controller) ddataEnv = undefined;
+			stopDdataEnv = () => {};
+		};
+		void controller.refresh(ctx.sessionManager.getCwd()).catch(() => undefined);
+	};
 	const unsubscribeReview = pi.events.on(REVIEW_SIDEBAR_EVENT, (value) => {
 		const event = value as { sessionId?: unknown; snapshot?: unknown } | undefined;
 		if (!currentContext || event?.sessionId !== currentContext.sessionManager.getSessionId()) return;
@@ -2224,7 +2238,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		registry.start();
 		applyCardStyle();
 		if (!ctx.hasUI) { shellChrome.ready(); return; }
-		if (isInteractiveMode(ctx.mode)) void ddataEnv.refresh(ctx.sessionManager.getCwd()).catch(() => undefined);
+		if (isInteractiveMode(ctx.mode)) startDdataEnv(ctx);
 		visualSettings = resolveVisualSettings(animationOptions).settings;
 		if (!overrides.activeProfile) {
 			profileReader.bind(ctx.cwd, deps.resolveWorktree);
@@ -2257,7 +2271,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					orchestratorModel: deps.profileOrchestrator(),
 					localTokens: sessionTokensByModel(ctx),
 					usageByProvider: new Map(usage.all().map((entry) => [entry.provider, entry])),
-					ddataEnv: ddataEnv.view(ctx.sessionManager.getCwd(), ctx.sessionManager.getSessionId()),
+					ddataEnv: ddataEnv?.view(ctx.sessionManager.getCwd(), ctx.sessionManager.getSessionId()),
 				}),
 				changes: { files: tracker.model.files.length, added: tracker.model.added, deleted: tracker.model.deleted, notice: tracker.model.notice },
 				tick: gaugeAnimationEnabled() ? gaugeTick.value : undefined,
@@ -2440,9 +2454,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		// fork, quit), so the factory-level subscription never needs to be restored.
 		unsubscribeReview();
 		unsubscribePromotion();
-		unsubscribeDdataEnv();
-		unsubscribeDdataActions();
-		ddataEnv.dispose();
+		stopDdataEnv();
 		stopProfilePoll();
 		oddPhaseRegistry.clear(ctx.sessionManager.getSessionId());
 		oddPhaseRegistry.clearRenderRequest(ctx.sessionManager.getSessionId());
@@ -3002,14 +3014,16 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		}
 	});
 	pi.on("tool_result", (event, ctx) => {
-		// A settled bash may have committed, switched branch or deployed: refresh
-		// the DDATA evidence (debounced); forced after a guarded deploy.
-		if (!ctx.hasUI || !isInteractiveMode(ctx.mode)) return;
-		if ((event as { toolName?: unknown } | undefined)?.toolName !== "bash") return;
-		const force = ddataForcePending;
-		ddataForcePending = false;
+		// A settled bash may have committed or switched branch: refresh the DDATA
+		// evidence (debounced). The result of a deploy the guard let through
+		// (bash or another tool, matched by its own toolCallId) forces a reread.
+		if (!ddataEnv || !ctx.hasUI || !isInteractiveMode(ctx.mode)) return;
 		try {
-			ddataEnv.schedule(ctx.sessionManager.getCwd(), { force });
+			const result = event as { toolName?: unknown; toolCallId?: unknown } | undefined;
+			const toolCallId = typeof result?.toolCallId === "string" ? result.toolCallId : undefined;
+			const deploy = promotionActionTracker.callKinds(ctx.sessionManager.getSessionId(), toolCallId).size > 0;
+			if (result?.toolName !== "bash" && !deploy) return;
+			ddataEnv.schedule(ctx.sessionManager.getCwd(), { force: deploy });
 		} catch {
 			// Refresh problems never surface as exceptions.
 		}

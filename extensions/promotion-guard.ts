@@ -39,11 +39,15 @@ export interface PromotionGuardOptions {
 	/** Clock for the DDATA scope probe cache (tests). */
 	now?: () => number;
 	/**
-	 * Told the kinds of actions the guard lets through (allowed, or confirmed by
-	 * the owner), per session, so the shell can show which backend the session
-	 * works against. Observation only: it never affects a decision.
+	 * Observes the actions the guard lets through (allowed, or confirmed by the
+	 * owner) so the shell can show which backend the session works against:
+	 * `begin` at tool_call, `settle` at that call's tool_result, and only a
+	 * successful result commits. Observation only: it never affects a decision.
 	 */
-	observer?: { record(sessionId: string | undefined, kinds: readonly PromotionAction["kind"][]): void };
+	observer?: {
+		begin(sessionId: string | undefined, toolCallId: string | undefined, kinds: readonly PromotionAction["kind"][]): void;
+		settle(sessionId: string | undefined, toolCallId: string | undefined, succeeded: boolean): void;
+	};
 }
 
 const GIT_TIMEOUT_MS = 5_000;
@@ -97,14 +101,28 @@ export function createPromotionGuardExtension(options: PromotionGuardOptions = {
 		const deps = options.deps ?? defaultPromotionGuardDeps();
 		const registry = options.registry ?? promotionStatusRegistry;
 		const observer = options.observer ?? promotionActionTracker;
-		const observe = (ctx: ExtensionContext, actions: readonly PromotionAction[]): undefined => {
+		const sessionOf = (ctx: ExtensionContext) => ctx?.sessionManager?.getSessionId?.();
+		const callIdOf = (event: unknown) => {
+			const id = (event as { toolCallId?: unknown } | undefined)?.toolCallId;
+			return typeof id === "string" ? id : undefined;
+		};
+		/** Notes an action let through; observation never changes the guard's decision. */
+		const observe = (event: unknown, ctx: ExtensionContext, actions: readonly PromotionAction[]): void => {
 			try {
-				observer.record(ctx.sessionManager?.getSessionId?.(), actions.map((action) => action.kind));
+				observer.begin(sessionOf(ctx), callIdOf(event), actions.map((action) => action.kind));
 			} catch {
-				// Observation never changes the guard's decision.
+				// Ignored by design.
+			}
+		};
+
+		pi.on("tool_result", (event, ctx: ExtensionContext) => {
+			try {
+				observer.settle(sessionOf(ctx), callIdOf(event), (event as { isError?: unknown } | undefined)?.isError !== true);
+			} catch {
+				// Observation never affects tool results.
 			}
 			return undefined;
-		};
+		});
 		const child = env.GENTLE_PI_AGENTS_CHILD === "1";
 		const ddataInPlay = createDdataScopeProbe(deps, { now: options.now });
 
@@ -150,7 +168,10 @@ export function createPromotionGuardExtension(options: PromotionGuardOptions = {
 					}
 				}
 				const decision = decidePromotion(actions, verdict, { child, command: command ?? String(toolName) });
-				if (decision.action === "allow") return observe(ctx, actions);
+				if (decision.action === "allow") {
+					observe(event, ctx, actions);
+					return undefined;
+				}
 				if (decision.action === "block") return blocked(decision.reason);
 				if (!ctx.hasUI) return blocked("Guarda de promoción DDATA: producción requiere la confirmación interactiva del owner y esta sesión no tiene interfaz para pedirla.");
 				let approved = false;
@@ -159,7 +180,9 @@ export function createPromotionGuardExtension(options: PromotionGuardOptions = {
 				} catch (error) {
 					return blocked(`Guarda de promoción DDATA: no se pudo pedir la confirmación del owner (${errorText(error)}).`);
 				}
-				return approved ? observe(ctx, actions) : blocked("Guarda de promoción DDATA: el owner no confirmó el despliegue a producción.");
+				if (!approved) return blocked("Guarda de promoción DDATA: el owner no confirmó el despliegue a producción.");
+				observe(event, ctx, actions);
+				return undefined;
 			} catch (error) {
 				return blocked(`Guarda de promoción DDATA: error interno de la guarda (${errorText(error)}); se bloquea por precaución.`);
 			}

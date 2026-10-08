@@ -60,7 +60,7 @@ function isolatedEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
 }
 // Every instance gets an inert DDATA environment controller unless the test
 // owns one, so no test ever spawns git, ssh or gh through the refresher.
-const inertDdataEnv = (): DdataEnvController => ({ refresh: async () => {}, schedule: () => {}, view: () => undefined, onChange: () => () => {}, dispose: () => {} });
+const inertDdataEnv = () => (): DdataEnvController => ({ refresh: async () => {}, schedule: () => {}, view: () => undefined, onChange: () => () => {}, dispose: () => {} });
 const gentleShell: typeof installGentleShell = (pi, env, deps) => installGentleShell(pi, isolatedEnv(env), { resolveWorktree, gitRunner: (cwd) => async (args) => pi.exec("git", ["-C", cwd, ...args], { timeout: 5000 }), ddataEnv: inertDdataEnv(), ...deps });
 
 const plainTheme = {
@@ -6460,55 +6460,88 @@ test("an older overlapping refresh cannot mark a provider failed after a newer o
 // --- DDATA environment pipeline wiring ----------------------------------------
 
 function recordingDdataEnv(view?: DdataEnvView) {
-	const calls: Array<{ op: "refresh" | "schedule" | "view"; cwd: string; force?: boolean }> = [];
+	const calls: Array<{ op: "refresh" | "schedule"; cwd: string; force?: boolean; controller: number }> = [];
 	const listeners: Array<() => void> = [];
-	const controller: DdataEnvController = {
-		refresh: async (cwd, options = {}) => void calls.push({ op: "refresh", cwd, force: options.force === true }),
-		schedule: (cwd, options = {}) => void calls.push({ op: "schedule", cwd, force: options.force === true }),
-		view: (cwd) => (calls.push({ op: "view", cwd }), view),
-		onChange: (listener) => (listeners.push(listener), () => {}),
-		dispose: () => {},
+	const disposed: number[] = [];
+	let created = 0;
+	const factory = (): DdataEnvController => {
+		const id = ++created;
+		return {
+			refresh: async (cwd, options = {}) => void calls.push({ op: "refresh", cwd, force: options.force === true, controller: id }),
+			schedule: (cwd, options = {}) => void calls.push({ op: "schedule", cwd, force: options.force === true, controller: id }),
+			view: () => view,
+			onChange: (listener) => (listeners.push(listener), () => {}),
+			dispose: () => void disposed.push(id),
+		};
 	};
-	return { controller, calls, listeners };
+	const ops = () => calls.map(({ op, cwd, force }) => ({ op, cwd, force }));
+	return { factory, calls, ops, listeners, disposed, created: () => created };
 }
-const bashResult = (command = "ls") => ({ type: "tool_result", toolName: "bash", toolCallId: "b1", input: { command }, content: [], isError: false });
+const toolResult = (toolCallId: string, toolName = "bash", isError = false) => ({ type: "tool_result", toolName, toolCallId, input: {}, content: [], isError });
 
-test("the DDATA refresher runs on session start and after settled bash, forced after a deploy the guard let through", async () => {
+test("the DDATA refresher runs on session start and after each settled bash", async () => {
 	const env = recordingDdataEnv();
 	const { pi, handlers } = fakePi();
-	gentleShell(pi, {}, { ddataEnv: env.controller });
+	gentleShell(pi, {}, { ddataEnv: env.factory });
 	const { ctx } = fakeContext();
 	await fire(handlers, "session_start", ctx);
-	assert.deepEqual(env.calls.filter((c) => c.op !== "view"), [{ op: "refresh", cwd: "/repo", force: false }], "session start refreshes the session cwd");
+	assert.deepEqual(env.ops(), [{ op: "refresh", cwd: "/repo", force: false }], "session start refreshes the session cwd");
 	env.calls.length = 0;
-	await fireToolResult(handlers, { ...bashResult(), toolName: "read" }, ctx);
-	assert.deepEqual(env.calls.filter((c) => c.op !== "view"), [], "a non-bash tool never triggers");
-	await fireToolResult(handlers, bashResult(), ctx);
-	assert.deepEqual(env.calls.filter((c) => c.op !== "view"), [{ op: "schedule", cwd: "/repo", force: false }], "a settled bash schedules a debounced refresh");
+	await fireToolResult(handlers, toolResult("r1", "read"), ctx);
+	assert.deepEqual(env.ops(), [], "a non-bash, non-deploy tool never triggers");
+	await fireToolResult(handlers, toolResult("b1"), ctx);
+	assert.deepEqual(env.ops(), [{ op: "schedule", cwd: "/repo", force: false }], "a settled bash schedules a debounced refresh");
+	await fire(handlers, "session_shutdown", ctx);
+});
+
+test("the forced reread is tied to the deploy's own tool result", async () => {
+	const env = recordingDdataEnv();
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {}, { ddataEnv: env.factory });
+	const { ctx } = fakeContext();
+	await fire(handlers, "session_start", ctx);
 	env.calls.length = 0;
-	promotionActionTracker.record("other-session", ["stage"]);
-	await fireToolResult(handlers, bashResult(), ctx);
-	assert.deepEqual(env.calls.filter((c) => c.op !== "view"), [{ op: "schedule", cwd: "/repo", force: false }], "another session's deploy does not force this one");
+	// The guard begins the deploy at tool_call; an unrelated bash settles first.
+	promotionActionTracker.begin("shell-session", "deploy-1", ["stage"]);
+	promotionActionTracker.begin("other-session", "deploy-x", ["stage"]);
+	await fireToolResult(handlers, toolResult("other-bash"), ctx);
+	await fireToolResult(handlers, toolResult("deploy-x"), ctx);
+	await fireToolResult(handlers, toolResult("deploy-1"), ctx);
+	await fireToolResult(handlers, toolResult("later"), ctx);
+	assert.deepEqual(env.ops().map((c) => c.force), [false, false, true, false], "only the deploy's own result forces");
+	// A deploy through a non-bash tool (for example an MCP migration) forces too.
 	env.calls.length = 0;
-	promotionActionTracker.record("shell-session", ["stage"]);
-	await fireToolResult(handlers, bashResult("firebase deploy --project ddata-staging-iso"), ctx);
-	await fireToolResult(handlers, bashResult(), ctx);
-	assert.deepEqual(env.calls.filter((c) => c.op !== "view"), [
-		{ op: "schedule", cwd: "/repo", force: true },
-		{ op: "schedule", cwd: "/repo", force: false },
-	], "the bash after a guarded deploy forces one remote reread");
+	promotionActionTracker.begin("shell-session", "mcp-1", ["production-schema"]);
+	await fireToolResult(handlers, toolResult("mcp-1", "mcp"), ctx);
+	assert.deepEqual(env.ops(), [{ op: "schedule", cwd: "/repo", force: true }]);
 	await fire(handlers, "session_shutdown", ctx);
 	promotionActionTracker.clear("shell-session");
 	promotionActionTracker.clear("other-session");
 });
 
+test("after shutdown and a new session start the refresher keeps working", async () => {
+	const env = recordingDdataEnv();
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {}, { ddataEnv: env.factory });
+	const { ctx } = fakeContext();
+	await fire(handlers, "session_start", ctx);
+	await fire(handlers, "session_shutdown", ctx);
+	assert.deepEqual(env.disposed, [1], "shutdown disposes the session's controller");
+	env.calls.length = 0;
+	await fire(handlers, "session_start", ctx);
+	await fireToolResult(handlers, toolResult("b1"), ctx);
+	assert.deepEqual(env.ops(), [{ op: "refresh", cwd: "/repo", force: false }, { op: "schedule", cwd: "/repo", force: false }]);
+	assert.ok(env.calls.every((c) => c.controller === 2), "a fresh controller serves the new session");
+	await fire(handlers, "session_shutdown", ctx);
+});
+
 test("the DDATA refresher never runs without an interactive UI", async () => {
 	const env = recordingDdataEnv();
 	const { pi, handlers } = fakePi();
-	gentleShell(pi, {}, { ddataEnv: env.controller });
+	gentleShell(pi, {}, { ddataEnv: env.factory });
 	const { ctx } = fakeContext({ hasUI: false });
 	await fire(handlers, "session_start", ctx);
-	await fireToolResult(handlers, bashResult(), ctx);
+	await fireToolResult(handlers, toolResult("b1"), ctx);
 	assert.deepEqual(env.calls, []);
 });
 
@@ -6516,27 +6549,36 @@ test("rendering reads the DDATA view only: no refresh, no schedule, no exec", as
 	const pipeline = computePipeline({ lab: { headSha: "37af7f4c0ffee1234567890abcdef1234567890a" } }, { now: 0, staleAfterMs: 1 })!;
 	const env = recordingDdataEnv({ pipeline, backend: { text: "desconocido" } });
 	const { pi, handlers, git } = fakePi();
-	gentleShell(pi, BAR_ON, { ddataEnv: env.controller });
+	gentleShell(pi, BAR_ON, { ddataEnv: env.factory });
 	const { ctx, ui } = fakeContext();
 	await fire(handlers, "session_start", ctx);
 	env.calls.length = 0;
 	const gitBefore = git.length;
 	renderFooter(ui);
 	renderFooter(ui);
-	assert.deepEqual(env.calls.filter((c) => c.op !== "view"), [], "render never refreshes");
+	assert.deepEqual(env.calls, [], "render never refreshes");
 	assert.equal(git.length, gitBefore, "render never runs a process");
 	await fire(handlers, "session_shutdown", ctx);
 });
 
-test("a changed DDATA view requests a redraw", async () => {
+test("a changed DDATA view or a committed deploy requests a render", async () => {
 	const env = recordingDdataEnv();
 	const { pi, handlers } = fakePi();
-	gentleShell(pi, {}, { ddataEnv: env.controller });
-	const { ctx } = fakeContext();
+	gentleShell(pi, {}, { ddataEnv: env.factory });
+	const { ctx, ui } = fakeContext();
 	await fire(handlers, "session_start", ctx);
+	let renders = 0;
+	const tui = { ...fakeTui, requestRender: () => void (renders += 1) };
+	(ui.footerFactory as (tui: unknown, theme: unknown, data: unknown) => unknown)(tui, plainTheme, footerData);
 	assert.equal(env.listeners.length, 1, "the shell listens for evidence changes");
-	assert.doesNotThrow(() => env.listeners[0]!(), "a redraw before any footer is harmless");
+	const before = renders;
+	env.listeners[0]!();
+	assert.equal(renders, before + 1, "an evidence change requests a render");
+	promotionActionTracker.begin("shell-session", "deploy-9", ["production-firebase"]);
+	promotionActionTracker.settle("shell-session", "deploy-9", true);
+	assert.equal(renders, before + 2, "a committed deploy changes the Backend row and requests a render");
 	await fire(handlers, "session_shutdown", ctx);
+	promotionActionTracker.clear("shell-session");
 });
 
 test("buildShellBarModel carries the DDATA view into the Status card model", () => {

@@ -439,7 +439,7 @@ import { createDdataEnvController, type DdataEnvSnapshot } from "../lib/ddata-en
 import { PromotionActionTracker, type FirebaseDefaultsReader } from "../lib/ddata-env-backend.ts";
 import type { DdataEnvEvidence } from "../lib/ddata-env.ts";
 
-function fakeController(options: { evidence?: DdataEnvEvidence; defaults?: readonly string[] } = {}) {
+function fakeController(options: { evidence?: DdataEnvEvidence; defaults?: readonly string[]; clock?: { t: number } } = {}) {
 	const refreshes: Array<{ cwd: string; force: boolean }> = [];
 	let evidence: DdataEnvEvidence | undefined;
 	const snapshot: DdataEnvSnapshot = {
@@ -466,8 +466,9 @@ function fakeController(options: { evidence?: DdataEnvEvidence; defaults?: reado
 		snapshot,
 		firebase,
 		tracker,
-		now: () => 1_800_000_000_000,
+		now: () => options.clock?.t ?? 1_800_000_000_000,
 		debounceMs: 1500,
+		maxWaitMs: 10_000,
 		setTimer: (fn, ms) => {
 			const timer = { fn, ms, cancelled: false };
 			timers.push(timer);
@@ -496,7 +497,8 @@ test("controller.view computes the pipeline and backend without I/O", async () =
 	assert.deepEqual([f.refreshes.length, f.firebaseReads.length], before);
 	assert.equal(view?.pipeline.current, "lab");
 	assert.deepEqual(view?.backend, { text: "Stage (por defecto)" });
-	f.tracker.record("s", ["production-schema"]);
+	f.tracker.begin("s", "c1", ["production-schema"]);
+	f.tracker.settle("s", "c1", true);
 	assert.deepEqual(f.controller.view(DDATA_CWD, "s")?.backend, { text: "Producción · esquema", tone: "failure" });
 });
 
@@ -543,4 +545,36 @@ test("onChange fires only when the evidence changes, and refresh never rejects",
 	});
 	broken.onChange(() => { throw new Error("listener"); });
 	await assert.doesNotReject(broken.refresh(DDATA_CWD));
+});
+
+test("continuous scheduling still refreshes within the max wait", async () => {
+	const clock = { t: 0 };
+	const f = fakeController({ clock });
+	await f.controller.refresh(DDATA_CWD);
+	f.refreshes.length = 0;
+	for (let i = 0; i < 12; i += 1) {
+		f.controller.schedule(DDATA_CWD);
+		clock.t += 1_000;
+	}
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(f.refreshes.length, 1, "the 10 s max wait forces one refresh despite steady activity");
+	const active = f.timers.filter((t) => !t.cancelled);
+	assert.ok(active.every((t) => t.ms <= 1500), "timers never exceed the debounce");
+	const clock2 = { t: 0 };
+	const g = fakeController({ clock: clock2 });
+	await g.controller.refresh(DDATA_CWD);
+	g.controller.schedule(DDATA_CWD);
+	clock2.t += 9_500;
+	g.controller.schedule(DDATA_CWD);
+	assert.equal(g.timers.at(-1)?.ms, 500, "the last timer is capped by the remaining max wait");
+});
+
+test("a disposed controller refreshes nothing and notifies nobody", async () => {
+	const f = fakeController();
+	let changes = 0;
+	f.controller.onChange(() => (changes += 1));
+	f.controller.dispose();
+	await f.controller.refresh(DDATA_CWD);
+	assert.equal(f.refreshes.length, 0);
+	assert.equal(changes, 0);
 });

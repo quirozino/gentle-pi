@@ -500,6 +500,8 @@ export function createDdataEnvSnapshot(deps: DdataEnvSnapshotDeps = {}): DdataEn
 // --- Controller ------------------------------------------------------------------
 
 export const DDATA_ENV_DEBOUNCE_MS = 1_500;
+/** Continuous activity still refreshes at least this often. */
+export const DDATA_ENV_MAX_WAIT_MS = 10_000;
 export const DDATA_ENV_STALE_AFTER_MS = 30 * 60_000;
 
 export interface DdataEnvView {
@@ -513,14 +515,18 @@ export interface DdataEnvControllerDeps {
 	tracker: { kinds(sessionId: string | undefined): ReadonlySet<ObservedPromotionKind> };
 	now: () => number;
 	debounceMs?: number;
+	maxWaitMs?: number;
 	staleAfterMs?: number;
 	setTimer?: (fn: () => void, ms: number) => { cancel(): void };
 }
 
 export interface DdataEnvController {
-	/** Refreshes evidence and the `.firebaserc` defaults for `cwd`; never rejects. */
+	/** Refreshes evidence and the `.firebaserc` defaults for `cwd`; never rejects; a no-op once disposed. */
 	refresh(cwd: string, options?: { force?: boolean }): Promise<void>;
-	/** Debounced refresh; a force request stays sticky until it runs; a new cwd refreshes at once. */
+	/**
+	 * Debounced refresh, capped by a max wait so steady activity still refreshes;
+	 * a force request stays sticky until it runs; a new cwd refreshes at once.
+	 */
 	schedule(cwd: string, options?: { force?: boolean }): void;
 	/** Render-path view: no I/O, no exec; undefined outside a DDATA worktree or before evidence. */
 	view(cwd: string, sessionId: string | undefined): DdataEnvView | undefined;
@@ -537,6 +543,7 @@ const defaultSetTimer = (fn: () => void, ms: number) => {
 
 export function createDdataEnvController(deps: DdataEnvControllerDeps): DdataEnvController {
 	const debounceMs = deps.debounceMs ?? DDATA_ENV_DEBOUNCE_MS;
+	const maxWaitMs = deps.maxWaitMs ?? DDATA_ENV_MAX_WAIT_MS;
 	const staleAfterMs = deps.staleAfterMs ?? DDATA_ENV_STALE_AFTER_MS;
 	const setTimer = deps.setTimer ?? defaultSetTimer;
 	const listeners = new Set<() => void>();
@@ -544,11 +551,14 @@ export function createDdataEnvController(deps: DdataEnvControllerDeps): DdataEnv
 	let lastCwd: string | undefined;
 	let timer: { cancel(): void } | undefined;
 	let pendingForce = false;
+	/** When the current burst of scheduled refreshes began. */
+	let burstStart: number | undefined;
 	let disposed = false;
 
 	const fingerprint = (cwd: string) => JSON.stringify([deps.snapshot.current(cwd) ?? null, deps.firebase.cached(cwd) ?? null]);
 
 	async function refresh(cwd: string, options: { force?: boolean } = {}): Promise<void> {
+		if (disposed) return;
 		lastCwd = cwd;
 		try {
 			await Promise.all([
@@ -558,6 +568,7 @@ export function createDdataEnvController(deps: DdataEnvControllerDeps): DdataEnv
 		} catch {
 			// Refresh failures become states inside the snapshot; anything else is dropped.
 		}
+		if (disposed) return;
 		try {
 			const next = fingerprint(cwd);
 			if (fingerprints.get(cwd) === next) return;
@@ -583,12 +594,17 @@ export function createDdataEnvController(deps: DdataEnvControllerDeps): DdataEnv
 			timer = undefined;
 			const run = () => {
 				timer = undefined;
+				burstStart = undefined;
 				const force = pendingForce;
 				pendingForce = false;
 				void refresh(cwd, { force });
 			};
 			if (cwd !== lastCwd) return run();
-			timer = setTimer(run, debounceMs);
+			const now = deps.now();
+			burstStart ??= now;
+			const remaining = maxWaitMs - (now - burstStart);
+			if (remaining <= 0) return run();
+			timer = setTimer(run, Math.min(debounceMs, remaining));
 		},
 		view(cwd, sessionId) {
 			const evidence = deps.snapshot.current(cwd);
