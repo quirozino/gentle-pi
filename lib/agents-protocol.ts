@@ -183,8 +183,11 @@ function terminalAssistant(messages: unknown): Omit<AgentEndEvent, "type"> {
 		if (stopReason === "error") return { text: "", outcome: "error", diagnostic: "assistant reported an error" };
 		if (stopReason === "aborted") return { text: "", outcome: "aborted", diagnostic: "assistant aborted" };
 		const text = contentText(message.content);
-		return text.length > 0
-			? { text, outcome: "success" }
+		if (text.length > 0) return { text, outcome: "success" };
+		// A length stop with no text means the output budget was spent before any
+		// report was written (typically inside thinking); name it so it is actionable.
+		return stopReason === "length"
+			? { text: "", outcome: "empty", diagnostic: "assistant hit the output token limit before a final report" }
 			: { text: "", outcome: "empty", diagnostic: "assistant returned no final report" };
 	}
 	return { text: "", outcome: "empty", diagnostic: "assistant returned no final report" };
