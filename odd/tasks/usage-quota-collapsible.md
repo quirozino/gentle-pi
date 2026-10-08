@@ -43,6 +43,8 @@ The Usage list is also long (11 rows) and pushes the rest of the card down.
       `limit - remaining`) + real-payload fixture. Route: delegated writer (same as T1).
 - [x] T3 Collapsible Usage top 4 with click toggle and 5-minute auto-collapse.
       Route: delegated writer (2+ non-trivial files: shell-bar, gentle-shell, tests).
+- [x] T4 Review follow-ups: no hidden rows without a reachable heading (minimal density / clipped
+      heading → render expanded); closure-local `toggle`. Route: inline (one file + its test).
 
 ## Acceptance criteria
 - Real MiniMax payload → general row: 5h 0 % used, weekly 4 % used.
@@ -68,3 +70,9 @@ The Usage list is also long (11 rows) and pushes the rest of the card down.
   RED: missing exports / toggle commented out. GREEN: shell-bar 99/99, gentle-shell+status-card-embed 294/294,
   shell-usage 71/71, float-chrome-roles keeps only the known base failure; typecheck no new diagnostics.
 - Next: manual check in pi fullscreen after /reload; RDD review per assess result.
+- RDD: assess at `f6af66cbe` medium / slice_budget_reached; consent granted; one reliability lens on
+  `d33b0688a..f6af66cbe` → approved, acknowledged (lineage review-a8d9100f98ca411a). Reviewed boundary = `f6af66cbe`.
+  Advisory follow-ups (non-blocking): WARNING minimal density / heading that does not fit hides rows with no
+  toggle (lib/shell-bar.ts:626-630); SUGGESTION `toggle()` relies on `this` (lib/shell-bar.ts:530).
+- T4 (inline, user-authorized follow-up): RED "minimal density keeps every row"; GREEN 449/450 with only the
+  known base failure. The roles test now uses SGR-coded fake roles, since `<role>` markup hid the heading.

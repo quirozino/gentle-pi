@@ -517,17 +517,19 @@ export function createUsageCollapse(deps: UsageCollapseDeps): UsageCollapse {
 		timer = undefined;
 	};
 	const expired = () => expandedAt !== undefined && deps.now() - expandedAt >= USAGE_AUTO_COLLAPSE_MS;
-	return {
-		expanded() {
-			if (expired()) {
-				expandedAt = undefined;
-				clear();
-			}
-			return expandedAt !== undefined;
-		},
-		toggle() {
+	const expanded = () => {
+		if (expired()) {
+			expandedAt = undefined;
 			clear();
-			if (this.expanded()) {
+		}
+		return expandedAt !== undefined;
+	};
+	return {
+		expanded,
+		toggle() {
+			// Closure-local, so a detached `toggle` callback still works.
+			clear();
+			if (expanded()) {
 				expandedAt = undefined;
 				return;
 			}
@@ -580,7 +582,10 @@ export function renderShellSidebarCard(model: ShellBarModel, theme: ShellBarThem
 		const at = plain.indexOf(usageHeading);
 		if (at >= 0) return { ...card, usageToggle: { x: visibleWidth(plain.slice(0, at)), y, width: visibleWidth(usageHeading) } };
 	}
-	return card;
+	// No clickable heading (minimal density drops titles; a narrow card clips
+	// it): never hide rows behind a toggle nobody can reach, so show them all.
+	if (model.usageExpanded === true) return card;
+	return sidebarCardRows({ ...model, usageExpanded: true }, theme, width, presentation, options).card;
 }
 
 function sidebarCardRows(model: ShellBarModel, theme: ShellBarTheme, width: number, presentation: Presentation | undefined, options: SidebarBarOptions): { card: ShellSidebarCard; usageHeading?: string } {

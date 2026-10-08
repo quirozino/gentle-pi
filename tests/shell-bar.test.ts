@@ -726,12 +726,16 @@ test("a Usage group of four rows or fewer has a plain heading and no toggle", ()
 });
 
 test("the Usage toggle markers paint only through theme roles", () => {
-	const fg = (role: string, text: string) => `<${role}>${text}</${role}>`;
-	const theme: ShellBarTheme = { fg, bold: (text) => text };
-	const rows = renderShellSidebarCard(crowdedUsageModel(), theme, 60).rows.join("\n");
-	assert.match(rows, /<dim>▸ \+3<\/dim>/);
-	const heading = rows.split("\n").find((row) => row.includes("Usage"))!;
-	assert.doesNotMatch(heading, /\x1b\[|#[0-9a-f]{6}/i, "no raw colour in the heading row");
+	// Each role gets its own SGR code, the way a real theme paints, so the
+	// heading stays findable and the marker's role is readable from the escape.
+	const roles: string[] = [];
+	const code = (role: string) => 30 + (roles.includes(role) ? roles.indexOf(role) : roles.push(role) - 1);
+	const theme: ShellBarTheme = { fg: (role, text) => `\x1b[${code(role)}m${text}\x1b[39m`, bold: (text) => text };
+	const card = renderShellSidebarCard(crowdedUsageModel(), theme, 60);
+	assert.ok(card.usageToggle, "the heading is still found through real escapes");
+	const heading = card.rows[card.usageToggle.y]!;
+	assert.ok(heading.includes(`\x1b[${code("dim")}m▸ +3\x1b[39m`), "the marker paints through the dim role");
+	assert.doesNotMatch(heading, /#[0-9a-f]{6}|\x1b\[38;2;/i, "no hex or truecolor in the heading row");
 });
 
 test("the card reports where the Usage heading sits in every panel style", (t) => {
@@ -752,6 +756,19 @@ test("the card reports where the Usage heading sits in every panel style", (t) =
 	check(plainTheme, 16, "narrow single panel");
 	useCardStyle(t, CARD_STYLE.FLOAT);
 	check(withBackground(plainTheme), 60, "float");
+});
+
+test("a Usage heading the card cannot paint never hides rows behind it", () => {
+	const shown = (rows: readonly string[]) => rows.map(stripAnsi).filter((row) => /[║│] +(alpha|bravo|charlie|delta|echo|quiet|busy) /.test(row)).length;
+	// Minimal density drops every group title, so there is nothing to click.
+	const minimal = renderShellSidebarCard(crowdedUsageModel(), plainTheme, 60, { ...DEFAULT_VISUAL_SETTINGS, density: "minimal" });
+	assert.equal(shown(minimal.rows), 7, "minimal density keeps every row");
+	assert.equal(minimal.usageToggle, undefined, "no toggle without a heading");
+	// A heading too wide for the card is clipped, so its text is not clickable either.
+	for (const width of [8, 10, 12]) {
+		const card = renderShellSidebarCard(crowdedUsageModel(), plainTheme, width);
+		if (card.usageToggle === undefined) assert.ok(!card.rows.some((row) => /\+3/.test(stripAnsi(row))), `width ${width}: no collapsed hint without a toggle`);
+	}
 });
 
 test("the Usage collapse state toggles and collapses by itself after the timeout", () => {
