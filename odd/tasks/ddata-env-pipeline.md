@@ -38,7 +38,7 @@ wiring in `extensions/gentle-shell.ts`, rendering in `lib/shell-bar.ts`, tests. 
 
 ## Tasks
 - [x] T1 Pure environment model `lib/ddata-env.ts`: steps, evidence types, current-step computation (Lab default; Stage when HEAD/candidate matches Stage web release prefix or Stage Firebase SHA; Production never without evidence), labels and unavailable states (sin evidencia, sin registro, registro antiguo, error de lectura). Route: delegated writer.
-- [ ] T2 Background snapshot refresher `lib/ddata-env-snapshot.ts`: DDATA worktree detection, local HEAD, SSH readlink and `gh run list` via injectable exec with timeouts, TTL ~5 min, single-flight, cache file read/write, config for host/user/key path with the authorized defaults. Route: delegated writer.
+- [x] T2 Background snapshot refresher `lib/ddata-env-snapshot.ts`: DDATA worktree detection, local HEAD, SSH readlink and `gh run list` via injectable exec with timeouts, TTL ~5 min, single-flight, cache file read/write, config for host/user/key path with the authorized defaults. Route: delegated writer.
 - [ ] T3 Backend row: from guard-observed actions in this session (production-* → "Producción", failure tone), else `.firebaserc` default ("Stage (por defecto)"), else "desconocido". Route: delegated writer.
 - [ ] T4 Render + wiring: pipeline row with step badges (current neon, passed ✓, pending dim), "paso N de 3 · nombre", Backend row, narrow fallback; wire refresher triggers (session start, cwd change, settled bash) and redraw. Route: delegated writer.
 
@@ -55,3 +55,5 @@ Forecast ~700 authored lines over 4 tasks (exceeds ~400). Branch `feat/ddata-env
 ## Progress
 - 2026-10-08: branch created by guia at 8590d9e4; document created.
 - T1 done: `lib/ddata-env.ts` pure model (DDATA_ENV_STEPS, computePipeline, shortSha, truncateRelease, releaseHexPrefix). Stale evidence never advances; Stage label precedence web match > firebase match > other version > error > stale > sin evidencia; Lab label "HEAD · sha12" / "candidato · sha12". Checks: ddata-env 24/24 (RED: module missing), typecheck no regressions (parent spot check: ddata-env 24/24).
+- T1 commit: d7b88f32.
+- T2 done: `lib/ddata-env-snapshot.ts` (createDdataEnvSnapshot refresh/current; argv-only exec with 8 s timeout; config validation before exec; error codes timeout/auth/unavailable/parse/failed/no-key/no-runs/config; atomic 0600 cache with whitelisted fields; HEAD reread each refresh, TTL on remote reads only). Checks: ddata-env-snapshot 15/15 + ddata-env 24/24, typecheck no regressions. Real probe (authorized) from ddata-topology-maps: lab 0c2a3407, Stage web 37af7f4-captcha-disabled, Stage Firebase b59c8f85 run 37483232876 → pipeline "paso 1 de 3 · Lab", Stage "otra versión", Producción "sin registro"; cache file mode 0600.
