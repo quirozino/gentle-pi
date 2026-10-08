@@ -381,7 +381,8 @@ test("Status panel boxes the title and splits groups with tee rules", () => {
 	assert.match(lines[1], /^│ ╔═+╗ │$/);
 	assert.match(lines[3], /^│ ╚═+╝ │$/);
 	assert.match(lines.join("\n"), /║ Project +~\/work\/gentle-pi ║[\s\S]*║ Branch +main ║[\s\S]*║ Profile +team ║/);
-	assert.equal(lines.filter((line) => /^│ ╟─+╢ │$/.test(line)).length, 4, "Project | Changes | Usage | Integrations | Promoción");
+	assert.equal(lines.filter((line) => /^│ ╟─+╢ │$/.test(line)).length, 3, "Project | Changes | Usage | Integrations");
+	assert.equal(lines.filter((line) => /^│ ║ ┄+ ║ │$/.test(line)).length, 1, "the untitled promotion group opens with a dotted separator");
 });
 
 test("sidebar unifies project, captured changes and integrations in one frame", () => {
@@ -1019,8 +1020,8 @@ test("Directorio and Promoción close the Status card after Integrations as divi
 		assert.match(body[heading + 1]!, /║  📁 …\/agent +║/);
 		assert.match(body[heading + 2]!, /║  └─ 📁 local-packages +║/);
 		assert.match(body[heading + 3]!, /║     └─ ⎇ gentle-pi +║/);
-		assert.match(body[heading + 4]!, /╟─+╢/, `${style}: a divider opens the promotion section after Directorio`);
-		assert.match(body[heading + 5]!, /║ Promoción +║/);
+		assert.match(body[heading + 4]!, /║ ┄+ ║/, `${style}: a dotted divider opens the untitled promotion section after Directorio`);
+		assert.match(body[heading + 5]!, /║  Fase ODD +En espera ║/);
 		assert.match(body[body.length - 2]!, /╚═+╝/, `${style}: the last group still closes the box`);
 	}
 	// Narrow widths clip names instead of breaking the frame.
@@ -1305,14 +1306,14 @@ test("the promotion group follows Directorio in both panel styles and in the nar
 	for (const style of [CARD_STYLE.NEON, CARD_STYLE.FLOAT]) {
 		useCardStyle(t, style);
 		const body = renderShellSidebarBar(data, matrixTheme, 60).map(stripAnsi).join("\n");
-		assert.ok(body.indexOf("Directorio") < body.indexOf("Promoción"), `${style}: Promoción follows Directorio`);
+		assert.ok(body.indexOf("Directorio") < body.indexOf("Fase ODD"), `${style}: the promotion group follows Directorio`);
 		assert.match(body, /Candidato +lib\/x\.ts/);
 	}
 	// Below the boxed-panel minimum the single narrow panel keeps the group.
 	for (const width of [14, 15]) {
 		const rows = renderShellSidebarBar(data, matrixTheme, width);
 		const narrow = rows.map(stripAnsi).join("\n");
-		assert.match(narrow, /Promoción/);
+		assert.match(narrow, /Fase ODD/);
 		assert.match(narrow, /Candidato/);
 		assert.ok(rows.every((row) => visibleWidth(row) <= width), `width ${width} keeps the frame`);
 	}
@@ -1339,111 +1340,176 @@ test("only Matrix-Green paints the Promoción group; other themes keep the origi
 	}
 	// The narrow single-panel fallback obeys the same gate.
 	const narrow = renderShellSidebarBar(data, gentleTheme, 15).map(stripAnsi).join("\n");
-	assert.doesNotMatch(narrow, /Promoci/, "the narrow fallback hides the group for other themes");
+	assert.doesNotMatch(narrow, /Fase ODD|Candidato/, "the narrow fallback hides the group for other themes");
 });
 
 test("the gate matches the exact Matrix-Green name, not a case or prefix variant", () => {
 	const data = model({ promotion: { kind: "captured", report: { candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "APTO" } } });
-	assert.match(renderShellSidebarBar(data, matrixTheme, 60).map(stripAnsi).join("\n"), /Promoci/, "exactly Matrix-Green shows the group");
+	assert.match(renderShellSidebarBar(data, matrixTheme, 60).map(stripAnsi).join("\n"), /Fase ODD/, "exactly Matrix-Green shows the group");
 	for (const name of ["matrix-green", "Matrix-Green ", " Matrix-Green", "Matrix-Green2", "Matrix"]) {
 		const body = renderShellSidebarBar(data, { ...plainTheme, name }, 60).map(stripAnsi).join("\n");
-		assert.doesNotMatch(body, /Promoci/, `${JSON.stringify(name)} is not Matrix-Green`);
+		assert.doesNotMatch(body, /Fase ODD/, `${JSON.stringify(name)} is not Matrix-Green`);
 	}
 });
 
 test("switching the theme between renders moves the Promoción group with the live theme object", () => {
 	const data = model({ promotion: { kind: "captured", report: { candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "APTO" } } });
-	assert.match(renderShellSidebarBar(data, matrixTheme, 60).map(stripAnsi).join("\n"), /Promoci/, "Matrix-Green shows the group");
-	assert.doesNotMatch(renderShellSidebarBar(data, gentleTheme, 60).map(stripAnsi).join("\n"), /Promoci/, "a switch away hides it on the next render");
-	assert.match(renderShellSidebarBar(data, matrixTheme, 60).map(stripAnsi).join("\n"), /Promoci/, "a switch back restores it: the gate reads each render's theme, never settings.json");
+	assert.match(renderShellSidebarBar(data, matrixTheme, 60).map(stripAnsi).join("\n"), /Fase ODD/, "Matrix-Green shows the group");
+	assert.doesNotMatch(renderShellSidebarBar(data, gentleTheme, 60).map(stripAnsi).join("\n"), /Fase ODD/, "a switch away hides it on the next render");
+	assert.match(renderShellSidebarBar(data, matrixTheme, 60).map(stripAnsi).join("\n"), /Fase ODD/, "a switch back restores it: the gate reads each render's theme, never settings.json");
 });
 
-// --- DDATA environment pipeline (Promoción group) ---------------------------
+// --- DDATA environment pipeline (Promoción group, approved T6 design) --------
 
-const ENV_HEAD = "37af7f4c0ffee1234567890abcdef1234567890a";
+const ENV_HEAD = "731c35826fe2aa1234567890abcdef1234567890";
 const ENV_NOW = 1_800_000_000_000;
 const envPipeline = (evidence: Omit<DdataEnvEvidence, "lab">) =>
 	computePipeline({ lab: { headSha: ENV_HEAD }, ...evidence }, { now: ENV_NOW, staleAfterMs: 30 * 60_000 })!;
-const envModel = (evidence: Omit<DdataEnvEvidence, "lab">, backend: BackendRow = { text: "Stage (por defecto)" }) =>
-	model({ ddataEnv: { pipeline: envPipeline(evidence), backend } });
-const LAB_ONLY = {};
-const AT_STAGE = { stageWeb: { releaseName: "37af7f4-captcha-disabled", observedAt: ENV_NOW } };
+const envModel = (evidence: Omit<DdataEnvEvidence, "lab">, backend: BackendRow = { text: "Stage (por defecto)" }, extra: Partial<ShellBarModel> = {}) =>
+	model({ ddataEnv: { pipeline: envPipeline(evidence), backend }, ...extra });
+const OTHER_RELEASE = { stageWeb: { releaseName: "37af7f4-captcha-disabled", observedAt: ENV_NOW } };
+const AT_STAGE = { stageWeb: { releaseName: "731c358-captcha-disabled", observedAt: ENV_NOW } };
 const AT_PROD = { production: { headSha: ENV_HEAD, observedAt: ENV_NOW } };
 /** True when `text` is painted (non-inverse) in `role` somewhere in the rows. */
 const paintedIn = (rows: readonly string[], role: string, text: string) =>
 	rows.some((row) => row.includes(`\x1b[38;5;${badgeRoleCode(role)}m${text}`));
+/** The promotion group's content lines in the neon panel: from its leading dotted separator to the box close. */
+function groupLines(rows: readonly string[]): string[] {
+	const body = rows.map(stripAnsi);
+	const fase = body.findIndex((line) => line.includes("Fase ODD"));
+	assert.ok(fase > 0, "the group is rendered");
+	const close = body.findIndex((line, index) => index > fase && /╚═+╝/.test(line));
+	return body.slice(fase - 1, close).map((line) => /║ (.*) ║/.exec(line)?.[1] ?? line);
+}
+const DOTS = (width: number) => "┄".repeat(width);
 
-test("Lab step: the current step is a neon badge, pending steps are dim, rows follow Fase ODD and Estado", (t) => {
+test("Lab case at inner width 38 renders the approved layout", (t) => {
+	useCardStyle(t, CARD_STYLE.NEON);
+	const lines = groupLines(renderShellSidebarBar(envModel(OTHER_RELEASE), recordingMatrixTheme, 46));
+	assert.deepEqual(lines, [
+		DOTS(38),
+		" Fase ODD                    En espera",
+		" Estado               sin verificación",
+		DOTS(38),
+		" ╭────────╮   ╭─────────╮   ╭────────╮",
+		" │ ⚒ Lab  │┄┄┄│ ◎ Stage │┄┄┄│ ★ Prod │",
+		" ╰────────╯   ╰─────────╯   ╰────────╯",
+		DOTS(38),
+		" ◈ Entorno  paso 1 de 3 · construcción",
+		DOTS(38),
+		" ⚒ Lab             HEAD · 731c35826fe2",
+		DOTS(38),
+		" ◎ Stage    ≠ 37af7f4-captcha-disabled",
+		DOTS(38),
+		" ★ Producción             sin registro",
+		DOTS(38),
+		" ⛁ Backend         Stage (por defecto)",
+	]);
+});
+
+test("no group line exceeds the inner width at 38, 46 and 30, in both panel styles", (t) => {
 	for (const style of [CARD_STYLE.NEON, CARD_STYLE.FLOAT]) {
 		useCardStyle(t, style);
-		const rows = renderShellSidebarBar(envModel(LAB_ONLY), recordingMatrixTheme, 46);
-		assert.ok(rows.every((row) => visibleWidth(row) === 46), `${style}: rows keep the card width`);
-		assert.deepEqual(badges(rows), [{ role: "accent", text: " ① Lab " }], `${style}: one badge, the current step, in a non-state role`);
-		assert.ok(paintedIn(rows, "dim", "② Stage") && paintedIn(rows, "dim", "③ Prod"), `${style}: pending steps dim`);
-		const text = flattened(rows);
-		assert.match(text, /① Lab ━ ② Stage ━ ③ Prod/);
-		assert.match(text, /Entorno paso 1 de 3 · Lab · construcción/);
-		assert.match(text, /Stage sin evidencia/);
-		assert.match(text, /Producción sin registro/);
-		assert.match(text, /Backend Stage \(por defecto\)/);
-		const order = ["Fase ODD", "Estado", "① Lab", "Entorno", "Backend"].map((key) => text.indexOf(key));
-		assert.ok(order.every((index, i) => index >= 0 && (i === 0 || order[i - 1]! < index)), `${style}: order ${order}`);
-	}
-});
-
-test("Stage step: passed Lab gets a success ✓, Stage is the badge, Prod stays dim", () => {
-	const rows = renderShellSidebarBar(envModel(AT_STAGE), recordingMatrixTheme, 46);
-	assert.deepEqual(badges(rows), [{ role: "accent", text: " ② Stage " }]);
-	assert.ok(paintedIn(rows, "success", "✓ Lab"));
-	assert.ok(paintedIn(rows, "dim", "③ Prod"));
-	assert.match(flattened(rows), /Entorno paso 2 de 3 · Stage · prueba en vivo/);
-	assert.ok(paintedIn(rows, "success", "en vivo · 37af7f4-captcha-disabled"), "running tone maps to success");
-});
-
-test("Production step: both earlier steps passed", () => {
-	const rows = renderShellSidebarBar(envModel(AT_PROD, { text: "Producción · Firebase", tone: "failure" }), recordingMatrixTheme, 60);
-	assert.deepEqual(badges(rows), [{ role: "accent", text: " ③ Prod " }]);
-	assert.ok(paintedIn(rows, "success", "✓ Lab") && paintedIn(rows, "success", "✓ Stage"));
-	assert.ok(paintedIn(rows, "error", "Producción · Firebase"), "a production backend is painted in the failure role");
-});
-
-test("evidence tones map to theme roles; sin conexión is a warning", () => {
-	const offline = { stageWeb: { releaseName: "37af7f4-x", observedAt: ENV_NOW, lastError: "timeout" as const } };
-	let rows = renderShellSidebarBar(envModel(offline), recordingMatrixTheme, 70);
-	assert.ok(paintedIn(rows, "warning", "sin conexión · en vivo · 37af7f4-x"));
-	rows = renderShellSidebarBar(envModel({ stageWeb: { error: "auth" } }), recordingMatrixTheme, 70);
-	assert.ok(paintedIn(rows, "warning", "error de lectura"));
-	rows = renderShellSidebarBar(envModel({ stageWeb: { releaseName: "9b1e2d3-old", observedAt: ENV_NOW } }), recordingMatrixTheme, 70);
-	assert.ok(paintedIn(rows, "syntaxType", "otra versión · 9b1e2d3-old"), "info maps to a neutral role");
-});
-
-test("narrow widths fall back to the plain Lab › Stage › Prod row and never overflow", (t) => {
-	for (const style of [CARD_STYLE.NEON, CARD_STYLE.FLOAT]) {
-		useCardStyle(t, style);
-		for (const width of [10, 14, 18, 24, 30, 34, 40]) {
-			const rows = renderShellSidebarBar(envModel(AT_STAGE), recordingMatrixTheme, width);
-			assert.ok(rows.every((row) => visibleWidth(row) <= width), `${style}/${width}: rows fit`);
-			for (const badge of badges(rows)) assert.deepEqual(badge, { role: "accent", text: " ② Stage " }, `${style}/${width}: a badge is never cut`);
+		for (const width of [38, 46, 54, 30, 24, 16, 12]) {
+			for (const data of [envModel(OTHER_RELEASE), envModel(AT_STAGE), envModel(AT_PROD, { text: "Producción · Firebase y esquema", tone: "failure" })]) {
+				const rows = renderShellSidebarBar(data, recordingMatrixTheme, width);
+				assert.ok(rows.every((row) => visibleWidth(row) <= width), `${style}/${width}: rows fit`);
+				assert.ok(!rows.join("").includes("\x1b[7m"), `${style}/${width}: no inverse video without an ODD phase`);
+			}
 		}
-		const plain = flattened(renderShellSidebarBar(envModel(AT_STAGE), recordingMatrixTheme, 30));
-		assert.match(plain, /Lab › \[Stage\] › Prod/, `${style}: the plain fallback marks the current step`);
 	}
-	// Without inverse video the row is the plain fallback too.
-	assert.match(flattened(renderShellSidebarBar(envModel(AT_STAGE), matrixTheme, 60)), /Lab › \[Stage\] › Prod/);
 });
 
-test("the pipeline paints with theme roles only, never hex", () => {
+test("boxes and connectors take their step's role: current accent, passed success with ✓, pending dim", () => {
+	let rows = renderShellSidebarBar(envModel(OTHER_RELEASE), recordingMatrixTheme, 46);
+	assert.ok(paintedIn(rows, "accent", "╭────────╮") && paintedIn(rows, "accent", "│ ⚒ Lab  │"), "current Lab box in accent");
+	assert.ok(paintedIn(rows, "dim", "│ ◎ Stage │") && paintedIn(rows, "dim", "│ ★ Prod │"), "pending boxes dim");
+	assert.ok(paintedIn(rows, "dim", "┄┄┄"), "dotted connector towards pending");
+	rows = renderShellSidebarBar(envModel(AT_STAGE), recordingMatrixTheme, 46);
+	assert.ok(paintedIn(rows, "success", "│ ✓ Lab  │"), "passed Lab box in success with ✓");
+	assert.ok(paintedIn(rows, "accent", "│ ◎ Stage │"), "current Stage box in accent");
+	assert.ok(paintedIn(rows, "accent", "━━━"), "solid connector into the current step, in its colour");
+	assert.match(groupLines(rows)[5]!, /│ ✓ Lab  │━━━│ ◎ Stage │┄┄┄│ ★ Prod │/);
+	rows = renderShellSidebarBar(envModel(AT_PROD), recordingMatrixTheme, 46);
+	assert.match(groupLines(rows)[5]!, /│ ✓ Lab  │━━━│ ✓ Stage │━━━│ ★ Prod │/);
+	assert.ok(paintedIn(rows, "success", "━━━") && paintedIn(rows, "accent", "━━━"), "Lab→Stage passed (success), Stage→Prod current (accent)");
+	assert.ok(!rows.join("").includes("\x1b[7m"), "boxes never use inverse video");
+});
+
+test("detail rows carry icons in their step colour and values in their tone", () => {
+	const offline = { stageWeb: { releaseName: "731c358-x", observedAt: ENV_NOW, lastError: "timeout" as const } };
+	let rows = renderShellSidebarBar(envModel(offline), recordingMatrixTheme, 54);
+	assert.ok(paintedIn(rows, "accent", "◈"), "Entorno icon in accent");
+	assert.ok(paintedIn(rows, "success", "⚒"), "passed Lab icon in success");
+	assert.ok(paintedIn(rows, "accent", "◎"), "current Stage icon in accent");
+	assert.ok(paintedIn(rows, "dim", "★"), "pending Producción icon dim");
+	assert.ok(paintedIn(rows, "warning", "sin conexión · en vivo · 731c358-x"), "the offline warning keeps its tone");
+	rows = renderShellSidebarBar(envModel({}, { text: "Producción · Firebase", tone: "failure" }), recordingMatrixTheme, 54);
+	assert.ok(paintedIn(rows, "error", "⛁") && paintedIn(rows, "error", "Producción · Firebase"), "a production backend paints icon and value in the failure role");
+});
+
+test("a dotted separator sits between every detail row and between verifier rows", (t) => {
+	useCardStyle(t, CARD_STYLE.NEON);
+	const report: ShellBarModel["promotion"] = { kind: "captured", report: { candidateId: "lib/x.ts", step: "validacion-stage", verdict: "APTO" } };
+	const lines = groupLines(renderShellSidebarBar(envModel(OTHER_RELEASE, undefined, { promotion: report }), recordingMatrixTheme, 46));
+	const keys = ["Fase ODD", "Candidato", "Paso", "Veredicto", "◈ Entorno", "⚒ Lab", "◎ Stage", "★ Producción", "⛁ Backend"];
+	const rowOf = (key: string) => lines.findIndex((line) => line.startsWith(` ${key} `));
+	for (const [i, key] of keys.entries()) {
+		const at = rowOf(key);
+		assert.ok(at > 0, `${key} is rendered`);
+		assert.ok(lines[at - 1]!.startsWith("┄"), `${key} is preceded by a dotted separator`);
+		if (i > 0) assert.ok(at > rowOf(keys[i - 1]!), `${key} follows ${keys[i - 1]}`);
+	}
+	assert.ok(paintedIn(renderShellSidebarBar(envModel(OTHER_RELEASE), recordingMatrixTheme, 46), "dim", DOTS(38)), "separators are dim");
+});
+
+test("the group has no Promoción title and keeps Fase ODD and Estado together", (t) => {
+	for (const style of [CARD_STYLE.NEON, CARD_STYLE.FLOAT]) {
+		useCardStyle(t, style);
+		const body = renderShellSidebarBar(envModel(OTHER_RELEASE), recordingMatrixTheme, 46).map(stripAnsi).join("\n");
+		assert.doesNotMatch(body, /Promoción/);
+		assert.match(body, /Fase ODD +En espera +║ │?\n.*Estado +sin verificación/);
+	}
+	assert.doesNotMatch(flattened(renderShellSidebarBar(envModel(OTHER_RELEASE), recordingMatrixTheme, 14)), /Promoción/, "narrow panel too");
+});
+
+test("values: ≠ for another version and the Entorno step text", (t) => {
+	useCardStyle(t, CARD_STYLE.NEON);
+	let text = flattened(renderShellSidebarBar(envModel(OTHER_RELEASE), recordingMatrixTheme, 54));
+	assert.match(text, /◎ Stage ≠ 37af7f4-captcha-disabled/);
+	assert.doesNotMatch(text, /otra versión/);
+	assert.match(text, /◈ Entorno paso 1 de 3 · construcción/);
+	text = flattened(renderShellSidebarBar(envModel(AT_STAGE), recordingMatrixTheme, 54));
+	assert.match(text, /◈ Entorno paso 2 de 3 · prueba en vivo/);
+	assert.doesNotMatch(text, /paso 2 de 3 · Stage/, "the step name is not repeated");
+});
+
+test("narrow widths fall back to one plain pipeline line with roles per step", (t) => {
+	for (const style of [CARD_STYLE.NEON, CARD_STYLE.FLOAT]) {
+		useCardStyle(t, style);
+		const rows = renderShellSidebarBar(envModel(AT_STAGE), recordingMatrixTheme, 40);
+		const text = flattened(rows);
+		assert.ok(!rows.map(stripAnsi).some((row) => row.includes("╭────────╮")), `${style}: no boxes when they do not fit`);
+		assert.match(text, /✓ Lab › ◎ Stage › ★ Prod/, `${style}: plain line`);
+		assert.ok(paintedIn(rows, "success", "✓ Lab") && paintedIn(rows, "accent", "◎ Stage") && paintedIn(rows, "dim", "★ Prod"));
+	}
+	assert.match(flattened(renderShellSidebarBar(envModel(AT_STAGE), recordingMatrixTheme, 14)), /Lab/, "the single narrow panel keeps the pipeline line");
+});
+
+test("the group paints with theme roles only, never hex", () => {
 	const roles = new Set<string>();
 	const recording: ShellBarTheme = { name: "Matrix-Green", fg: (role, text) => (roles.add(role), text), bold: (text) => text, inverse: (text) => text };
-	const rows = renderShellSidebarBar(envModel(AT_STAGE, { text: "Producción · esquema", tone: "failure" }), recording, 60);
-	assert.doesNotMatch(rows.join("\n"), /#[0-9a-f]{3,8}\b/i);
+	for (const width of [46, 30]) {
+		const rows = renderShellSidebarBar(envModel(AT_STAGE, { text: "Producción · esquema", tone: "failure" }), recording, width);
+		assert.doesNotMatch(rows.join("\n"), /#[0-9a-f]{3,8}\b/i);
+	}
 	for (const role of roles) assert.match(role, /^[a-zA-Z]+$/, `role ${role} is a theme role name`);
 });
 
 test("no pipeline (non-DDATA cwd) or another theme hides the environment rows", () => {
 	const none = flattened(renderShellSidebarBar(model(), recordingMatrixTheme, 60));
-	assert.doesNotMatch(none, /Entorno|Backend|① Lab|Lab ›/);
+	assert.doesNotMatch(none, /Entorno|Backend|⚒|╭─/);
 	assert.match(none, /Fase ODD/);
 	const gentle = flattened(renderShellSidebarBar(envModel(AT_STAGE), { ...recordingMatrixTheme, name: "Gentle" }, 60));
-	assert.doesNotMatch(gentle, /Entorno|Backend|Stage/);
+	assert.doesNotMatch(gentle, /Entorno|Backend|Stage|Fase ODD/);
 });

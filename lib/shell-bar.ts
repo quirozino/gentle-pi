@@ -148,48 +148,107 @@ const ROLE = {
 
 const PROMOTION_TONE_ROLE: Record<PromotionRowTone, string> = { warning: ROLE.WARNING, failure: ROLE.FAILURE, running: ROLE.RUNNING };
 
-// DDATA environment pipeline. The current step is a neon badge in a non-state
-// role (Matrix-Green's accent is not its success colour); passed steps carry a
-// success ✓; pending steps and connectors are dim. Evidence tones map to the
-// same state roles as the promotion rows, and `info` to a neutral syntax role.
-const ENV_ROLE = { CURRENT: "accent", PASSED: "success", PENDING: "dim", CONNECTOR: "dim" } as const;
+// DDATA environment pipeline (approved T6 design). Three rounded step boxes,
+// no background and no inverse video: border and text share one role —
+// current = accent (neon; Matrix-Green's accent is not its success colour),
+// passed = success with ✓ replacing the icon, pending = dim. The connector into
+// a passed or current step is solid in that step's role, dotted dim otherwise.
+// Detail rows repeat the step icon in the step's role. Evidence tones map to
+// the same state roles as the promotion rows, and `info` to a neutral role.
+// Widths are measured with visibleWidth, like every other row in this file.
+const ENV_ROLE = { CURRENT: "accent", PASSED: "success", PENDING: "dim", SEPARATOR: "dim" } as const;
 const ENV_TONE_ROLE: Record<DdataEnvTone, string> = { warning: ROLE.WARNING, failure: ROLE.FAILURE, running: ROLE.RUNNING, info: "syntaxType" };
-const STEP_NUMBER = ["①", "②", "③"] as const;
+const STEP_ICON: Record<DdataPipeline["steps"][number]["id"], string> = { lab: "⚒", stage: "◎", production: "★" };
+const ENTORNO_ICON = "◈";
+const BACKEND_ICON = "⛁";
+const PASSED_MARK = "✓";
+/** Narrowest inner box width, so "✓ Lab" and "★ Prod" boxes line up. */
+const STEP_BOX_MIN_INNER = 8;
+const STEP_CONNECTOR_CELLS = 3;
+const SEPARATOR_GLYPH = "┄";
 
-/**
- * The pipeline row for an exact width: `① Lab ━ ② Stage ━ ③ Prod` with the
- * current step as a badge, or the plain `Lab › [Stage] › Prod` when the badge
- * row does not fit (or the theme has no inverse video), clipped as a last resort.
- */
-export function renderDdataPipelineRow(pipeline: DdataPipeline, theme: ShellBarTheme, width: number): string {
-	if (width <= 0) return "";
-	if (theme.inverse) {
-		const parts = pipeline.steps.map((step) => {
-			const numbered = `${STEP_NUMBER[step.index - 1]} ${step.shortName}`;
-			if (step.status === "current") return paintBadge(theme, ENV_ROLE.CURRENT, numbered);
-			if (step.status === "passed") return theme.fg(ENV_ROLE.PASSED, `✓ ${step.shortName}`);
-			return theme.fg(ENV_ROLE.PENDING, numbered);
-		});
-		const full = parts.join(theme.fg(ENV_ROLE.CONNECTOR, " ━ "));
-		if (visibleWidth(full) <= width) return full;
-	}
-	const plain = pipeline.steps
-		.map((step) => {
-			if (step.status === "current") return theme.fg(ENV_ROLE.CURRENT, theme.bold(`[${step.shortName}]`));
-			return theme.fg(step.status === "passed" ? ENV_ROLE.PASSED : ENV_ROLE.PENDING, step.shortName);
-		})
-		.join(theme.fg(ENV_ROLE.CONNECTOR, " › "));
-	return visibleWidth(plain) <= width ? plain : truncateToWidth(plain, width, "…");
+type PipelineStep = DdataPipeline["steps"][number];
+
+const stepRole = (step: PipelineStep) =>
+	step.status === "current" ? ENV_ROLE.CURRENT : step.status === "passed" ? ENV_ROLE.PASSED : ENV_ROLE.PENDING;
+const stepLabel = (step: PipelineStep) => `${step.status === "passed" ? PASSED_MARK : STEP_ICON[step.id]} ${step.shortName}`;
+
+/** A dim dotted separator spanning `width` columns. */
+function dottedSeparator(theme: ShellBarTheme, width: number): string {
+	return theme.fg(ENV_ROLE.SEPARATOR, SEPARATOR_GLYPH.repeat(Math.max(0, width)));
 }
 
-/** Label/value rows under the pipeline row: step, per-environment evidence, backend. */
-function ddataEnvPairs(env: NonNullable<ShellBarModel["ddataEnv"]>): StatusPair[] {
-	const current = env.pipeline.steps[env.pipeline.index - 1]!;
-	const toned = (key: string, text: string, tone: DdataEnvTone | undefined): StatusPair => tone ? [key, text, ENV_TONE_ROLE[tone]] : [key, text];
+/**
+ * The three step boxes as three rows, or undefined when they do not fit `width`.
+ */
+export function renderDdataStepBoxes(pipeline: DdataPipeline, theme: ShellBarTheme, width: number): string[] | undefined {
+	const boxes = pipeline.steps.map((step) => {
+		const text = stepLabel(step);
+		const inner = Math.max(STEP_BOX_MIN_INNER, visibleWidth(text) + 2);
+		const padded = ` ${text}${" ".repeat(inner - 1 - visibleWidth(text))}`;
+		const role = stepRole(step);
+		return {
+			width: inner + 2,
+			top: theme.fg(role, `╭${"─".repeat(inner)}╮`),
+			middle: theme.fg(role, `│${padded}│`),
+			bottom: theme.fg(role, `╰${"─".repeat(inner)}╯`),
+		};
+	});
+	const total = boxes.reduce((sum, box) => sum + box.width, 0) + STEP_CONNECTOR_CELLS * (boxes.length - 1);
+	if (total > width) return undefined;
+	const gap = " ".repeat(STEP_CONNECTOR_CELLS);
+	const connector = (next: PipelineStep) => next.status === "pending"
+		? theme.fg(ENV_ROLE.PENDING, SEPARATOR_GLYPH.repeat(STEP_CONNECTOR_CELLS))
+		: theme.fg(stepRole(next), "━".repeat(STEP_CONNECTOR_CELLS));
 	return [
-		["Entorno", `${env.pipeline.progressLabel} · ${current.name} · ${current.responsibility}`],
-		...env.pipeline.steps.map((step) => toned(step.name, step.evidence.text, step.evidence.tone)),
-		toned("Backend", env.backend.text, env.backend.tone),
+		boxes.map((box) => box.top).join(gap),
+		boxes.map((box, index) => (index === 0 ? "" : connector(pipeline.steps[index]!)) + box.middle).join(""),
+		boxes.map((box) => box.bottom).join(gap),
+	];
+}
+
+/** The plain one-line pipeline (`⚒ Lab › ◎ Stage › ★ Prod`), clipped to `width`. */
+export function renderDdataPipelineLine(pipeline: DdataPipeline, theme: ShellBarTheme, width: number): string {
+	if (width <= 0) return "";
+	const line = pipeline.steps
+		.map((step) => theme.fg(stepRole(step), step.status === "current" ? theme.bold(stepLabel(step)) : stepLabel(step)))
+		.join(theme.fg(ENV_ROLE.PENDING, " › "));
+	return visibleWidth(line) <= width ? line : truncateToWidth(line, width, "…");
+}
+
+/**
+ * One detail row on a single line: icon and label on the left, the value
+ * flush right, the value (then the label) truncated with … so the row never
+ * exceeds `width`.
+ */
+function detailRow(theme: ShellBarTheme, width: number, row: { icon: string; iconRole: string; key: string; value: string; valueRole?: string }): string {
+	if (width <= 0) return "";
+	const leftPlain = `${row.icon} ${row.key}`;
+	const leftWidth = Math.min(visibleWidth(leftPlain), width);
+	const left = leftWidth < visibleWidth(leftPlain)
+		? truncateToWidth(leftPlain, width, "…")
+		: `${theme.fg(row.iconRole, row.icon)} ${theme.fg(ROLE.LABEL, theme.bold(row.key))}`;
+	const budget = width - leftWidth - 1;
+	if (budget < 1) return left;
+	const valuePlain = visibleWidth(row.value) <= budget ? row.value : truncateToWidth(row.value, budget, "…");
+	const gap = width - leftWidth - visibleWidth(valuePlain);
+	return `${left}${" ".repeat(gap)}${theme.fg(row.valueRole ?? ROLE.VALUE, theme.bold(valuePlain))}`;
+}
+
+/** Evidence text as shown: "otra versión · X" reads as "≠ X". */
+const displayEvidence = (text: string) => text.replace(/otra versión · /g, "≠ ");
+
+/** The environment sections of the promotion group: boxes, Entorno, one row per step, Backend. */
+function ddataEnvSections(env: DdataEnvView, theme: ShellBarTheme): StatusSection[] {
+	const current = env.pipeline.steps[env.pipeline.index - 1]!;
+	const tone = (value: DdataEnvTone | undefined) => (value ? ENV_TONE_ROLE[value] : undefined);
+	return [
+		{ fitted: (width) => renderDdataStepBoxes(env.pipeline, theme, width) ?? [renderDdataPipelineLine(env.pipeline, theme, width)] },
+		{ fitted: (width) => [detailRow(theme, width, { icon: ENTORNO_ICON, iconRole: ENV_ROLE.CURRENT, key: "Entorno", value: `${env.pipeline.progressLabel} · ${current.responsibility}` })] },
+		...env.pipeline.steps.map((step): StatusSection => ({
+			fitted: (width) => [detailRow(theme, width, { icon: STEP_ICON[step.id], iconRole: stepRole(step), key: step.name, value: displayEvidence(step.evidence.text), valueRole: tone(step.evidence.tone) })],
+		})),
+		{ fitted: (width) => [detailRow(theme, width, { icon: BACKEND_ICON, iconRole: tone(env.backend.tone) ?? ROLE.LABEL, key: "Backend", value: env.backend.text, valueRole: tone(env.backend.tone) })] },
 	];
 }
 
@@ -538,33 +597,17 @@ export function renderShellSidebarCard(model: ShellBarModel, theme: ShellBarThem
 		// the latest verifier evaluation is in, and a verdict is displayed
 		// exactly as reported — never dressed up as deploy authority.
 		...(promotion
-			? [{
-					title: "Promoción",
-					pairs: [
-						model.oddPhase && theme.inverse
-							? ["Fase ODD", oddPhaseLabel(model.oddPhase), ODD_PHASE_BADGE_ROLE[model.oddPhase], true] as const
-							: ["Fase ODD", model.oddPhase ? oddPhaseLabel(model.oddPhase) : "En espera"] as const,
-						...promotion.pairs.map(([key, text, tone, phaseTone]): StatusPair => {
-							const badgeRole = phaseTone && theme.inverse ? PHASE_TONE_ROLE.get(phaseTone) : undefined;
-							if (badgeRole) return [key, text, badgeRole, true];
-							return tone ? [key, text, PROMOTION_TONE_ROLE[tone]] : [key, text];
-						}),
-					],
-					lines: [],
-					// The DDATA environment pipeline, only inside a DDATA worktree.
-					...(model.ddataEnv
-						? {
-								fitted: (lineWidth: number) => [renderDdataPipelineRow(model.ddataEnv!.pipeline, theme, lineWidth)],
-								afterFitted: ddataEnvPairs(model.ddataEnv),
-							}
-						: {}),
-				}]
+			? [promotionGroup(model, promotion.pairs.map(([key, text, tone, phaseTone]): StatusPair => {
+					const badgeRole = phaseTone && theme.inverse ? PHASE_TONE_ROLE.get(phaseTone) : undefined;
+					if (badgeRole) return [key, text, badgeRole, true];
+					return tone ? [key, text, PROMOTION_TONE_ROLE[tone]] : [key, text];
+				}), theme)]
 			: []),
 	];
 	// A group the header dedupe emptied goes whole: no heading over nothing.
 	// Without the header the card keeps its groups exactly as before.
 	const groups = options.headerVisible === true
-		? allGroups.filter((group) => group.value !== undefined || (group.pairs?.length ?? 0) > 0 || group.lines.length > 0 || group.fitted !== undefined)
+		? allGroups.filter((group) => group.value !== undefined || (group.pairs?.length ?? 0) > 0 || group.lines.length > 0 || group.fitted !== undefined || (group.sections?.length ?? 0) > 0)
 		: allGroups;
 	if (innerWidth - STATUS_PANEL_INSET < STATUS_PANEL_MIN_CONTENT) {
 		// Too narrow for nested boxes: the single (framed) panel keeps every fact readable.
@@ -575,12 +618,17 @@ export function renderShellSidebarCard(model: ShellBarModel, theme: ShellBarThem
 			return `${label(key)} ${role && !badge ? theme.fg(role, theme.bold(text)) : value(text)}`;
 		};
 		const wrapped = (line: string) => wrapTextWithAnsi(line, innerWidth - inset).map((part) => " ".repeat(inset) + part);
+		const lineWidth = innerWidth - inset;
 		const body = groups.flatMap((group, index) => [
 			...(index && (!presentation || presentation.density === "comfortable") ? [""] : []),
-			...(presentation?.density === "minimal" ? [] : [label(group.title)]),
+			...(presentation?.density === "minimal" || group.untitled ? [] : [label(group.title)]),
 			...[...(group.value ? [value(group.value)] : []), ...(group.pairs ?? []).map(pairLine), ...group.lines].flatMap(wrapped),
-			...(group.fitted?.(innerWidth - inset) ?? []).map((line) => " ".repeat(inset) + line),
-			...(group.afterFitted ?? []).map(pairLine).flatMap(wrapped),
+			...(group.fitted?.(lineWidth) ?? []).map((line) => " ".repeat(inset) + line),
+			...(group.sections ?? []).flatMap((section) => [
+				" ".repeat(inset) + dottedSeparator(theme, lineWidth),
+				...(section.pairs ?? []).map(pairLine).flatMap(wrapped),
+				...(section.fitted?.(lineWidth) ?? []).map((line) => " ".repeat(inset) + line),
+			]),
 		]);
 		return { rows: renderCard({ title: "Status", body, tone: CARD_TONE.INFO, glyph: SHELL_GLYPHS.status }, theme, width, { expanded: true, panel: true }) };
 	}
@@ -630,8 +678,40 @@ interface StatusGroup {
 	lines: string[];
 	/** Rows drawn for an exact line width instead of wrapped, e.g. the cwd tree. */
 	fitted?: (width: number) => string[];
-	/** Label/value rows drawn after the fitted rows, e.g. under the DDATA pipeline row. */
-	afterFitted?: ReadonlyArray<StatusPair>;
+	/** No heading row: the group opens with its first section's dotted separator instead. */
+	untitled?: boolean;
+	/** Blocks drawn after everything else, each opened by a dim dotted separator. */
+	sections?: ReadonlyArray<StatusSection>;
+}
+
+/** One block of an untitled group: label/value pairs and/or rows fitted to an exact width. */
+interface StatusSection {
+	pairs?: ReadonlyArray<StatusPair>;
+	fitted?: (width: number) => string[];
+}
+
+/**
+ * The promotion group (Matrix-Green only): untitled, every block separated by
+ * a dim dotted rule. Fase ODD and Estado share the first block; each further
+ * verifier row and each DDATA environment row gets its own block.
+ */
+function promotionGroup(model: ShellBarModel, verifierPairs: StatusPair[], theme: ShellBarTheme): StatusGroup {
+	const fase: StatusPair = model.oddPhase && theme.inverse
+		? ["Fase ODD", oddPhaseLabel(model.oddPhase), ODD_PHASE_BADGE_ROLE[model.oddPhase], true]
+		: ["Fase ODD", model.oddPhase ? oddPhaseLabel(model.oddPhase) : "En espera"];
+	const [first, ...rest] = verifierPairs;
+	const leading = first?.[0] === "Estado" ? [fase, first] : [fase];
+	const verifier = first?.[0] === "Estado" ? rest : verifierPairs;
+	return {
+		title: "Promoción",
+		untitled: true,
+		lines: [],
+		sections: [
+			{ pairs: leading },
+			...verifier.map((pair): StatusSection => ({ pairs: [pair] })),
+			...(model.ddataEnv ? ddataEnvSections(model.ddataEnv, theme) : []),
+		],
+	};
 }
 
 /** The text of the boxed Status title, e.g. `(o_o) Status`. */
@@ -668,13 +748,14 @@ function renderStatusPanel(groups: StatusGroup[], theme: ShellBarTheme, width: n
 function statusBoxRows(groups: StatusGroup[], theme: ShellBarTheme, boxWidth: number, presentation: Presentation | undefined, withTitle: boolean, titleFrame?: StatusTitleFrame): string[] {
 	const frame = (text: string) => theme.fg(STATUS_PANEL_ROLE.FRAME, text);
 	const content = boxWidth - 4;
+	const boxContent = content;
 	const fit = (text: string, size: number) => {
 		const clipped = truncateToWidth(text, size, "…");
 		return clipped + " ".repeat(Math.max(0, size - visibleWidth(clipped)));
 	};
 	const rule = (left: string, right: string, line: string = PANEL.horizontal) => frame(left + line.repeat(boxWidth - 2) + right);
 	const row = (text: string) => `${frame(PANEL.vertical)} ${fit(text, content)} ${frame(PANEL.vertical)}`;
-	const pair = (key: string, text: string, keyRole: string = ROLE.LABEL, valueRole: string = ROLE.VALUE, badge = false): string[] => {
+	const pair = (key: string, text: string, keyRole: string = ROLE.LABEL, valueRole: string = ROLE.VALUE, badge = false, content = boxContent): string[] => {
 		const keyText = theme.fg(keyRole, theme.bold(key));
 		if (badge) {
 			// Whole badge flush right, or whole on its own row under the key;
@@ -698,20 +779,35 @@ function statusBoxRows(groups: StatusGroup[], theme: ShellBarTheme, boxWidth: nu
 	const lead = Math.floor((boxWidth - 2 - titleWidth) / 2);
 	const titleRow = `${frame(PANEL.vertical)}${" ".repeat(lead)}${fit(title, boxWidth - 2 - lead)}${frame(PANEL.vertical)}`;
 
-	const sections = groups.map((group) => [
-		...(presentation?.density === "minimal"
-			? group.value ? pair("", group.value) : []
-			: group.value ? pair(group.title, group.value, STATUS_PANEL_ROLE.HEADING) : [theme.fg(STATUS_PANEL_ROLE.HEADING, theme.bold(group.title))]),
-		...(group.pairs ?? []).flatMap(([key, text, role, badge]) => pair(key, text, ROLE.LABEL, role, badge)),
-		...group.lines.flatMap((line) => wrapTextWithAnsi(line, content - 1).map((part) => ` ${part}`)),
-		...(group.fitted?.(content - 1) ?? []).map((line) => ` ${line}`),
-		...(group.afterFitted ?? []).flatMap(([key, text, role, badge]) => pair(key, text, ROLE.LABEL, role, badge)),
-	]).filter((section) => section.length > 0);
+	// An untitled group's sections each open with a dim dotted rule; the first
+	// one also divides it from the previous group, in place of the tee rule.
+	const sectionRows = (section: StatusSection) => [
+		dottedSeparator(theme, content),
+		...(section.pairs ?? []).flatMap(([key, text, role, badge]) => pair(key, text, ROLE.LABEL, role, badge, content - 1).map((line) => ` ${line}`)),
+		...(section.fitted?.(content - 1) ?? []).map((line) => ` ${line}`),
+	];
+	const sections = groups.map((group) => ({
+		dotted: group.untitled === true && (group.sections?.length ?? 0) > 0,
+		rows: [
+			...(group.untitled
+				? []
+				: presentation?.density === "minimal"
+					? group.value ? pair("", group.value) : []
+					: group.value ? pair(group.title, group.value, STATUS_PANEL_ROLE.HEADING) : [theme.fg(STATUS_PANEL_ROLE.HEADING, theme.bold(group.title))]),
+			...(group.pairs ?? []).flatMap(([key, text, role, badge]) => pair(key, text, ROLE.LABEL, role, badge)),
+			...group.lines.flatMap((line) => wrapTextWithAnsi(line, content - 1).map((part) => ` ${part}`)),
+			...(group.fitted?.(content - 1) ?? []).map((line) => ` ${line}`),
+			...(group.sections ?? []).flatMap(sectionRows),
+		],
+	})).filter((section) => section.rows.length > 0);
 
 	return [
 		...(withTitle ? [rule(PANEL.topLeft, PANEL.topRight), titleRow, rule(PANEL.bottomLeft, PANEL.bottomRight)] : []),
 		rule(PANEL.topLeft, PANEL.topRight),
-		...sections.flatMap((section, index) => [...(index ? [rule(PANEL.teeLeft, PANEL.teeRight, PANEL.divider)] : []), ...section.map(row)]),
+		...sections.flatMap((section, index) => [
+			...(index && !section.dotted ? [rule(PANEL.teeLeft, PANEL.teeRight, PANEL.divider)] : []),
+			...(index === 0 && section.dotted ? section.rows.slice(1) : section.rows).map(row),
+		]),
 		rule(PANEL.bottomLeft, PANEL.bottomRight),
 	];
 }
