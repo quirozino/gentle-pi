@@ -6589,3 +6589,51 @@ test("buildShellBarModel carries the DDATA view into the Status card model", () 
 	assert.deepEqual(buildShellBarModel(pi, ctx, emptyFooterData as never, { ddataEnv: view }).ddataEnv, view);
 	assert.equal(buildShellBarModel(pi, ctx, emptyFooterData as never).ddataEnv, undefined);
 });
+
+// pi falls back to the `system` theme silently when the configured theme fails
+// to load; the shell says so once per session instead.
+const THEME_FALLBACK_NOTICE = "Tema «Matrix-Green» no cargó; pi usa «system». Revisa el paquete de temas.";
+async function settleThemeCheck(): Promise<void> {
+	for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve));
+}
+function themedContext(name: string) {
+	const fake = fakeContext();
+	(fake.ctx.ui as unknown as { theme: unknown }).theme = { ...plainTheme, name };
+	return fake;
+}
+
+test("session_start warns once when the configured theme did not load", async () => {
+	const { pi, handlers } = fakePi();
+	(pi as unknown as { getSettings: () => unknown }).getSettings = () => ({ theme: "Matrix-Green" });
+	gentleShell(pi, {});
+	const { ctx, ui } = themedContext("system");
+	await fire(handlers, "session_start", ctx);
+	await settleThemeCheck();
+	assert.deepEqual(ui.notices.filter((notice) => notice === THEME_FALLBACK_NOTICE), [THEME_FALLBACK_NOTICE]);
+	await fire(handlers, "session_start", ctx);
+	await settleThemeCheck();
+	assert.equal(ui.notices.filter((notice) => notice === THEME_FALLBACK_NOTICE).length, 1, "the same session is warned once");
+	await fire(handlers, "session_shutdown", ctx);
+});
+
+test("session_start stays silent when the configured theme loaded", async () => {
+	const { pi, handlers } = fakePi();
+	(pi as unknown as { getSettings: () => unknown }).getSettings = () => ({ theme: "Matrix-Green" });
+	gentleShell(pi, {});
+	const { ctx, ui } = themedContext("Matrix-Green");
+	await fire(handlers, "session_start", ctx);
+	await settleThemeCheck();
+	assert.ok(!ui.notices.some((notice) => notice.startsWith("Tema «")));
+	await fire(handlers, "session_shutdown", ctx);
+});
+
+test("session_start survives unreadable settings without a theme notice", async () => {
+	const { pi, handlers } = fakePi();
+	(pi as unknown as { getSettings: () => unknown }).getSettings = () => { throw new Error("not initialized"); };
+	gentleShell(pi, { PI_CODING_AGENT_DIR: "/nonexistent-agent-home" }, { readFile: async () => { throw new Error("EACCES"); } });
+	const { ctx, ui } = themedContext("system");
+	await fire(handlers, "session_start", ctx);
+	await settleThemeCheck();
+	assert.ok(!ui.notices.some((notice) => notice.startsWith("Tema «")));
+	await fire(handlers, "session_shutdown", ctx);
+});

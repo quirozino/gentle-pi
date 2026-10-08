@@ -1162,15 +1162,10 @@ const COMMON_ODD_TRANSITIONS = [
 	["authorizing", "exploring"],
 	["researching", "exploring"],
 ] as const;
-// Matrix-Green ships with gentle-studio, not this package; override the path
-// with GENTLE_MATRIX_GREEN_THEME when it lives elsewhere.
-const MATRIX_GREEN_THEME_PATH = process.env.GENTLE_MATRIX_GREEN_THEME ?? "/srv/workspaces/gentle-studio/themes/Matrix-Green.json";
-function readMatrixGreen(): { colors: Record<string, string>; vars: Record<string, string> } | undefined {
-	try {
-		return JSON.parse(readFileSync(MATRIX_GREEN_THEME_PATH, "utf8"));
-	} catch {
-		return undefined;
-	}
+// Matrix-Green is vendored in this package (themes/), so the check always runs.
+const MATRIX_GREEN_THEME_URL = new URL("../themes/Matrix-Green.json", import.meta.url);
+function readMatrixGreen(): { colors: Record<string, string>; vars: Record<string, string> } {
+	return JSON.parse(readFileSync(MATRIX_GREEN_THEME_URL, "utf8"));
 }
 /** A theme colour value resolved through its vars to a lowercase hex. */
 function resolveThemeHex(theme: { colors: Record<string, string>; vars: Record<string, string> }, role: string): string {
@@ -1203,9 +1198,8 @@ test("the ODD phase badge map covers every phase with Pi theme roles only, never
 	}
 });
 
-test("every common ODD transition changes the badge colour in Matrix-Green", (t) => {
+test("every common ODD transition changes the badge colour in Matrix-Green", () => {
 	const theme = readMatrixGreen();
-	if (!theme) return t.skip(`Matrix-Green theme not found at ${MATRIX_GREEN_THEME_PATH}`);
 	for (const [phase, role] of Object.entries(ODD_PHASE_BADGE_ROLE)) {
 		assert.ok(Object.hasOwn(theme.colors, role), `${phase}: Matrix-Green defines ${role}`);
 		for (const state of ["warning", "error", "success", "syntaxString"]) {

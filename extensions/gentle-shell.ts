@@ -37,6 +37,7 @@ import { createDdataEnvController, createDdataEnvSnapshot, nodeGitAsync, type Dd
 import { createFirebaseDefaultsReader, promotionActionTracker } from "../lib/ddata-env-backend.ts";
 import { isInteractiveMode } from "../lib/rpc-host.ts";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
+import { readConfiguredTheme, reportThemeFallback } from "../lib/theme-guard.ts";
 import { resolveAnimationPolicy, writeAnimationPolicy, type AnimationPolicy } from "../lib/animation-policy.ts";
 import { resolveVimPolicy, writeVimPolicy, type VimPolicy } from "../lib/vim-policy.ts";
 import { resolveHistoryCapture, writeHistoryCapturePolicy } from "../lib/history-capture-policy.ts";
@@ -2418,9 +2419,34 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		shown = "";
 		applyChanges(ctx, tracker.model);
 	};
+	// Sessions already warned that the configured theme did not load.
+	const themeFallbackWarned = new Set<string>();
 	pi.on("session_start", async (_event, ctx) => {
 		setUserMessageFrameTheme(ctx.hasUI && isInteractiveMode(ctx.mode) ? () => ctx.ui.theme : () => undefined);
 		shellChrome.begin();
+		// pi falls back to `system` silently when the configured theme fails to
+		// load; say so once per session, off the startup path, never throwing.
+		try {
+			const sessionId = ctx.sessionManager.getSessionId();
+			if (ctx.hasUI && isInteractiveMode(ctx.mode) && !themeFallbackWarned.has(sessionId)) {
+				void reportThemeFallback({
+					loadedThemeName: ctx.ui.theme?.name,
+					readConfiguredTheme: () => readConfiguredTheme({
+						getSettings: typeof pi.getSettings === "function" ? () => pi.getSettings() : undefined,
+						readFile: (path) => deps.readFile(path, "utf8"),
+						// pi's own agent-dir rule, not the Gentle override.
+						settingsPath: join(env.PI_CODING_AGENT_DIR || join(deps.homedir(), ".pi", "agent"), "settings.json"),
+					}),
+					notify: (message) => {
+						if (themeFallbackWarned.has(sessionId)) return;
+						themeFallbackWarned.add(sessionId);
+						ctx.ui.notify(message, "warning");
+					},
+				});
+			}
+		} catch {
+			// The theme notice is advisory; it never blocks session start.
+		}
 		// The promotion capture is in-memory, but its evidence is in the session:
 		// a session that starts — fresh, resumed, reloaded or switched to —
 		// rebuilds its own latest verifier outcome from its current branch,
