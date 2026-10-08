@@ -32,7 +32,7 @@ and make a missing theme visible instead of a silent fallback.
 - [x] T1 gentle-pi: vendor theme + manifest `pi.themes`; shell-bar hex test reads the vendored theme (no external path, no skip). Route: delegated writer.
 - [x] T2 gentle-pi: startup notice when configured Matrix-Green did not load. Route: delegated writer (with T1).
 - [x] T3 gentle-studio: push `feat/agy-sysprompt-delta` (before any change there). Route: guia.
-- [ ] T4 gentle-studio: remove the theme copy / narrow `pi.themes`; harden verify-customizations. Route: delegated writer after T1 is live.
+- [x] T4 gentle-studio: remove the theme copy / narrow `pi.themes`; harden verify-customizations. Route: delegated writer after T1 is live.
 
 ## Acceptance criteria
 - pi resolves Matrix-Green from the fork; no "Theme conflicts" diagnostic after T4.
@@ -43,3 +43,4 @@ and make a missing theme visible instead of a silent fallback.
 - 2026-10-08: document created on `feat/ddata-env-pipeline`.
 - T3 done: gentle-studio feat/agy-sysprompt-delta (5022ed1d, 5 unpushed commits) pushed to origin quirozino/gentle-studio, upstream set. No WIP in gentle-studio. Note: guia ran the secret scan in parallel with the push instead of before it; the only hit was a false positive ("ask-on-risk").
 - T1+T2 done: themes/Matrix-Green.json vendored byte-identical (sha256 f80ced6e1bdaa01e…, pinned in test; manifest already ships ./themes); shell-bar transition test reads the vendored file (0 skipped). lib/theme-guard.ts themeFallbackNotice + session_start wiring (pi.getSettings().theme, fallback async settings.json read; once per session; silent when loaded name unknown). Checks: theme-guard 9/9, shell-bar 94/94, gentle-shell 277/277, package-manifest 56/56, check:pi-contracts 7/7, typecheck no regressions (parent spot check theme-guard 9/9, gentle-shell 277/277).
+- T4 done in gentle-studio: themes/Matrix-Green.json removed with pi.themes and files entry; lib/theme-path.mjs resolver (GENTLE_MATRIX_GREEN_THEME > GENTLE_PI_FORK > fork default) used by compute-256-fallback, build-preview, doctor and theme-parity tests, verify-customizations; verify-customizations adds theme pin/load/package/collision/panels rows (pi loadThemeFromPath via child process), --standalone copy skipped. Checks: gentle-studio npm test 72/72, verify-customizations tests 11/11, live check: all five theme rows ✓ (parent spot check). Pre-existing unrelated: pi patch MISSING (11 edits, run patch-pi after the Pi update), agy rules size cap drift (agy 1.3.1). gentle-studio tests now need the fork or GENTLE_MATRIX_GREEN_THEME. Running pi shows Theme conflicts until restart.
