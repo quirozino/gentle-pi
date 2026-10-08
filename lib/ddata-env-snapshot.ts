@@ -18,7 +18,10 @@ import { execFile } from "node:child_process";
 import { promises as nodeFs } from "node:fs";
 import { homedir as nodeHomedir } from "node:os";
 import { posix } from "node:path";
+import { computeBackend, type BackendRow, type FirebaseDefaultsReader, type ObservedPromotionKind } from "./ddata-env-backend.ts";
 import {
+	computePipeline,
+	type DdataPipeline,
 	DDATA_ENV_ERROR_CODES,
 	type DdataEnvErrorCode,
 	type DdataEnvEvidence,
@@ -27,7 +30,7 @@ import {
 	type StageFirebaseRecord,
 	type StageWebRecord,
 } from "./ddata-env.ts";
-import { DDATA_GIT_COMMON_DIR, type GitRun } from "./promotion-guard.ts";
+import { DDATA_GIT_COMMON_DIR } from "./promotion-guard.ts";
 
 export const DDATA_ENV_CONFIG_RELATIVE = ".config/gentle-shell/ddata-env.json";
 export const DDATA_ENV_CACHE_RELATIVE = ".cache/gentle-shell/ddata-env.json";
@@ -79,8 +82,8 @@ export interface SnapshotFs {
 export interface DdataEnvSnapshotDeps {
 	exec?: ExecFn;
 	fs?: SnapshotFs;
-	/** Async preferred; a synchronous GitRun is still accepted for callers that cache one. */
-	git?: GitRunAsync | GitRun;
+	/** Async only, so nothing synchronous runs on the UI loop; defaults to nodeGitAsync. */
+	git?: GitRunAsync;
 	homedir?: string;
 	now?: () => number;
 }
@@ -491,5 +494,118 @@ export function createDdataEnvSnapshot(deps: DdataEnvSnapshotDeps = {}): DdataEn
 			return job.promise;
 		},
 		current: evidenceFor,
+	};
+}
+
+// --- Controller ------------------------------------------------------------------
+
+export const DDATA_ENV_DEBOUNCE_MS = 1_500;
+export const DDATA_ENV_STALE_AFTER_MS = 30 * 60_000;
+
+export interface DdataEnvView {
+	pipeline: DdataPipeline;
+	backend: BackendRow;
+}
+
+export interface DdataEnvControllerDeps {
+	snapshot: DdataEnvSnapshot;
+	firebase: FirebaseDefaultsReader;
+	tracker: { kinds(sessionId: string | undefined): ReadonlySet<ObservedPromotionKind> };
+	now: () => number;
+	debounceMs?: number;
+	staleAfterMs?: number;
+	setTimer?: (fn: () => void, ms: number) => { cancel(): void };
+}
+
+export interface DdataEnvController {
+	/** Refreshes evidence and the `.firebaserc` defaults for `cwd`; never rejects. */
+	refresh(cwd: string, options?: { force?: boolean }): Promise<void>;
+	/** Debounced refresh; a force request stays sticky until it runs; a new cwd refreshes at once. */
+	schedule(cwd: string, options?: { force?: boolean }): void;
+	/** Render-path view: no I/O, no exec; undefined outside a DDATA worktree or before evidence. */
+	view(cwd: string, sessionId: string | undefined): DdataEnvView | undefined;
+	/** Called after a refresh that changed what the panel would show. */
+	onChange(listener: () => void): () => void;
+	dispose(): void;
+}
+
+const defaultSetTimer = (fn: () => void, ms: number) => {
+	const handle = setTimeout(fn, ms);
+	handle.unref?.();
+	return { cancel: () => clearTimeout(handle) };
+};
+
+export function createDdataEnvController(deps: DdataEnvControllerDeps): DdataEnvController {
+	const debounceMs = deps.debounceMs ?? DDATA_ENV_DEBOUNCE_MS;
+	const staleAfterMs = deps.staleAfterMs ?? DDATA_ENV_STALE_AFTER_MS;
+	const setTimer = deps.setTimer ?? defaultSetTimer;
+	const listeners = new Set<() => void>();
+	const fingerprints = new Map<string, string>();
+	let lastCwd: string | undefined;
+	let timer: { cancel(): void } | undefined;
+	let pendingForce = false;
+	let disposed = false;
+
+	const fingerprint = (cwd: string) => JSON.stringify([deps.snapshot.current(cwd) ?? null, deps.firebase.cached(cwd) ?? null]);
+
+	async function refresh(cwd: string, options: { force?: boolean } = {}): Promise<void> {
+		lastCwd = cwd;
+		try {
+			await Promise.all([
+				deps.snapshot.refresh(cwd, { force: options.force === true }),
+				deps.firebase.refresh(cwd),
+			]);
+		} catch {
+			// Refresh failures become states inside the snapshot; anything else is dropped.
+		}
+		try {
+			const next = fingerprint(cwd);
+			if (fingerprints.get(cwd) === next) return;
+			fingerprints.set(cwd, next);
+			for (const listener of listeners) {
+				try {
+					listener();
+				} catch {
+					// A redraw failure never breaks the refresher.
+				}
+			}
+		} catch {
+			// Never reject.
+		}
+	}
+
+	return {
+		refresh,
+		schedule(cwd, options = {}) {
+			if (disposed) return;
+			pendingForce ||= options.force === true;
+			timer?.cancel();
+			timer = undefined;
+			const run = () => {
+				timer = undefined;
+				const force = pendingForce;
+				pendingForce = false;
+				void refresh(cwd, { force });
+			};
+			if (cwd !== lastCwd) return run();
+			timer = setTimer(run, debounceMs);
+		},
+		view(cwd, sessionId) {
+			const evidence = deps.snapshot.current(cwd);
+			if (!evidence) return undefined;
+			const pipeline = computePipeline(evidence, { now: deps.now(), staleAfterMs });
+			if (!pipeline) return undefined;
+			return { pipeline, backend: computeBackend(deps.tracker.kinds(sessionId), deps.firebase.cached(cwd)) };
+		},
+		onChange(listener) {
+			listeners.add(listener);
+			return () => listeners.delete(listener);
+		},
+		dispose() {
+			disposed = true;
+			timer?.cancel();
+			timer = undefined;
+			listeners.clear();
+		},
 	};
 }

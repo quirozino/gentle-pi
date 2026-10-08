@@ -33,6 +33,8 @@ import { SHELL_GLYPHS } from "../lib/shell-glyphs.ts";
 import { oddPhaseRegistry } from "../lib/odd-phase.ts";
 import { bareToolName, installPromotionCompletionCapture, promotionStatusRegistry, restorePromotionState, settledOutcome, settledVerifierMessage, settledVerifierResult, verifierRunStart, verifierRunTaskId } from "../lib/promotion-report.ts";
 import { inferOddPhase } from "../lib/odd-phase-inference.ts";
+import { createDdataEnvController, createDdataEnvSnapshot, nodeGitAsync, type DdataEnvController, type DdataEnvView } from "../lib/ddata-env-snapshot.ts";
+import { createFirebaseDefaultsReader, promotionActionTracker } from "../lib/ddata-env-backend.ts";
 import { isInteractiveMode } from "../lib/rpc-host.ts";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
 import { resolveAnimationPolicy, writeAnimationPolicy, type AnimationPolicy } from "../lib/animation-policy.ts";
@@ -189,6 +191,8 @@ interface BuildOptions {
 	home?: string;
 	dirty?: number;
 	usage?: ProviderUsage;
+	/** DDATA environment view, already computed from cached evidence (no I/O). */
+	ddataEnv?: DdataEnvView;
 }
 
 export type DevBinaryNotice = { state: "active"; path: string; sha256: string } | { state: "invalid"; reason: string };
@@ -209,6 +213,12 @@ export interface ShellDeps {
 	/** Spawns a child process; overridable so antigravity's agy CLI spawn never touches a real binary in tests. */
 	execFile: typeof execFile;
 	vimRuntimeVersion?(): string | undefined;
+	/**
+	 * DDATA environment refresher for the Promoción group. The default runs git
+	 * through nodeGitAsync only (a synchronous GitRun is for tests, never the
+	 * UI loop), plus ssh/gh reads inside DDATA worktrees.
+	 */
+	ddataEnv?: DdataEnvController;
 }
 
 // The rail digest runs every frame. Cache parsing by file identity and metadata,
@@ -439,6 +449,7 @@ export function buildShellBarModel(
 		directory: directoryLevels(ctx.sessionManager.getCwd(), home, findRepoRoot(ctx.sessionManager.getCwd())),
 		oddPhase: oddPhaseRegistry.get(ctx.sessionManager.getSessionId()),
 		promotion: promotionStatusRegistry.state(ctx.sessionManager.getSessionId()),
+		...(options.ddataEnv ? { ddataEnv: options.ddataEnv } : {}),
 		profile: options.profile,
 		profileModels: options.profileModels,
 		orchestratorModel: options.orchestratorModel,
@@ -1798,6 +1809,23 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		profileOrchestrator: createActiveProfileOrchestratorReader(env),
 		...overrides,
 	};
+	// DDATA environment pipeline: background refreshes on session start and
+	// after settled bash; the render path only reads `view` (cached, no I/O).
+	const ddataEnv = deps.ddataEnv ?? createDdataEnvController({
+		snapshot: createDdataEnvSnapshot({ git: nodeGitAsync, now: deps.now }),
+		firebase: createFirebaseDefaultsReader({
+			readFile: async (path) => {
+				try {
+					return await deps.readFile(path, "utf8");
+				} catch {
+					return undefined;
+				}
+			},
+			now: deps.now,
+		}),
+		tracker: promotionActionTracker,
+		now: deps.now,
+	});
 	let closeCustomize: (() => void) | undefined;
 	let profilePoll: ReturnType<typeof setInterval> | undefined;
 	const stopProfilePoll = () => {
@@ -2107,6 +2135,16 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		renderHost?.invalidateSidebar?.();
 		renderHost?.requestRender();
 	};
+	const unsubscribeDdataEnv = ddataEnv.onChange(redrawReview);
+	// A Stage or production action the promotion guard let through in this
+	// session forces the next settled bash to reread the remote evidence, and
+	// changes the Backend row now.
+	let ddataForcePending = false;
+	const unsubscribeDdataActions = promotionActionTracker.subscribe((sessionId) => {
+		if (!currentContext || sessionId !== currentContext.sessionManager.getSessionId()) return;
+		ddataForcePending = true;
+		redrawReview();
+	});
 	const unsubscribeReview = pi.events.on(REVIEW_SIDEBAR_EVENT, (value) => {
 		const event = value as { sessionId?: unknown; snapshot?: unknown } | undefined;
 		if (!currentContext || event?.sessionId !== currentContext.sessionManager.getSessionId()) return;
@@ -2186,6 +2224,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		registry.start();
 		applyCardStyle();
 		if (!ctx.hasUI) { shellChrome.ready(); return; }
+		if (isInteractiveMode(ctx.mode)) void ddataEnv.refresh(ctx.sessionManager.getCwd()).catch(() => undefined);
 		visualSettings = resolveVisualSettings(animationOptions).settings;
 		if (!overrides.activeProfile) {
 			profileReader.bind(ctx.cwd, deps.resolveWorktree);
@@ -2218,6 +2257,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					orchestratorModel: deps.profileOrchestrator(),
 					localTokens: sessionTokensByModel(ctx),
 					usageByProvider: new Map(usage.all().map((entry) => [entry.provider, entry])),
+					ddataEnv: ddataEnv.view(ctx.sessionManager.getCwd(), ctx.sessionManager.getSessionId()),
 				}),
 				changes: { files: tracker.model.files.length, added: tracker.model.added, deleted: tracker.model.deleted, notice: tracker.model.notice },
 				tick: gaugeAnimationEnabled() ? gaugeTick.value : undefined,
@@ -2400,6 +2440,9 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		// fork, quit), so the factory-level subscription never needs to be restored.
 		unsubscribeReview();
 		unsubscribePromotion();
+		unsubscribeDdataEnv();
+		unsubscribeDdataActions();
+		ddataEnv.dispose();
 		stopProfilePoll();
 		oddPhaseRegistry.clear(ctx.sessionManager.getSessionId());
 		oddPhaseRegistry.clearRenderRequest(ctx.sessionManager.getSessionId());
@@ -2956,6 +2999,19 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				pendingQueuedText = queued;
 			}
 			if (ctx.hasUI) ctx.ui.notify(`Could not send the queued message after cancel; it is back in the editor: ${error instanceof Error ? error.message : String(error)}`, "error");
+		}
+	});
+	pi.on("tool_result", (event, ctx) => {
+		// A settled bash may have committed, switched branch or deployed: refresh
+		// the DDATA evidence (debounced); forced after a guarded deploy.
+		if (!ctx.hasUI || !isInteractiveMode(ctx.mode)) return;
+		if ((event as { toolName?: unknown } | undefined)?.toolName !== "bash") return;
+		const force = ddataForcePending;
+		ddataForcePending = false;
+		try {
+			ddataEnv.schedule(ctx.sessionManager.getCwd(), { force });
+		} catch {
+			// Refresh problems never surface as exceptions.
 		}
 	});
 	pi.on("agent_end", async (_event, ctx) => {

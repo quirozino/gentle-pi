@@ -13,13 +13,15 @@ export interface DdataEnvStepDef {
 	readonly id: DdataEnvStepId;
 	readonly index: 1 | 2 | 3;
 	readonly name: string;
+	/** Compact name for the pipeline row. */
+	readonly shortName: string;
 	readonly responsibility: string;
 }
 
 export const DDATA_ENV_STEPS: readonly DdataEnvStepDef[] = [
-	{ id: "lab", index: 1, name: "Lab", responsibility: "construcción" },
-	{ id: "stage", index: 2, name: "Stage", responsibility: "prueba en vivo" },
-	{ id: "production", index: 3, name: "Producción", responsibility: "usuarios" },
+	{ id: "lab", index: 1, name: "Lab", shortName: "Lab", responsibility: "construcción" },
+	{ id: "stage", index: 2, name: "Stage", shortName: "Stage", responsibility: "prueba en vivo" },
+	{ id: "production", index: 3, name: "Producción", shortName: "Prod", responsibility: "usuarios" },
 ];
 
 export const DDATA_ENV_TOTAL_STEPS = 3;
@@ -47,8 +49,9 @@ export interface LabEvidence {
 
 /**
  * A last-known-good record may carry the transient error of the latest read
- * attempt (`lastError`). Labels ignore it: the record is still evidence of
- * what was observed at `observedAt`, and ages into "registro antiguo".
+ * attempt (`lastError`). While fresh it still proves the step it matches, but
+ * its label is prefixed "sin conexión" in warning tone, so a sustained outage
+ * is never masked; once stale it reads "sin conexión · registro antiguo".
  */
 export interface StageWebRecord {
 	readonly releaseName: string;
@@ -163,17 +166,29 @@ function webMatches(releaseName: string, candidate: string): boolean {
 type SourceOutcome =
 	| { kind: "missing" }
 	| { kind: "error" }
-	| { kind: "stale" }
-	| { kind: "match"; label: DdataEnvEvidenceLabel }
-	| { kind: "other"; label: DdataEnvEvidenceLabel };
+	| { kind: "stale"; offline: boolean }
+	| { kind: "match"; label: DdataEnvEvidenceLabel; offline: boolean }
+	| { kind: "other"; label: DdataEnvEvidenceLabel; offline: boolean };
+
+const OFFLINE_PREFIX = "sin conexión";
+
+/** A record read through a failing source keeps its text behind an offline warning. */
+function sourced(kind: "match" | "other", label: DdataEnvEvidenceLabel, lastError: DdataEnvErrorCode | undefined): SourceOutcome {
+	if (lastError === undefined) return { kind, label, offline: false };
+	return { kind, label: { text: `${OFFLINE_PREFIX} · ${label.text}`, tone: "warning" }, offline: true };
+}
+
+const lastErrorOf = (source: object): DdataEnvErrorCode | undefined =>
+	"lastError" in source ? (source as { lastError?: DdataEnvErrorCode }).lastError : undefined;
 
 function classifyStageWeb(source: DdataEnvEvidence["stageWeb"], candidate: string, options: ComputePipelineOptions): SourceOutcome {
 	if (!source) return { kind: "missing" };
 	if (isReadError(source)) return { kind: "error" };
-	if (!isFresh(source.observedAt, options)) return { kind: "stale" };
+	const lastError = lastErrorOf(source);
+	if (!isFresh(source.observedAt, options)) return { kind: "stale", offline: lastError !== undefined };
 	const release = displayRelease(source.releaseName);
-	if (webMatches(source.releaseName, candidate)) return { kind: "match", label: { text: `en vivo · ${release}`, tone: "running" } };
-	return { kind: "other", label: { text: `otra versión · ${release}`, tone: "info" } };
+	if (webMatches(source.releaseName, candidate)) return sourced("match", { text: `en vivo · ${release}`, tone: "running" }, lastError);
+	return sourced("other", { text: `otra versión · ${release}`, tone: "info" }, lastError);
 }
 
 function classifyShaRecord(
@@ -184,18 +199,30 @@ function classifyShaRecord(
 ): SourceOutcome {
 	if (!source) return { kind: "missing" };
 	if (isReadError(source)) return { kind: "error" };
-	if (!isFresh(source.observedAt, options)) return { kind: "stale" };
+	const lastError = lastErrorOf(source);
+	if (!isFresh(source.observedAt, options)) return { kind: "stale", offline: lastError !== undefined };
 	const short = shortSha(source.headSha);
-	if (shaMatches(source.headSha, candidate)) return { kind: "match", label: { text: `${matchVerb} · ${short}`, tone: "running" } };
-	return { kind: "other", label: { text: `otra versión · ${short}`, tone: "info" } };
+	if (shaMatches(source.headSha, candidate)) return sourced("match", { text: `${matchVerb} · ${short}`, tone: "running" }, lastError);
+	return sourced("other", { text: `otra versión · ${short}`, tone: "info" }, lastError);
 }
 
 /** Combine sources in priority order: a match, then other fresh evidence, then error, stale, missing. */
 function combine(outcomes: readonly SourceOutcome[], missingText: string): { reached: boolean; label: DdataEnvEvidenceLabel } {
-	for (const outcome of outcomes) if (outcome.kind === "match") return { reached: true, label: outcome.label };
-	for (const outcome of outcomes) if (outcome.kind === "other") return { reached: false, label: outcome.label };
+	// A connected source's record wins over one kept through an outage.
+	const pick = (kind: "match" | "other") => {
+		const found = outcomes.filter((o): o is Extract<SourceOutcome, { kind: typeof kind }> => o.kind === kind);
+		return found.find((o) => !o.offline) ?? found[0];
+	};
+	const match = pick("match");
+	if (match) return { reached: true, label: match.label };
+	const other = pick("other");
+	if (other) return { reached: false, label: other.label };
 	if (outcomes.some((o) => o.kind === "error")) return { reached: false, label: { text: "error de lectura", tone: "warning" } };
-	if (outcomes.some((o) => o.kind === "stale")) return { reached: false, label: { text: "registro antiguo", tone: "warning" } };
+	const stale = outcomes.filter((o) => o.kind === "stale");
+	if (stale.length > 0) {
+		const offline = stale.every((o) => o.kind === "stale" && o.offline);
+		return { reached: false, label: { text: offline ? `${OFFLINE_PREFIX} · registro antiguo` : "registro antiguo", tone: "warning" } };
+	}
 	return { reached: false, label: { text: missingText } };
 }
 

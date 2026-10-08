@@ -12,6 +12,8 @@ import { renderChangesWidget, type ChangesModel } from "./shell-changes.ts";
 import { renderDirectoryTree, type DirectoryLevel } from "./directory-tree.ts";
 import { oddPhaseLabel, type OddPhase } from "./odd-phase.ts";
 import { promotionSidebarRows, type PromotionRowTone, type PromotionState } from "./promotion-report.ts";
+import type { DdataEnvTone, DdataPipeline } from "./ddata-env.ts";
+import type { BackendRow } from "./ddata-env-backend.ts";
 
 type Presentation = Pick<VisualSettings, "density" | "visibility">;
 type HeaderPresentation = Presentation & Partial<Pick<VisualSettings, "headerPlacement" | "statusPlacement">>;
@@ -66,6 +68,8 @@ export interface ShellBarModel {
 	oddPhase?: OddPhase;
 	/** Promotion verifier state for the session; absent is idle ("sin verificación"). */
 	promotion?: PromotionState;
+	/** DDATA environment pipeline and backend; absent outside a DDATA worktree (rows hidden). */
+	ddataEnv?: { pipeline: DdataPipeline; backend: BackendRow };
 }
 
 // The live header row above the fullscreen rail: session identity plus the
@@ -143,6 +147,51 @@ const ROLE = {
 } as const;
 
 const PROMOTION_TONE_ROLE: Record<PromotionRowTone, string> = { warning: ROLE.WARNING, failure: ROLE.FAILURE, running: ROLE.RUNNING };
+
+// DDATA environment pipeline. The current step is a neon badge in a non-state
+// role (Matrix-Green's accent is not its success colour); passed steps carry a
+// success ✓; pending steps and connectors are dim. Evidence tones map to the
+// same state roles as the promotion rows, and `info` to a neutral syntax role.
+const ENV_ROLE = { CURRENT: "accent", PASSED: "success", PENDING: "dim", CONNECTOR: "dim" } as const;
+const ENV_TONE_ROLE: Record<DdataEnvTone, string> = { warning: ROLE.WARNING, failure: ROLE.FAILURE, running: ROLE.RUNNING, info: "syntaxType" };
+const STEP_NUMBER = ["①", "②", "③"] as const;
+
+/**
+ * The pipeline row for an exact width: `① Lab ━ ② Stage ━ ③ Prod` with the
+ * current step as a badge, or the plain `Lab › [Stage] › Prod` when the badge
+ * row does not fit (or the theme has no inverse video), clipped as a last resort.
+ */
+export function renderDdataPipelineRow(pipeline: DdataPipeline, theme: ShellBarTheme, width: number): string {
+	if (width <= 0) return "";
+	if (theme.inverse) {
+		const parts = pipeline.steps.map((step) => {
+			const numbered = `${STEP_NUMBER[step.index - 1]} ${step.shortName}`;
+			if (step.status === "current") return paintBadge(theme, ENV_ROLE.CURRENT, numbered);
+			if (step.status === "passed") return theme.fg(ENV_ROLE.PASSED, `✓ ${step.shortName}`);
+			return theme.fg(ENV_ROLE.PENDING, numbered);
+		});
+		const full = parts.join(theme.fg(ENV_ROLE.CONNECTOR, " ━ "));
+		if (visibleWidth(full) <= width) return full;
+	}
+	const plain = pipeline.steps
+		.map((step) => {
+			if (step.status === "current") return theme.fg(ENV_ROLE.CURRENT, theme.bold(`[${step.shortName}]`));
+			return theme.fg(step.status === "passed" ? ENV_ROLE.PASSED : ENV_ROLE.PENDING, step.shortName);
+		})
+		.join(theme.fg(ENV_ROLE.CONNECTOR, " › "));
+	return visibleWidth(plain) <= width ? plain : truncateToWidth(plain, width, "…");
+}
+
+/** Label/value rows under the pipeline row: step, per-environment evidence, backend. */
+function ddataEnvPairs(env: NonNullable<ShellBarModel["ddataEnv"]>): StatusPair[] {
+	const current = env.pipeline.steps[env.pipeline.index - 1]!;
+	const toned = (key: string, text: string, tone: DdataEnvTone | undefined): StatusPair => tone ? [key, text, ENV_TONE_ROLE[tone]] : [key, text];
+	return [
+		["Entorno", `${env.pipeline.progressLabel} · ${current.name} · ${current.responsibility}`],
+		...env.pipeline.steps.map((step) => toned(step.name, step.evidence.text, step.evidence.tone)),
+		toned("Backend", env.backend.text, env.backend.tone),
+	];
+}
 
 // Map phase tones (from the map repo's phase-tones file, via the verifier
 // report) to the theme role their Fase badge is drawn in. Presentation only,
@@ -502,6 +551,13 @@ export function renderShellSidebarCard(model: ShellBarModel, theme: ShellBarThem
 						}),
 					],
 					lines: [],
+					// The DDATA environment pipeline, only inside a DDATA worktree.
+					...(model.ddataEnv
+						? {
+								fitted: (lineWidth: number) => [renderDdataPipelineRow(model.ddataEnv!.pipeline, theme, lineWidth)],
+								afterFitted: ddataEnvPairs(model.ddataEnv),
+							}
+						: {}),
 				}]
 			: []),
 	];
@@ -512,17 +568,19 @@ export function renderShellSidebarCard(model: ShellBarModel, theme: ShellBarThem
 		: allGroups;
 	if (innerWidth - STATUS_PANEL_INSET < STATUS_PANEL_MIN_CONTENT) {
 		// Too narrow for nested boxes: the single (framed) panel keeps every fact readable.
+		const pairLine = ([key, text, role, badge]: StatusPair) => {
+			// A badge is drawn whole on the key's line or not at all: wrapping
+			// would split it, so a value too wide for one line stays plain.
+			if (badge && role && visibleWidth(key) + 1 + visibleWidth(badgeText(text)) <= innerWidth - inset) return `${label(key)} ${paintBadge(theme, role, text)}`;
+			return `${label(key)} ${role && !badge ? theme.fg(role, theme.bold(text)) : value(text)}`;
+		};
+		const wrapped = (line: string) => wrapTextWithAnsi(line, innerWidth - inset).map((part) => " ".repeat(inset) + part);
 		const body = groups.flatMap((group, index) => [
 			...(index && (!presentation || presentation.density === "comfortable") ? [""] : []),
 			...(presentation?.density === "minimal" ? [] : [label(group.title)]),
-			...[...(group.value ? [value(group.value)] : []), ...(group.pairs ?? []).map(([key, text, role, badge]) => {
-				// A badge is drawn whole on the key's line or not at all: wrapping
-				// would split it, so a value too wide for one line stays plain.
-				if (badge && role && visibleWidth(key) + 1 + visibleWidth(badgeText(text)) <= innerWidth - inset) return `${label(key)} ${paintBadge(theme, role, text)}`;
-				return `${label(key)} ${role && !badge ? theme.fg(role, theme.bold(text)) : value(text)}`;
-			}), ...group.lines]
-				.flatMap((line) => wrapTextWithAnsi(line, innerWidth - inset).map((part) => " ".repeat(inset) + part)),
+			...[...(group.value ? [value(group.value)] : []), ...(group.pairs ?? []).map(pairLine), ...group.lines].flatMap(wrapped),
 			...(group.fitted?.(innerWidth - inset) ?? []).map((line) => " ".repeat(inset) + line),
+			...(group.afterFitted ?? []).map(pairLine).flatMap(wrapped),
 		]);
 		return { rows: renderCard({ title: "Status", body, tone: CARD_TONE.INFO, glyph: SHELL_GLYPHS.status }, theme, width, { expanded: true, panel: true }) };
 	}
@@ -572,6 +630,8 @@ interface StatusGroup {
 	lines: string[];
 	/** Rows drawn for an exact line width instead of wrapped, e.g. the cwd tree. */
 	fitted?: (width: number) => string[];
+	/** Label/value rows drawn after the fitted rows, e.g. under the DDATA pipeline row. */
+	afterFitted?: ReadonlyArray<StatusPair>;
 }
 
 /** The text of the boxed Status title, e.g. `(o_o) Status`. */
@@ -645,6 +705,7 @@ function statusBoxRows(groups: StatusGroup[], theme: ShellBarTheme, boxWidth: nu
 		...(group.pairs ?? []).flatMap(([key, text, role, badge]) => pair(key, text, ROLE.LABEL, role, badge)),
 		...group.lines.flatMap((line) => wrapTextWithAnsi(line, content - 1).map((part) => ` ${part}`)),
 		...(group.fitted?.(content - 1) ?? []).map((line) => ` ${line}`),
+		...(group.afterFitted ?? []).flatMap(([key, text, role, badge]) => pair(key, text, ROLE.LABEL, role, badge)),
 	]).filter((section) => section.length > 0);
 
 	return [

@@ -310,22 +310,43 @@ test("SHA matching uses its own minimum length, independent of display", () => {
 	assert.equal(eleven?.current, "lab");
 });
 
-test("a kept last-known-good record with a transient lastError still labels by its age", () => {
+test("a kept last-known-good record with a transient lastError says sin conexión with warning tone", () => {
 	const fresh = computePipeline(
 		{ lab: { headSha: HEAD }, stageWeb: { releaseName: "37af7f4-x", observedAt: NOW - MINUTE, lastError: "timeout" } },
 		OPTS,
 	);
-	assert.equal(fresh?.current, "stage");
-	assert.equal(step(fresh, "stage").evidence.text, "en vivo · 37af7f4-x");
+	assert.equal(fresh?.current, "stage", "a fresh record still proves the step");
+	assert.deepEqual(step(fresh, "stage").evidence, { text: "sin conexión · en vivo · 37af7f4-x", tone: "warning" });
 	const aged = computePipeline(
 		{ lab: { headSha: HEAD }, stageWeb: { releaseName: "37af7f4-x", observedAt: NOW - 31 * MINUTE, lastError: "unavailable" } },
 		OPTS,
 	);
 	assert.equal(aged?.current, "lab");
-	assert.deepEqual(step(aged, "stage").evidence, { text: "registro antiguo", tone: "warning" });
+	assert.deepEqual(step(aged, "stage").evidence, { text: "sin conexión · registro antiguo", tone: "warning" });
 	const firebase = computePipeline(
-		{ lab: { headSha: HEAD }, stageFirebase: { headSha: OTHER, runId: 1, observedAt: NOW - 31 * MINUTE, lastError: "timeout" } },
+		{ lab: { headSha: HEAD }, stageFirebase: { headSha: OTHER, runId: 1, observedAt: NOW - MINUTE, lastError: "timeout" } },
 		OPTS,
 	);
-	assert.deepEqual(step(firebase, "stage").evidence, { text: "registro antiguo", tone: "warning" });
+	assert.deepEqual(step(firebase, "stage").evidence, { text: "sin conexión · otra versión · 9b1e2d3c4a5f", tone: "warning" });
+	const plainStale = computePipeline(
+		{ lab: { headSha: HEAD }, stageWeb: { releaseName: "37af7f4-x", observedAt: NOW - 31 * MINUTE } },
+		OPTS,
+	);
+	assert.deepEqual(step(plainStale, "stage").evidence, { text: "registro antiguo", tone: "warning" });
+});
+
+test("a connected source's match wins over an offline source's match", () => {
+	const p = computePipeline(
+		{
+			lab: { headSha: HEAD },
+			stageWeb: { releaseName: "37af7f4-x", observedAt: NOW, lastError: "timeout" },
+			stageFirebase: { headSha: HEAD, runId: 1, observedAt: NOW },
+		},
+		OPTS,
+	);
+	assert.deepEqual(step(p, "stage").evidence, { text: "registrado · 37af7f4c0ffe", tone: "running" });
+});
+
+test("steps carry a short name for the compact pipeline row", () => {
+	assert.deepEqual(DDATA_ENV_STEPS.map((s) => s.shortName), ["Lab", "Stage", "Prod"]);
 });

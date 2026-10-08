@@ -313,7 +313,7 @@ test("git failure or invalid HEAD never throws", async () => {
 	const throwing = createDdataEnvSnapshot({
 		exec: async () => ok(""),
 		fs: fakeFs(),
-		git: () => {
+		git: async () => {
 			throw new Error("git missing");
 		},
 		homedir: HOME,
@@ -431,4 +431,116 @@ test("git runs asynchronously: no synchronous child process in the refresher", a
 	const pending = nodeGitAsync(tmpdir(), ["rev-parse", "HEAD"]);
 	assert.ok(pending instanceof Promise);
 	assert.equal(await pending, undefined);
+});
+
+// --- Controller: triggers, debounce, change notification, render view -------
+
+import { createDdataEnvController, type DdataEnvSnapshot } from "../lib/ddata-env-snapshot.ts";
+import { PromotionActionTracker, type FirebaseDefaultsReader } from "../lib/ddata-env-backend.ts";
+import type { DdataEnvEvidence } from "../lib/ddata-env.ts";
+
+function fakeController(options: { evidence?: DdataEnvEvidence; defaults?: readonly string[] } = {}) {
+	const refreshes: Array<{ cwd: string; force: boolean }> = [];
+	let evidence: DdataEnvEvidence | undefined;
+	const snapshot: DdataEnvSnapshot = {
+		async refresh(cwd, opts = {}) {
+			refreshes.push({ cwd, force: opts.force === true });
+			evidence = options.evidence ?? { lab: { headSha: HEAD } };
+			return evidence;
+		},
+		current: () => evidence,
+	};
+	let defaults: readonly string[] | undefined;
+	const firebaseReads: string[] = [];
+	const firebase: FirebaseDefaultsReader = {
+		async refresh(cwd) {
+			firebaseReads.push(cwd);
+			defaults = options.defaults ?? [];
+			return defaults;
+		},
+		cached: () => defaults,
+	};
+	const timers: Array<{ fn: () => void; ms: number; cancelled: boolean }> = [];
+	const tracker = new PromotionActionTracker();
+	const controller = createDdataEnvController({
+		snapshot,
+		firebase,
+		tracker,
+		now: () => 1_800_000_000_000,
+		debounceMs: 1500,
+		setTimer: (fn, ms) => {
+			const timer = { fn, ms, cancelled: false };
+			timers.push(timer);
+			return { cancel: () => void (timer.cancelled = true) };
+		},
+	});
+	const flush = async () => {
+		for (const timer of timers.splice(0)) if (!timer.cancelled) timer.fn();
+		await new Promise((resolve) => setImmediate(resolve));
+	};
+	return { controller, refreshes, firebaseReads, timers, tracker, flush, setEvidence: (next: DdataEnvEvidence) => (options.evidence = next) };
+}
+
+test("controller.view is undefined before any refresh and for a non-DDATA cwd", async () => {
+	const f = fakeController({ evidence: {} });
+	assert.equal(f.controller.view(DDATA_CWD, "s"), undefined);
+	await f.controller.refresh(DDATA_CWD);
+	assert.equal(f.controller.view(DDATA_CWD, "s"), undefined);
+});
+
+test("controller.view computes the pipeline and backend without I/O", async () => {
+	const f = fakeController({ defaults: ["ddata-staging-iso"] });
+	await f.controller.refresh(DDATA_CWD);
+	const before = [f.refreshes.length, f.firebaseReads.length];
+	const view = f.controller.view(DDATA_CWD, "s");
+	assert.deepEqual([f.refreshes.length, f.firebaseReads.length], before);
+	assert.equal(view?.pipeline.current, "lab");
+	assert.deepEqual(view?.backend, { text: "Stage (por defecto)" });
+	f.tracker.record("s", ["production-schema"]);
+	assert.deepEqual(f.controller.view(DDATA_CWD, "s")?.backend, { text: "Producción · esquema", tone: "failure" });
+});
+
+test("schedule debounces, keeps force sticky, and refreshes a new cwd at once", async () => {
+	const f = fakeController();
+	await f.controller.refresh(DDATA_CWD);
+	f.refreshes.length = 0;
+	f.controller.schedule(DDATA_CWD);
+	f.controller.schedule(DDATA_CWD, { force: true });
+	f.controller.schedule(DDATA_CWD);
+	assert.equal(f.refreshes.length, 0, "debounced");
+	assert.equal(f.timers.filter((t) => !t.cancelled).length, 1);
+	assert.equal(f.timers.at(-1)?.ms, 1500);
+	await f.flush();
+	assert.deepEqual(f.refreshes, [{ cwd: DDATA_CWD, force: true }], "one refresh, forced");
+	f.controller.schedule(OTHER_CWD);
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.deepEqual(f.refreshes.at(-1), { cwd: OTHER_CWD, force: false }, "a cwd change refreshes immediately");
+	f.controller.schedule(OTHER_CWD);
+	const pending = f.timers.at(-1)!;
+	f.controller.dispose();
+	assert.equal(pending.cancelled, true, "dispose cancels the pending timer");
+	const count = f.timers.length;
+	f.controller.schedule(OTHER_CWD);
+	assert.equal(f.timers.length, count, "a disposed controller schedules nothing");
+});
+
+test("onChange fires only when the evidence changes, and refresh never rejects", async () => {
+	const f = fakeController();
+	let changes = 0;
+	f.controller.onChange(() => (changes += 1));
+	await f.controller.refresh(DDATA_CWD);
+	assert.equal(changes, 1);
+	await f.controller.refresh(DDATA_CWD);
+	assert.equal(changes, 1, "same evidence, no redraw");
+	f.setEvidence({ lab: { headSha: FB_SHA } });
+	await f.controller.refresh(DDATA_CWD);
+	assert.equal(changes, 2);
+	const broken = createDdataEnvController({
+		snapshot: { refresh: async () => { throw new Error("x"); }, current: () => undefined },
+		firebase: { refresh: async () => { throw new Error("y"); }, cached: () => undefined },
+		tracker: new PromotionActionTracker(),
+		now: () => 0,
+	});
+	broken.onChange(() => { throw new Error("listener"); });
+	await assert.doesNotReject(broken.refresh(DDATA_CWD));
 });

@@ -12,7 +12,7 @@ import {
 	type PromotionGuardDeps,
 } from "../lib/promotion-guard.ts";
 import type { LatestPromotionVerdict, PromotionReport } from "../lib/promotion-report.ts";
-import { createPromotionGuardExtension } from "../extensions/promotion-guard.ts";
+import { createPromotionGuardExtension, type PromotionGuardOptions } from "../extensions/promotion-guard.ts";
 
 const WS = "/srv/workspaces";
 const DDATA = "/srv/workspaces/ddata-ci";
@@ -286,7 +286,7 @@ test("child sessions never deploy production, but Stage and read-only stay allow
 
 type ToolCallHandler = (event: { toolName: string; input: unknown }, ctx: ExtensionContext) => Promise<unknown>;
 
-function harness(options: { verdict?: LatestPromotionVerdict; child?: boolean; deps?: PromotionGuardDeps; registryThrows?: boolean } = {}) {
+function harness(options: { verdict?: LatestPromotionVerdict; child?: boolean; deps?: PromotionGuardDeps; registryThrows?: boolean; observer?: PromotionGuardOptions["observer"] } = {}) {
 	const handlers: ToolCallHandler[] = [];
 	const pi = { on: (name: string, handler: ToolCallHandler) => { if (name === "tool_call") handlers.push(handler); } } as unknown as ExtensionAPI;
 	const sessions: Array<string | undefined> = [];
@@ -300,6 +300,7 @@ function harness(options: { verdict?: LatestPromotionVerdict; child?: boolean; d
 				return options.verdict;
 			},
 		},
+		...(options.observer ? { observer: options.observer } : {}),
 	})(pi);
 	assert.equal(handlers.length, 1);
 	return { handler: handlers[0], sessions };
@@ -611,4 +612,28 @@ test("the DDATA scope probe is cached per directory for a short TTL", () => {
 	assert.equal(listings, 2, "the cache expires");
 	const broken = createDdataScopeProbe(ruleDeps({ gitThrows: () => true }), { now: () => now });
 	assert.equal(broken(DDATA), false);
+});
+
+test("the observer records the kinds of actions the guard lets through, without changing any decision", async () => {
+	const recorded: Array<[string | undefined, readonly string[]]> = [];
+	const observer = { record: (sessionId: string | undefined, kinds: readonly string[]) => void recorded.push([sessionId, [...kinds]]) };
+	const commands = ["firebase deploy --project ddata-staging-iso", prodCommand, "git status", "firebase deploy --project ddata-f6721 --only hosting"];
+	for (const confirm of [true, false]) {
+		recorded.length = 0;
+		const plain = harness({ verdict: approving });
+		const observed = harness({ verdict: approving, observer });
+		for (const command of commands) {
+			const a = await plain.handler(bash(command), context({ cwd: DDATA, confirm: async () => confirm }).ctx);
+			const b = await observed.handler(bash(command), context({ cwd: DDATA, confirm: async () => confirm }).ctx);
+			assert.deepEqual(b, a, `${command} (confirm ${confirm}): same decision`);
+		}
+		const kinds = recorded.flatMap(([, k]) => k);
+		assert.ok(recorded.every(([sessionId]) => sessionId === "session-1"));
+		assert.ok(kinds.includes("stage"), "an allowed Stage deploy is recorded");
+		if (confirm) assert.ok(kinds.includes("production-firebase"), "a confirmed production deploy is recorded");
+		else assert.ok(!kinds.includes("production-firebase"), "a blocked production deploy is not recorded");
+	}
+	// A throwing observer never changes the decision either.
+	const broken = harness({ verdict: approving, observer: { record: () => { throw new Error("observer down"); } } });
+	assert.equal(await broken.handler(bash("firebase deploy --project ddata-staging-iso"), context({ cwd: DDATA }).ctx), undefined);
 });
