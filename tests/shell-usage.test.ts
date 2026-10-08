@@ -719,129 +719,123 @@ test("renderUsagePanel shows all four real antigravity rows with their labels", 
 	assert.ok(rowLines.some((line) => line.includes("claude-gpt week")));
 });
 
-test("parseKimiUsage reads the weekly quota plus every rate-limit window", () => {
-	const payload = {
-		usage: { limit: "2048", used: "214", remaining: "1834", resetTime: "2026-01-09T15:23:13.716Z" },
-		limits: [
-			{ window: { duration: 300, timeUnit: "TIME_UNIT_MINUTE" }, detail: { limit: "200", used: "139", remaining: "61", resetTime: "2026-01-06T13:33:02.717Z" } },
-			{ window: { duration: 1, timeUnit: "TIME_UNIT_DAY" }, detail: { limit: "1000", used: "500", remaining: "500", resetTime: "2026-01-07T00:00:00.000Z" } },
-		],
-	};
-	const usage = parseKimiUsage(payload, NOW);
+// Captured live from GET https://api.kimi.com/coding/v1/usages (2026-10-08).
+// usages.* carry a 0..1 used_ratio; limits[].detail carries string counts and
+// no "used" field, so used = limit - remaining.
+const KIMI_PAYLOAD = {"limits":[{"window":{"duration":300,"timeUnit":"TIME_UNIT_MINUTE"},"detail":{"limit":"100","remaining":"100","resetTime":"2026-10-09T01:05:30.846973Z"}}],"usages":{"limit_5h":{"used_ratio":0,"reset_time":"2026-10-09T01:05:29Z"},"limit_month_total":{"used_ratio":0.4255,"reset_time":"2026-10-16T00:00:00Z"},"limit_month_code":{"used_ratio":0,"reset_time":"2026-10-16T00:00:00Z"}}};
+
+test("parseKimiUsage reads the real usages payload: 5h and the monthly plan quota", () => {
+	const usage = parseKimiUsage(KIMI_PAYLOAD, NOW);
 	assert.ok(usage);
 	assert.equal(usage.provider, "kimi-coding");
 	assert.deepEqual(usage.limits.map((limit) => limit.name), ["kimi"]);
-	const [weekly, fiveHour, daily] = usage.limits[0].windows;
-	assert.equal(weekly.label, "week");
-	assert.equal(Math.round(weekly.usedPercent * 100) / 100, 10.45, "214 of 2048 spent ~10.45%");
-	assert.equal(weekly.resetAt, Date.parse("2026-01-09T15:23:13.716Z"));
-	assert.equal(fiveHour.label, "5h");
-	assert.equal(fiveHour.usedPercent, 69.5);
-	assert.equal(daily.label, "1d");
-	assert.equal(daily.usedPercent, 50);
+	const windows = usage.limits[0].windows;
+	// limit_5h and the 300-minute limits[] row are the same period: one window.
+	assert.deepEqual(windows.map((window) => `${window.label}:${Math.round(window.usedPercent * 100) / 100}`), ["5h:0", "month:42.55"]);
+	assert.equal(windows[0].windowSeconds, 18_000);
+	assert.equal(windows[0].resetAt, Date.parse("2026-10-09T01:05:29Z"));
+	assert.equal(windows[1].resetAt, Date.parse("2026-10-16T00:00:00Z"));
 	assert.equal(usage.limits[0].limitReached, false);
 });
 
-test("parseKimiUsage keeps the weekly row even when limits are missing", () => {
-	const usage = parseKimiUsage({ usage: { limit: 100, used: 25, remaining: 75, resetTime: "2026-02-01T00:00:00.000Z" } }, NOW);
-	assert.ok(usage);
-	assert.deepEqual(usage.limits[0].windows.map((window) => `${window.label}:${window.usedPercent}`), ["week:25"]);
-	assert.equal(usage.limits[0].windows[0].resetAt, Date.parse("2026-02-01T00:00:00.000Z"));
-});
-
-test("parseKimiUsage keeps per-window rows when only limits are present", () => {
+test("parseKimiUsage derives used from limit - remaining when limits[] omit used", () => {
 	const usage = parseKimiUsage(
-		{ limits: [{ window: { duration: 60, timeUnit: "TIME_UNIT_MINUTE" }, detail: { limit: 50, used: 5, remaining: 45, resetTime: null } }] },
+		{ limits: [{ window: { duration: 60, timeUnit: "TIME_UNIT_MINUTE" }, detail: { limit: "50", remaining: "45", resetTime: "2026-10-09T01:05:30.846973Z" } }] },
 		NOW,
 	);
 	assert.ok(usage);
 	assert.deepEqual(usage.limits[0].windows.map((window) => `${window.label}:${window.usedPercent}`), ["1h:10"]);
-	assert.equal(usage.limits[0].windows[0].resetAt, null);
+	assert.equal(usage.limits[0].windows[0].resetAt, Date.parse("2026-10-09T01:05:30.846973Z"));
+});
+
+test("parseKimiUsage keeps a limits[] window whose period usages does not report", () => {
+	const usage = parseKimiUsage({ ...KIMI_PAYLOAD, limits: [...KIMI_PAYLOAD.limits, { window: { duration: 1, timeUnit: "TIME_UNIT_DAY" }, detail: { limit: "1000", remaining: "500", resetTime: null } }] }, NOW);
+	assert.ok(usage);
+	assert.deepEqual(usage.limits[0].windows.map((window) => window.label), ["5h", "month", "1d"]);
+	assert.equal(usage.limits[0].windows[2].usedPercent, 50);
+});
+
+test("parseKimiUsage still reads the legacy weekly usage row", () => {
+	const usage = parseKimiUsage({ usage: { limit: 100, used: 25, remaining: 75, resetTime: "2026-02-01T00:00:00.000Z" } }, NOW);
+	assert.ok(usage);
+	assert.deepEqual(usage.limits[0].windows.map((window) => `${window.label}:${window.usedPercent}`), ["week:25"]);
 });
 
 test("parseKimiUsage marks the limit reached when any window is exhausted", () => {
-	const usage = parseKimiUsage(
-		{ usage: { limit: 100, used: 100, remaining: 0, resetTime: null }, limits: [] },
-		NOW,
-	);
+	const usage = parseKimiUsage({ usages: { limit_5h: { used_ratio: 1, reset_time: null } } }, NOW);
 	assert.ok(usage);
 	assert.equal(usage.limits[0].limitReached, true);
+	assert.equal(usage.limits[0].windows[0].usedPercent, 100);
 });
 
 test("parseKimiUsage skips unknown time units and returns undefined when nothing remains", () => {
 	const usage = parseKimiUsage(
-		{ limits: [{ window: { duration: 5, timeUnit: "TIME_UNIT_FORTNIGHT" }, detail: { limit: 10, used: 1, remaining: 9, resetTime: null } }] },
+		{ limits: [{ window: { duration: 5, timeUnit: "TIME_UNIT_FORTNIGHT" }, detail: { limit: "10", remaining: "9", resetTime: null } }] },
 		NOW,
 	);
 	assert.equal(usage, undefined, "an unknown unit is not a window the panel can draw");
 	assert.equal(parseKimiUsage({}, NOW), undefined);
-	assert.equal(parseKimiUsage({ usage: { limit: 0, used: 0, remaining: 0, resetTime: null }, limits: [] }, NOW), undefined, "a zero-limit quota yields no window");
+	assert.equal(parseKimiUsage({ usages: { limit_5h: { reset_time: null } }, limits: [] }, NOW), undefined, "a row without a ratio yields no window");
+	assert.equal(parseKimiUsage({ limits: [{ window: { duration: 300, timeUnit: "TIME_UNIT_MINUTE" }, detail: { limit: "0", remaining: "0" } }] }, NOW), undefined, "a zero-limit quota yields no window");
 });
 
-test("renderUsageBar shows kimi with the weekly window and any extras as percentages", () => {
-	const usage = parseKimiUsage(
-		{
-			usage: { limit: 2048, used: 214, remaining: 1834, resetTime: "2026-01-09T15:23:13.716Z" },
-			limits: [{ window: { duration: 300, timeUnit: "TIME_UNIT_MINUTE" }, detail: { limit: 200, used: 139, remaining: 61, resetTime: "2026-01-06T13:33:02.717Z" } }],
-		},
-		NOW,
-	);
+test("renderUsageBar shows kimi with the 5h window and the month as a percentage", () => {
+	const usage = parseKimiUsage(KIMI_PAYLOAD, NOW);
 	assert.ok(usage);
-	assert.equal(renderUsageBar(usage, plainTheme), "kimi week ▰▱▱▱▱▱▱▱ 10% · 5h 70%");
+	assert.equal(renderUsageBar(usage, plainTheme), "kimi 5h ▱▱▱▱▱▱▱▱ 0% · month 43%");
 });
 
 // ---- MiniMax Token Plan ----
 
-const MINIMAX_PAYLOAD = {
-	base_resp: { code: 0 },
-	model_remains: [
-		{ model: "general", current_interval_remaining_percent: 91, current_weekly_remaining_percent: 96 },
-		{ model: "video", current_interval_remaining_percent: 100, current_weekly_remaining_percent: 100 },
-	],
-};
+// Captured live from GET https://api.minimax.io/v1/api/openplatform/coding_plan/remains
+// (2026-10-08). *_usage_count is the REMAINING count, not the used one; only the
+// remaining percentages are meaningful.
+const MINIMAX_PAYLOAD = {"model_remains":[{"start_time":1791489600000,"end_time":1791504000000,"remains_time":11700092,"current_interval_total_count":0,"current_interval_usage_count":0,"model_name":"general","current_weekly_total_count":0,"current_weekly_usage_count":0,"weekly_start_time":1791158400000,"weekly_end_time":1791763200000,"weekly_remains_time":270900092,"current_interval_status":1,"current_interval_remaining_percent":100,"current_weekly_status":1,"current_weekly_remaining_percent":96},{"start_time":1791417600000,"end_time":1791504000000,"remains_time":11700092,"current_interval_total_count":0,"current_interval_usage_count":0,"model_name":"video","current_weekly_total_count":0,"current_weekly_usage_count":0,"weekly_start_time":1791158400000,"weekly_end_time":1791763200000,"weekly_remains_time":270900092,"current_interval_status":3,"current_interval_remaining_percent":100,"current_weekly_status":3,"current_weekly_remaining_percent":100}],"base_resp":{"status_code":0,"status_msg":"success"}};
 
-test("parseMinimaxUsage reads 5h and weekly windows from the general bucket", () => {
+test("parseMinimaxUsage reads 5h and weekly windows from the real general bucket", () => {
 	const usage = parseMinimaxUsage(MINIMAX_PAYLOAD, NOW);
 	assert.ok(usage);
 	assert.equal(usage.provider, "minimax");
 	assert.equal(usage.limits.length, 1);
 	const limit = usage.limits[0];
 	assert.equal(limit.name, "minimax");
-	assert.equal(limit.windows.length, 2);
-	// general row: 91% remaining → 9% used; 96% remaining → 4% used
-	assert.equal(limit.windows[0].label, "5h");
-	assert.equal(limit.windows[0].usedPercent, 9);
-	assert.equal(limit.windows[1].label, "week");
-	assert.equal(limit.windows[1].usedPercent, 4);
+	// general row: 100% remaining → 0% used; 96% remaining → 4% used
+	assert.deepEqual(limit.windows.map((window) => `${window.label}:${window.usedPercent}`), ["5h:0", "week:4"]);
+	assert.equal(limit.windows[0].resetAt, 1791504000000);
+	assert.equal(limit.windows[1].resetAt, 1791763200000);
 	assert.equal(limit.limitReached, false);
 });
 
-test("parseMinimaxUsage skips the video bucket", () => {
-	const usage = parseMinimaxUsage(MINIMAX_PAYLOAD, NOW);
-	assert.ok(usage);
-	// Only 2 windows (5h + week) from the general bucket, not 4
-	assert.equal(usage.limits[0].windows.length, 2);
+test("parseMinimaxUsage tolerates the legacy code field and a data wrapper", () => {
+	const legacy = parseMinimaxUsage({ base_resp: { code: 0 }, model_remains: [{ model: "general", current_interval_remaining_percent: 91, current_weekly_remaining_percent: 96 }] }, NOW);
+	assert.ok(legacy);
+	assert.deepEqual(legacy.limits[0].windows.map((window) => `${window.label}:${window.usedPercent}`), ["5h:9", "week:4"]);
+	assert.equal(legacy.limits[0].windows[0].resetAt, null);
+	const wrapped = parseMinimaxUsage({ data: MINIMAX_PAYLOAD }, NOW);
+	assert.ok(wrapped);
+	assert.equal(wrapped.limits[0].windows[1].usedPercent, 4);
 });
 
-test("parseMinimaxUsage returns undefined for non-zero base_resp code", () => {
-	const usage = parseMinimaxUsage({ base_resp: { code: 1001 }, model_remains: [] }, NOW);
-	assert.equal(usage, undefined);
+test("parseMinimaxUsage returns undefined for a non-zero status code", () => {
+	assert.equal(parseMinimaxUsage({ base_resp: { status_code: 1004, status_msg: "auth failed" }, model_remains: [] }, NOW), undefined);
+	assert.equal(parseMinimaxUsage({ base_resp: { code: 1001 }, model_remains: [] }, NOW), undefined);
+	assert.equal(parseMinimaxUsage({ model_remains: MINIMAX_PAYLOAD.model_remains }, NOW), undefined, "no base_resp means no success signal");
 });
 
 test("parseMinimaxUsage returns undefined when general bucket is missing", () => {
-	const usage = parseMinimaxUsage({ base_resp: { code: 0 }, model_remains: [{ model: "video", current_interval_remaining_percent: 50 }] }, NOW);
+	const usage = parseMinimaxUsage({ ...MINIMAX_PAYLOAD, model_remains: MINIMAX_PAYLOAD.model_remains.filter((row) => row.model_name !== "general") }, NOW);
 	assert.equal(usage, undefined);
 });
 
 test("parseMinimaxUsage marks limit reached when interval is exhausted", () => {
-	const usage = parseMinimaxUsage({ base_resp: { code: 0 }, model_remains: [{ model: "general", current_interval_remaining_percent: 0, current_weekly_remaining_percent: 50 }] }, NOW);
+	const usage = parseMinimaxUsage({ base_resp: { status_code: 0 }, model_remains: [{ model_name: "general", current_interval_remaining_percent: 0, current_weekly_remaining_percent: 50 }] }, NOW);
 	assert.ok(usage);
 	assert.equal(usage.limits[0].limitReached, true);
 	assert.equal(usage.limits[0].windows[0].usedPercent, 100);
 });
 
 test("parseMinimaxUsage handles missing percentage fields gracefully", () => {
-	const usage = parseMinimaxUsage({ base_resp: { code: 0 }, model_remains: [{ model: "general" }] }, NOW);
+	const usage = parseMinimaxUsage({ base_resp: { status_code: 0 }, model_remains: [{ model_name: "general", current_interval_usage_count: 0 }] }, NOW);
 	// Both percentages are undefined → no windows → undefined
 	assert.equal(usage, undefined);
 });
@@ -849,7 +843,20 @@ test("parseMinimaxUsage handles missing percentage fields gracefully", () => {
 test("renderUsageBar shows minimax with 5h and week windows", () => {
 	const usage = parseMinimaxUsage(MINIMAX_PAYLOAD, NOW);
 	assert.ok(usage);
-	assert.equal(renderUsageBar(usage, plainTheme), "minimax 5h ▰▱▱▱▱▱▱▱ 9% · week 4%");
+	assert.equal(renderUsageBar(usage, plainTheme), "minimax 5h ▱▱▱▱▱▱▱▱ 0% · week 4%");
+});
+
+test("modelUsageRows gives the minimax and kimi-coding models a real percent from the live payloads", () => {
+	const byProvider = new Map([
+		["minimax", parseMinimaxUsage(MINIMAX_PAYLOAD, NOW)!],
+		["kimi-coding", parseKimiUsage(KIMI_PAYLOAD, NOW)!],
+	]);
+	const models = ["minimax/MiniMax-M3", "kimi-coding/kimi-for-coding", "kimi-coding/k3", "kimi-coding/k3-256k"];
+	const rows = modelUsageRows(models, byProvider, undefined, undefined);
+	assert.deepEqual(
+		rows.map((row) => `${row.name}:${row.percent === undefined ? "Unknown" : Math.round(row.percent * 100) / 100}`),
+		["MiniMax-M3:4", "kimi-for-coding:42.55", "k3:42.55", "k3-256k:42.55"],
+	);
 });
 
 test("SUPPORTED_USAGE_PROVIDERS includes minimax", () => {

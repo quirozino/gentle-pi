@@ -105,14 +105,16 @@ const ANTHROPIC_WINDOWS: ReadonlyArray<[key: string, seconds: number]> = [
 ];
 export const ANTIGRAVITY_PROVIDER = "antigravity";
 // kimi-coding is the Kimi Code subscription OAuth provider; the matching usage
-// endpoint lives at api.kimi.com and answers the weekly quota plus every
-// rate-limit window the plan exposes.
+// endpoint lives at api.kimi.com and answers the 5-hour and monthly plan
+// quotas plus every rate-limit window the plan exposes.
 export const KIMI_PROVIDER = "kimi-coding";
 export const KIMI_DISPLAY_NAME = "kimi";
 export const KIMI_USAGE_URL = "https://api.kimi.com/coding/v1/usages";
-// The top-level "usage" row is the weekly plan quota; limits[] carry per-window
-// caps. Both share the same numeric shape, so one parser handles them.
+// Every Kimi window lives in one limit under the display name.
 const KIMI_WEEKLY_LIMIT = "kimi";
+// usages.limit_month_* name no duration; a nominal month keeps the window
+// sortable while the label and the reset time say what it really is.
+const KIMI_MONTH_SECONDS = 30 * 86_400;
 export const CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 // The NaN Cloud dashboard backend; not part of NaN's published OpenAPI, so the
 // fetch that uses it is fixed-origin, redirect-refusing, and schema-validated.
@@ -375,47 +377,65 @@ export function parseUsageHeaders(headers: Record<string, string>, now: number):
 
 // ---- MiniMax Token Plan ----
 
+interface RawMinimaxRow {
+	model_name?: unknown;
+	// Legacy spelling of model_name.
+	model?: unknown;
+	current_interval_remaining_percent?: unknown;
+	current_weekly_remaining_percent?: unknown;
+	end_time?: unknown;
+	weekly_end_time?: unknown;
+}
+
 interface RawMinimaxRemains {
-	base_resp?: { code?: unknown };
-	model_remains?: Array<{
-		model?: unknown;
-		current_interval_remaining_percent?: unknown;
-		current_weekly_remaining_percent?: unknown;
-	}>
+	// The live API answers status_code; code is the legacy spelling.
+	base_resp?: { status_code?: unknown; code?: unknown };
+	model_remains?: RawMinimaxRow[] | null;
+	data?: RawMinimaxRemains | null;
 }
 
 /** MiniMax reports "general" for text models and "video" for video models. */
-function isMinimaxCodingModel(name: string): boolean {
-	return name.toLowerCase() === "general";
+function isMinimaxCodingModel(row: RawMinimaxRow): boolean {
+	const name = row.model_name ?? row.model;
+	return typeof name === "string" && name.toLowerCase() === "general";
+}
+
+function minimaxUsed(remaining: unknown): number | undefined {
+	const value = toFiniteNumber(remaining);
+	return value === undefined ? undefined : Math.max(0, Math.min(100, 100 - value));
+}
+
+function minimaxReset(end: unknown): number | null {
+	const millis = toFiniteNumber(end);
+	return millis !== undefined && millis > 0 ? millis : null;
 }
 
 /**
  * Parse the MiniMax Token Plan usage response.
  *
- * The endpoint returns `model_remains` with rows like:
- * - `{ model: "general", current_interval_remaining_percent: 91, current_weekly_remaining_percent: 96 }`
- * - `{ model: "video", ... }`
+ * The endpoint returns `base_resp.status_code` and `model_remains` rows like:
+ * - `{ model_name: "general", current_interval_remaining_percent: 100, current_weekly_remaining_percent: 96, end_time, weekly_end_time }`
+ * - `{ model_name: "video", ... }`
  *
- * We select the "general" row and derive used percent from the remaining percent.
- * The endpoint does NOT return raw token counts, only percentages.
+ * We select the "general" row and derive used percent from the remaining
+ * percent. The `*_usage_count` fields count what REMAINS, not what was used,
+ * so they are never read as usage. Window ends are Unix milliseconds.
  */
 export function parseMinimaxUsage(payload: unknown, now: number): ProviderUsage | undefined {
-	const raw = (payload ?? {}) as RawMinimaxRemains;
-	if (raw.base_resp?.code !== 0) return undefined;
-	const rows = raw.model_remains ?? [];
-	const general = rows.find((row) => typeof row.model === "string" && isMinimaxCodingModel(row.model));
+	const outer = (payload ?? {}) as RawMinimaxRemains;
+	const raw = outer.model_remains === undefined && outer.data ? outer.data : outer;
+	const status = raw.base_resp?.status_code ?? raw.base_resp?.code ?? outer.base_resp?.status_code ?? outer.base_resp?.code;
+	if (status !== 0) return undefined;
+	const general = (raw.model_remains ?? []).find(isMinimaxCodingModel);
 	if (!general) return undefined;
-	const intervalRemaining = toFiniteNumber(general.current_interval_remaining_percent);
-	const weeklyRemaining = toFiniteNumber(general.current_weekly_remaining_percent);
-	// remaining percent → used percent (clamped 0–100)
-	const intervalUsed = intervalRemaining !== undefined ? Math.max(0, Math.min(100, 100 - intervalRemaining)) : undefined;
-	const weeklyUsed = weeklyRemaining !== undefined ? Math.max(0, Math.min(100, 100 - weeklyRemaining)) : undefined;
+	const intervalUsed = minimaxUsed(general.current_interval_remaining_percent);
+	const weeklyUsed = minimaxUsed(general.current_weekly_remaining_percent);
 	const windows: UsageWindow[] = [];
 	if (intervalUsed !== undefined) {
-		windows.push({ label: "5h", usedPercent: intervalUsed, windowSeconds: MINIMAX_WINDOWS[0][1], resetAt: null });
+		windows.push({ label: "5h", usedPercent: intervalUsed, windowSeconds: MINIMAX_WINDOWS[0][1], resetAt: minimaxReset(general.end_time) });
 	}
 	if (weeklyUsed !== undefined) {
-		windows.push({ label: "week", usedPercent: weeklyUsed, windowSeconds: MINIMAX_WINDOWS[1][1], resetAt: null });
+		windows.push({ label: "week", usedPercent: weeklyUsed, windowSeconds: MINIMAX_WINDOWS[1][1], resetAt: minimaxReset(general.weekly_end_time) });
 	}
 	if (windows.length === 0) return undefined;
 	return {
@@ -640,7 +660,15 @@ interface RawKimiLimit {
 	detail?: RawKimiDetail | null;
 }
 
+interface RawKimiRatio {
+	used_ratio?: unknown;
+	reset_time?: unknown;
+}
+
 interface RawKimiUsage {
+	// Live shape: 0..1 ratios per plan quota.
+	usages?: { limit_5h?: RawKimiRatio | null; limit_month_total?: RawKimiRatio | null; limit_month_code?: RawKimiRatio | null } | null;
+	// Legacy shape: the weekly plan quota as raw counts.
 	usage?: RawKimiDetail | null;
 	limits?: RawKimiLimit[] | null;
 }
@@ -665,42 +693,60 @@ function kimiWindowSeconds(window: RawKimiWindow | null | undefined): number | u
 
 function kimiPercent(detail: RawKimiDetail | null | undefined): number | undefined {
 	if (!detail) return undefined;
-	const used = toFiniteNumber(detail.used);
 	const limit = toFiniteNumber(detail.limit);
-	if (limit === undefined || limit <= 0 || used === undefined) return undefined;
+	if (limit === undefined || limit <= 0) return undefined;
+	// The live limits[] rows report limit and remaining only.
+	const remaining = toFiniteNumber(detail.remaining);
+	const used = toFiniteNumber(detail.used) ?? (remaining === undefined ? undefined : limit - remaining);
+	if (used === undefined) return undefined;
 	const percent = Math.min(100, Math.max(0, (used / limit) * 100));
 	return percent;
 }
 
-function kimiReset(detail: RawKimiDetail | null | undefined): number | null {
-	if (!detail || typeof detail.resetTime !== "string") return null;
-	const millis = Date.parse(detail.resetTime);
+function kimiReset(resetTime: unknown): number | null {
+	if (typeof resetTime !== "string") return null;
+	const millis = Date.parse(resetTime);
 	return Number.isFinite(millis) ? millis : null;
 }
 
-// The top-level "usage" row is the weekly plan quota; limits[] carry per-window
-// caps. Both share the same numeric shape, so one parser handles them.
+function kimiRatioWindow(raw: RawKimiRatio | null | undefined, label: string, seconds: number): UsageWindow | undefined {
+	const ratio = toFiniteNumber(raw?.used_ratio);
+	if (ratio === undefined) return undefined;
+	return { label, usedPercent: Math.min(100, Math.max(0, ratio * 100)), windowSeconds: seconds, resetAt: kimiReset(raw?.reset_time) };
+}
+
+// The legacy top-level "usage" row and limits[] share the same count shape,
+// so one parser handles both.
 function kimiWindow(detail: RawKimiDetail | null | undefined, window: RawKimiWindow | null | undefined, fallbackSeconds: number): UsageWindow | undefined {
 	const seconds = kimiWindowSeconds(window) ?? fallbackSeconds;
 	const usedPercent = kimiPercent(detail);
 	if (usedPercent === undefined) return undefined;
-	return { label: windowLabel(seconds), usedPercent, windowSeconds: seconds, resetAt: kimiReset(detail) };
+	return { label: windowLabel(seconds), usedPercent, windowSeconds: seconds, resetAt: kimiReset(detail?.resetTime) };
 }
 
 export function parseKimiUsage(payload: unknown, now: number): ProviderUsage | undefined {
 	const raw = (payload ?? {}) as RawKimiUsage;
 	const windows: UsageWindow[] = [];
-	// The top-level usage row is the weekly plan quota. The endpoint omits the
-	// window object for that one, so fall back to a week window when it is present.
+	// usages carries the plan quotas as ratios. limit_month_total is the whole
+	// monthly allowance and limit_month_code a share of it, so the total is the
+	// cap that runs out first; showing both would draw two "month" windows.
+	const fiveHour = kimiRatioWindow(raw.usages?.limit_5h, windowLabel(5 * HOUR), 5 * HOUR);
+	if (fiveHour) windows.push(fiveHour);
+	const month = kimiRatioWindow(raw.usages?.limit_month_total, "month", KIMI_MONTH_SECONDS);
+	if (month) windows.push(month);
+	// The legacy top-level usage row is the weekly plan quota. The endpoint omits
+	// the window object for that one, so fall back to a week window.
 	const weekly = kimiWindow(raw.usage, undefined, WEEK);
 	if (weekly) windows.push(weekly);
+	// limits[] repeats the 5h period usages already reported; keep only the
+	// periods nothing above covered.
 	for (const entry of raw.limits ?? []) {
 		const win = kimiWindow(entry.detail ?? null, entry.window ?? null, 0);
-		if (win && Number.isFinite(win.windowSeconds) && win.windowSeconds > 0) windows.push(win);
+		if (!win || !Number.isFinite(win.windowSeconds) || win.windowSeconds <= 0) continue;
+		if (windows.some((window) => window.windowSeconds === win.windowSeconds)) continue;
+		windows.push(win);
 	}
 	if (windows.length === 0) return undefined;
-	// The weekly row is the plan quota and is reported under the KIMI display name;
-	// per-window rows live alongside it inside the same limit bucket.
 	return {
 		provider: KIMI_PROVIDER,
 		plan: undefined,
