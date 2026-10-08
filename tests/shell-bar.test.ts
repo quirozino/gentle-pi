@@ -1004,7 +1004,7 @@ test("the narrow-layout bottom-only bar stays unchanged in the float style", (t)
 	assert.deepEqual(renderShellBottomOnlyBar(data, theme, 100, "alt+u"), neon);
 });
 
-test("Directorio and Promoción close the Status card after Integrations as divided sections", (t) => {
+test("Directorio and Promoción follow Project as divided sections", (t) => {
 	const directory = directoryLevels("/home/alan/.pi/agent/local-packages/gentle-pi", "/home/alan", "/home/alan/.pi/agent/local-packages/gentle-pi");
 	const data = model({ statuses: ["MCP connected"], directory });
 	for (const style of [CARD_STYLE.NEON, CARD_STYLE.FLOAT]) {
@@ -1012,7 +1012,7 @@ test("Directorio and Promoción close the Status card after Integrations as divi
 		const lines = renderShellSidebarBar(data, matrixTheme, 46);
 		assert.ok(lines.every((line) => visibleWidth(line) === 46), `${style}: every row keeps the card width`);
 		const text = lines.join("\n");
-		assert.ok(text.indexOf("Integrations") < text.indexOf("Directorio"), `${style}: Directorio follows Integrations`);
+		assert.ok(text.indexOf("Project") < text.indexOf("Directorio") && text.indexOf("Directorio") < text.indexOf("Integrations"), `${style}: Directorio follows Project, before Integrations`);
 		const body = lines.map((line) => stripAnsi(line));
 		const heading = body.findIndex((line) => line.includes("Directorio"));
 		assert.match(body[heading - 1]!, /╟─+╢/, `${style}: a divider opens the section`);
@@ -1315,7 +1315,7 @@ test("the promotion group follows Directorio in both panel styles and in the nar
 	assert.match(flattened(renderShellSidebarBar(data, matrixTheme, 15)), /APTO · asesor · no autoriza despliegue/, "the advisory qualifier survives the narrow panel");
 });
 
-test("only Matrix-Green paints the Promoción group; other themes keep the original Directorio close", (t) => {
+test("only Matrix-Green paints the Promoción group; other themes keep Directorio alone after Project", (t) => {
 	const directory = directoryLevels("/home/alan/work/repo", "/home/alan", "/home/alan/work/repo");
 	const data = model({ directory, promotion: { kind: "captured", report: { candidateId: "lib/x.ts", step: "listo-para-decision", verdict: "APTO" } } });
 	for (const style of [CARD_STYLE.NEON, CARD_STYLE.FLOAT]) {
@@ -1324,12 +1324,13 @@ test("only Matrix-Green paints the Promoción group; other themes keep the origi
 			const rows = renderShellSidebarBar(data, theme, 60);
 			const body = rows.map(stripAnsi).join("\n");
 			assert.doesNotMatch(body, /Promoci|Fase|Candidato|Paso|Veredicto|sin candidato/, `${style}/${label}: no promotion group even with a captured report`);
-			assert.ok(body.indexOf("Integrations") < body.indexOf("Directorio"), `${style}/${label}: Directorio still follows Integrations`);
-			// Directorio closes the card again: its tree rows run into the box close.
+			assert.ok(body.indexOf("Project") < body.indexOf("Directorio") && body.indexOf("Directorio") < body.indexOf("Integrations"), `${style}/${label}: Directorio still follows Project`);
+			// Without the promotion group the tree runs straight into the next group's divider.
 			const bodyLines = body.split("\n");
 			const heading = bodyLines.findIndex((line) => line.includes("Directorio"));
-			assert.match(bodyLines[heading + 1]!, /📁/, `${style}/${label}: the tree is the last group`);
-			assert.match(bodyLines[bodyLines.length - 2]!, /╚═+╝/, `${style}/${label}: the box closes right after the tree`);
+			assert.match(bodyLines[heading + 1]!, /📁/, `${style}/${label}: the tree opens the group`);
+			const treeEnd = bodyLines.findIndex((line, index) => index > heading && !/📁|⎇|└─/.test(line));
+			assert.match(bodyLines[treeEnd]!, /╟─+╢/, `${style}/${label}: the next group follows right after the tree`);
 		}
 	}
 	// The narrow single-panel fallback obeys the same gate.
@@ -1372,7 +1373,7 @@ function groupLines(rows: readonly string[]): string[] {
 	const body = rows.map(stripAnsi);
 	const fase = body.findIndex((line) => line.includes("Fase ODD"));
 	assert.ok(fase > 0, "the group is rendered");
-	const close = body.findIndex((line, index) => index > fase && /╚═+╝/.test(line));
+	const close = body.findIndex((line, index) => index > fase && /╚═+╝|╟─+╢/.test(line));
 	return body.slice(fase - 1, close).map((line) => /║ (.*) ║/.exec(line)?.[1] ?? line);
 }
 const DOTS = (width: number) => "┄".repeat(width);

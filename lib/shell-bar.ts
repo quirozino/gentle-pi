@@ -484,7 +484,7 @@ export interface ShellSidebarCard {
  * The only theme whose Status card paints the Promoción group, matched on the
  * live theme object's own name. `Matrix-Green` owns the look the group was
  * drawn for, so any other theme (Gentle, Gentleman-Cute, an unnamed host
- * theme) keeps the card's original Directorio close — even when a report is
+ * theme) keeps Directorio alone after Project — even when a report is
  * captured. The name is read from the theme passed to each render, never from
  * settings.json, because the active theme can switch while the shell runs.
  *
@@ -561,6 +561,21 @@ export function renderShellSidebarCard(model: ShellBarModel, theme: ShellBarThem
 				...(model.profile && !headerShows.profile ? [["Profile", sanitizeStatus(model.profile)] as const] : []),
 			],
 		},
+		// The cwd as a tree, sized at render time so long names clip, never wrap.
+		...(model.directory?.length ? [{ title: "Directorio", lines: [], fitted: (lineWidth: number) => renderDirectoryTree(model.directory ?? [], theme, lineWidth) }] : []),
+		// ODD phase + advisory promotion evidence in one group, directly after
+		// Directorio (both right under Project) — only while Matrix-Green is the live theme. The ODD row is
+		// the session's workflow phase (labelled so, never read as a promotion
+		// step; idle is the neutral "En espera"); the Estado row says which state
+		// the latest verifier evaluation is in, and a verdict is displayed
+		// exactly as reported — never dressed up as deploy authority.
+		...(promotion
+			? [promotionGroup(model, promotion.pairs.map(([key, text, tone, phaseTone]): StatusPair => {
+					const badgeRole = phaseTone && theme.inverse ? PHASE_TONE_ROLE.get(phaseTone) : undefined;
+					if (badgeRole) return [key, text, badgeRole, true];
+					return tone ? [key, text, PROMOTION_TONE_ROLE[tone]] : [key, text];
+				}), theme)]
+			: []),
 		...(presentation?.visibility.changes === false ? [] : [{
 			title: "Changes",
 			lines: [
@@ -588,21 +603,6 @@ export function renderShellSidebarCard(model: ShellBarModel, theme: ShellBarThem
 		{ title: "Integrations", lines: model.statuses.length
 			? model.statuses.map((status) => theme.fg(ROLE.STATUS, sanitizeStatus(status)))
 			: [label("No status reported")] },
-		// The cwd as a tree, sized at render time so long names clip, never wrap.
-		...(model.directory?.length ? [{ title: "Directorio", lines: [], fitted: (lineWidth: number) => renderDirectoryTree(model.directory ?? [], theme, lineWidth) }] : []),
-		// ODD phase + advisory promotion evidence in one group, directly after
-		// Directorio — only while Matrix-Green is the live theme. The ODD row is
-		// the session's workflow phase (labelled so, never read as a promotion
-		// step; idle is the neutral "En espera"); the Estado row says which state
-		// the latest verifier evaluation is in, and a verdict is displayed
-		// exactly as reported — never dressed up as deploy authority.
-		...(promotion
-			? [promotionGroup(model, promotion.pairs.map(([key, text, tone, phaseTone]): StatusPair => {
-					const badgeRole = phaseTone && theme.inverse ? PHASE_TONE_ROLE.get(phaseTone) : undefined;
-					if (badgeRole) return [key, text, badgeRole, true];
-					return tone ? [key, text, PROMOTION_TONE_ROLE[tone]] : [key, text];
-				}), theme)]
-			: []),
 	];
 	// A group the header dedupe emptied goes whole: no heading over nothing.
 	// Without the header the card keeps its groups exactly as before.
