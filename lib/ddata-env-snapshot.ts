@@ -7,13 +7,26 @@
 // - Remote evidence is reused for a TTL, persisted atomically to a 0600 cache
 //   file that holds only release names, SHAs, run ids, timestamps and short
 //   error codes. Raw stderr, env values, URLs and key paths are never stored.
-// - `refresh` is single-flight and never throws; `current` is synchronous and
+// - Transient failures (`timeout`, `unavailable`) keep the last-known-good
+//   record and attach `lastError`; the record's `observedAt` then ages into
+//   "registro antiguo" in computePipeline. Other failures replace it.
+// - `refresh` is single-flight (a forced call never coalesces into a plain
+//   one) and never throws; git and remote reads are async child processes, so
+//   nothing synchronous runs on the UI loop. `current` is synchronous and
 //   performs no I/O, so the render path can call it freely.
-import { execFile, execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { promises as nodeFs } from "node:fs";
 import { homedir as nodeHomedir } from "node:os";
 import { posix } from "node:path";
-import type { DdataEnvEvidence, DdataEnvReadError, LabEvidence, StageFirebaseRecord, StageWebRecord } from "./ddata-env.ts";
+import {
+	DDATA_ENV_ERROR_CODES,
+	type DdataEnvErrorCode,
+	type DdataEnvEvidence,
+	type DdataEnvReadError,
+	type LabEvidence,
+	type StageFirebaseRecord,
+	type StageWebRecord,
+} from "./ddata-env.ts";
 import { DDATA_GIT_COMMON_DIR, type GitRun } from "./promotion-guard.ts";
 
 export const DDATA_ENV_CONFIG_RELATIVE = ".config/gentle-shell/ddata-env.json";
@@ -28,9 +41,10 @@ export const STAGE_CURRENT_LINK = "/var/www/ddata/staging/current";
 export const STAGE_WORKFLOW = "staging-deploy.yml";
 const CACHE_VERSION = 1;
 
-/** Short, fixed error codes; the only failure detail that is kept or cached. */
-export const DDATA_ENV_ERROR_CODES = ["timeout", "auth", "unavailable", "parse", "no-key", "no-runs", "config", "failed"] as const;
-export type DdataEnvErrorCode = (typeof DDATA_ENV_ERROR_CODES)[number];
+export { DDATA_ENV_ERROR_CODES, type DdataEnvErrorCode };
+/** Failures that do not invalidate the last-known-good record. */
+export const TRANSIENT_ERROR_CODES: readonly DdataEnvErrorCode[] = ["timeout", "unavailable"];
+export const DEFAULT_MAX_BUFFER_BYTES = 256 * 1024;
 
 export interface ExecResult {
 	/** Exit code; null when the process was killed. */
@@ -38,10 +52,19 @@ export interface ExecResult {
 	stdout: string;
 	stderr: string;
 	timedOut?: boolean;
+	/** Killed because its output exceeded the buffer limit. */
+	outputLimit?: boolean;
 }
 
 /** Runs `file` with `args` (no shell). Throws only when the program cannot be started. */
-export type ExecFn = (file: string, args: readonly string[], options: { timeoutMs: number }) => Promise<ExecResult>;
+export type ExecFn = (
+	file: string,
+	args: readonly string[],
+	options: { timeoutMs: number; maxBufferBytes?: number },
+) => Promise<ExecResult>;
+
+/** Async git in `cwd`: trimmed stdout, undefined on a non-zero exit; rejects when git cannot run. */
+export type GitRunAsync = (cwd: string, args: readonly string[]) => Promise<string | undefined>;
 
 export interface SnapshotFs {
 	/** Contents, or undefined when missing or unreadable. */
@@ -50,12 +73,14 @@ export interface SnapshotFs {
 	mkdir(path: string): Promise<void>;
 	writeFile(path: string, data: string, mode: number): Promise<void>;
 	rename(from: string, to: string): Promise<void>;
+	unlink(path: string): Promise<void>;
 }
 
 export interface DdataEnvSnapshotDeps {
 	exec?: ExecFn;
 	fs?: SnapshotFs;
-	git?: GitRun;
+	/** Async preferred; a synchronous GitRun is still accepted for callers that cache one. */
+	git?: GitRunAsync | GitRun;
 	homedir?: string;
 	now?: () => number;
 }
@@ -165,6 +190,7 @@ function failure(error: DdataEnvErrorCode): DdataEnvReadError {
 }
 
 function classifyExecFailure(result: ExecResult, program: "ssh" | "gh"): DdataEnvReadError {
+	if (result.outputLimit) return failure("failed");
 	if (result.timedOut) return failure("timeout");
 	if (AUTH_PATTERN.test(result.stderr)) return failure("auth");
 	if (program === "ssh" && result.code === 255) return failure("unavailable");
@@ -178,10 +204,16 @@ function errorCodeFromThrow(error: unknown): DdataEnvErrorCode {
 
 // --- Cache sanitizing ----------------------------------------------------------
 
+const isErrorCode = (code: unknown): code is DdataEnvErrorCode => (DDATA_ENV_ERROR_CODES as readonly unknown[]).includes(code);
+
 function sanitizeError(value: unknown): DdataEnvReadError | undefined {
 	if (!value || typeof value !== "object" || !("error" in value)) return undefined;
 	const code = (value as { error: unknown }).error;
-	return failure((DDATA_ENV_ERROR_CODES as readonly unknown[]).includes(code) ? (code as DdataEnvErrorCode) : "failed");
+	return failure(isErrorCode(code) ? code : "failed");
+}
+
+function withLastError<T extends object>(record: T, lastError: unknown): T {
+	return isErrorCode(lastError) && TRANSIENT_ERROR_CODES.includes(lastError) ? { ...record, lastError } : record;
 }
 
 const isTimestamp = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
@@ -189,18 +221,18 @@ const isTimestamp = (value: unknown): value is number => typeof value === "numbe
 function sanitizeStageWeb(value: unknown): StageWebEvidence | undefined {
 	const error = sanitizeError(value);
 	if (error) return error;
-	const v = value as { releaseName?: unknown; observedAt?: unknown } | null;
+	const v = value as { releaseName?: unknown; observedAt?: unknown; lastError?: unknown } | null;
 	if (!v || typeof v.releaseName !== "string" || !RELEASE_NAME.test(v.releaseName) || !isTimestamp(v.observedAt)) return undefined;
-	return { releaseName: v.releaseName, observedAt: v.observedAt };
+	return withLastError({ releaseName: v.releaseName, observedAt: v.observedAt }, v.lastError);
 }
 
 function sanitizeStageFirebase(value: unknown): StageFirebaseEvidence | undefined {
 	const error = sanitizeError(value);
 	if (error) return error;
-	const v = value as { headSha?: unknown; runId?: unknown; observedAt?: unknown } | null;
+	const v = value as { headSha?: unknown; runId?: unknown; observedAt?: unknown; lastError?: unknown } | null;
 	if (!v || typeof v.headSha !== "string" || !FULL_SHA.test(v.headSha)) return undefined;
 	if (typeof v.runId !== "number" || !Number.isSafeInteger(v.runId) || !isTimestamp(v.observedAt)) return undefined;
-	return { headSha: v.headSha, runId: v.runId, observedAt: v.observedAt };
+	return withLastError({ headSha: v.headSha, runId: v.runId, observedAt: v.observedAt }, v.lastError);
 }
 
 function parseCache(text: string | undefined): RemoteState | undefined {
@@ -231,15 +263,16 @@ function serializeCache(state: RemoteState): string {
 
 // --- Node defaults -------------------------------------------------------------
 
-export const nodeExec: ExecFn = (file, args, { timeoutMs }) =>
+export const nodeExec: ExecFn = (file, args, { timeoutMs, maxBufferBytes = DEFAULT_MAX_BUFFER_BYTES }) =>
 	new Promise((resolve, reject) => {
 		execFile(
 			file,
 			[...args],
-			{ timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: 256 * 1024, encoding: "utf8", windowsHide: true },
+			{ timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: maxBufferBytes, encoding: "utf8", windowsHide: true },
 			(error, stdout, stderr) => {
 				if (!error) return resolve({ code: 0, stdout, stderr });
 				const e = error as NodeJS.ErrnoException & { killed?: boolean; code?: unknown };
+				if (e.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") return resolve({ code: null, stdout: "", stderr: "", outputLimit: true });
 				if (typeof e.code === "string" && !e.killed) return reject(error);
 				resolve({ code: typeof e.code === "number" ? e.code : null, stdout: stdout ?? "", stderr: stderr ?? "", timedOut: e.killed === true });
 			},
@@ -271,28 +304,62 @@ export const nodeSnapshotFs: SnapshotFs = {
 	async rename(from, to) {
 		await nodeFs.rename(from, to);
 	},
+	async unlink(path) {
+		await nodeFs.unlink(path);
+	},
 };
 
-export const nodeGit: GitRun = (cwd, args) => {
-	try {
-		return execFileSync("git", ["--no-optional-locks", ...args], {
-			cwd,
-			encoding: "utf8",
-			timeout: 3_000,
-			stdio: ["ignore", "pipe", "ignore"],
-		}).trim();
-	} catch (error) {
-		if ((error as { status?: unknown }).status !== undefined && (error as { status?: unknown }).status !== null) return undefined;
-		throw error;
-	}
-};
+export const GIT_TIMEOUT_MS = 3_000;
+
+export const nodeGitAsync: GitRunAsync = (cwd, args) =>
+	new Promise((resolve, reject) => {
+		execFile(
+			"git",
+			["--no-optional-locks", ...args],
+			{ cwd, timeout: GIT_TIMEOUT_MS, killSignal: "SIGKILL", maxBuffer: 64 * 1024, encoding: "utf8", windowsHide: true },
+			(error, stdout) => {
+				if (!error) return resolve(stdout.trim());
+				const code = (error as { code?: unknown }).code;
+				// A numeric code is git's own non-zero exit (not a repository, unknown ref).
+				if (typeof code === "number") return resolve(undefined);
+				reject(error);
+			},
+		);
+	});
 
 // --- Refresher -----------------------------------------------------------------
+
+interface Job<T> {
+	promise: Promise<T>;
+	forced: boolean;
+}
+
+/**
+ * Single flight with force upgrade: a plain call joins any in-flight job; a
+ * forced call joins only a forced job, otherwise it is chained to start once
+ * the current job settles, so a force is never silently coalesced.
+ */
+function joinOrChain<T>(current: Job<T> | undefined, force: boolean, start: () => Promise<T>, settled: (job: Job<T>) => void): Job<T> {
+	if (current && (current.forced || !force)) return current;
+	const prior = current ? current.promise.then(() => undefined, () => undefined) : Promise.resolve();
+	const job: Job<T> = { forced: force, promise: undefined as unknown as Promise<T> };
+	job.promise = prior.then(start).finally(() => settled(job));
+	return job;
+}
+
+function keepLastGood<T extends StageWebRecord | StageFirebaseRecord>(
+	previous: T | DdataEnvReadError | undefined,
+	next: T | DdataEnvReadError,
+): T | DdataEnvReadError {
+	if (!("error" in next)) return next;
+	if (TRANSIENT_ERROR_CODES.includes(next.error) && previous && !("error" in previous)) return { ...previous, lastError: next.error };
+	return next;
+}
 
 export function createDdataEnvSnapshot(deps: DdataEnvSnapshotDeps = {}): DdataEnvSnapshot {
 	const exec = deps.exec ?? nodeExec;
 	const fs = deps.fs ?? nodeSnapshotFs;
-	const git = deps.git ?? nodeGit;
+	const git = deps.git ?? nodeGitAsync;
 	const home = deps.homedir ?? nodeHomedir();
 	const now = deps.now ?? Date.now;
 	const configPath = posix.join(home, DDATA_ENV_CONFIG_RELATIVE);
@@ -303,8 +370,8 @@ export function createDdataEnvSnapshot(deps: DdataEnvSnapshotDeps = {}): DdataEn
 	let remote: RemoteState | undefined;
 	let remoteEnabled = true;
 	let cacheLoaded = false;
-	const inflight = new Map<string, Promise<DdataEnvEvidence>>();
-	let remoteInflight: Promise<void> | undefined;
+	const inflight = new Map<string, Job<DdataEnvEvidence>>();
+	let remoteJob: Job<void> | undefined;
 
 	const expandHome = (path: string) => (path.startsWith("~/") ? posix.join(home, path.slice(2)) : path);
 
@@ -318,11 +385,11 @@ export function createDdataEnvSnapshot(deps: DdataEnvSnapshotDeps = {}): DdataEn
 		return evidence;
 	}
 
-	function readLab(cwd: string): LabEvidence | null {
+	async function readLab(cwd: string): Promise<LabEvidence | null> {
 		try {
-			const common = git(cwd, COMMON_DIR_ARGS);
+			const common = await git(cwd, COMMON_DIR_ARGS);
 			if (common === undefined || common.replace(/\/+$/, "") !== DDATA_GIT_COMMON_DIR) return null;
-			const head = git(cwd, HEAD_ARGS)?.trim().toLowerCase();
+			const head = (await git(cwd, HEAD_ARGS))?.trim().toLowerCase();
 			return head !== undefined && FULL_SHA.test(head) ? { headSha: head } : null;
 		} catch {
 			return null;
@@ -372,6 +439,8 @@ export function createDdataEnvSnapshot(deps: DdataEnvSnapshotDeps = {}): DdataEn
 			await fs.rename(tmp, cachePath);
 		} catch {
 			// The cache is an optimisation; a failed write only costs a refetch.
+			// Best effort: never leave a temp file behind.
+			await fs.unlink(tmp).catch(() => undefined);
 		}
 	}
 
@@ -380,25 +449,31 @@ export function createDdataEnvSnapshot(deps: DdataEnvSnapshotDeps = {}): DdataEn
 			cacheLoaded = true;
 			remote ??= parseCache(await fs.readFile(cachePath));
 		}
-		if (!force && remote && now() - remote.fetchedAt < config.ttlMs) return;
+		// A fetchedAt in the future (clock change, tampered cache) counts as expired.
+		const age = remote ? now() - remote.fetchedAt : Number.POSITIVE_INFINITY;
+		if (!force && age >= 0 && age < config.ttlMs) return;
 		const fetchedAt = now();
 		const [stageWeb, stageFirebase] = await Promise.all([guarded(() => readStageWeb(config)), guarded(() => readStageFirebase(config))]);
-		remote = { fetchedAt, stageWeb, stageFirebase };
+		remote = {
+			fetchedAt,
+			stageWeb: keepLastGood(remote?.stageWeb, stageWeb),
+			stageFirebase: keepLastGood(remote?.stageFirebase, stageFirebase),
+		};
 		await writeCache(remote);
 	}
 
 	async function run(cwd: string, force: boolean): Promise<DdataEnvEvidence> {
 		try {
-			const lab = readLab(cwd);
+			const lab = await readLab(cwd);
 			labByCwd.set(cwd, lab);
 			if (lab === null) return {};
 			const config = parseConfig(await fs.readFile(configPath).catch(() => undefined));
 			remoteEnabled = config.enabled;
 			if (config.enabled) {
-				remoteInflight ??= refreshRemote(config, force).finally(() => {
-					remoteInflight = undefined;
+				remoteJob = joinOrChain(remoteJob, force, () => refreshRemote(config, force), (job) => {
+					if (remoteJob === job) remoteJob = undefined;
 				});
-				await remoteInflight;
+				await remoteJob.promise;
 			}
 		} catch {
 			// Never throw: whatever was established so far is returned below.
@@ -408,11 +483,12 @@ export function createDdataEnvSnapshot(deps: DdataEnvSnapshotDeps = {}): DdataEn
 
 	return {
 		refresh(cwd, options = {}) {
-			const pending = inflight.get(cwd);
-			if (pending) return pending;
-			const promise = run(cwd, options.force === true).finally(() => inflight.delete(cwd));
-			inflight.set(cwd, promise);
-			return promise;
+			const force = options.force === true;
+			const job = joinOrChain(inflight.get(cwd), force, () => run(cwd, force), (done) => {
+				if (inflight.get(cwd) === done) inflight.delete(cwd);
+			});
+			inflight.set(cwd, job);
+			return job.promise;
 		},
 		current: evidenceFor,
 	};

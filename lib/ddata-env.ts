@@ -24,27 +24,43 @@ export const DDATA_ENV_STEPS: readonly DdataEnvStepDef[] = [
 
 export const DDATA_ENV_TOTAL_STEPS = 3;
 export const SHA_DISPLAY_LENGTH = 12;
+/** Shortest SHA prefix accepted as the same commit when a record is not a full SHA. */
+export const SHA_MATCH_MIN_LENGTH = 12;
 export const RELEASE_DISPLAY_LENGTH = 24;
 export const MIN_RELEASE_HEX_PREFIX = 7;
 
-/** A source that could not be read. The message is diagnostic only and never rendered. */
+/**
+ * Short, fixed read-failure codes. They are the only failure detail kept or
+ * cached; raw stderr never is. `timeout` and `unavailable` are transient.
+ */
+export const DDATA_ENV_ERROR_CODES = ["timeout", "auth", "unavailable", "parse", "no-key", "no-runs", "config", "failed"] as const;
+export type DdataEnvErrorCode = (typeof DDATA_ENV_ERROR_CODES)[number];
+
+/** A source that could not be read; the code is never rendered verbatim. */
 export interface DdataEnvReadError {
-	readonly error: string;
+	readonly error: DdataEnvErrorCode;
 }
 
 export interface LabEvidence {
 	readonly headSha: string;
 }
 
+/**
+ * A last-known-good record may carry the transient error of the latest read
+ * attempt (`lastError`). Labels ignore it: the record is still evidence of
+ * what was observed at `observedAt`, and ages into "registro antiguo".
+ */
 export interface StageWebRecord {
 	readonly releaseName: string;
 	readonly observedAt: number;
+	readonly lastError?: DdataEnvErrorCode;
 }
 
 export interface StageFirebaseRecord {
 	readonly headSha: string;
 	readonly runId: string | number;
 	readonly observedAt: number;
+	readonly lastError?: DdataEnvErrorCode;
 }
 
 /** Reserved for a future production deploy record; no source produces it yet. */
@@ -133,9 +149,9 @@ function shaMatches(recordSha: string, candidate: string): boolean {
 	if (record.length === 0) return false;
 	if (record === candidate) return true;
 	return (
-		record.length >= SHA_DISPLAY_LENGTH &&
-		candidate.length >= SHA_DISPLAY_LENGTH &&
-		record.slice(0, SHA_DISPLAY_LENGTH) === candidate.slice(0, SHA_DISPLAY_LENGTH)
+		record.length >= SHA_MATCH_MIN_LENGTH &&
+		candidate.length >= SHA_MATCH_MIN_LENGTH &&
+		record.slice(0, SHA_MATCH_MIN_LENGTH) === candidate.slice(0, SHA_MATCH_MIN_LENGTH)
 	);
 }
 

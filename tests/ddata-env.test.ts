@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
 	computePipeline,
+	DDATA_ENV_ERROR_CODES,
+	SHA_MATCH_MIN_LENGTH,
 	DDATA_ENV_STEPS,
 	releaseHexPrefix,
 	shortSha,
@@ -158,7 +160,7 @@ test("Firebase match reaches Stage even when web serves another release", () => 
 
 test("Stage read errors show error de lectura with warning tone", () => {
 	const p = computePipeline(
-		{ lab: { headSha: HEAD }, stageWeb: { error: "timeout" }, stageFirebase: { error: "gh failed" } },
+		{ lab: { headSha: HEAD }, stageWeb: { error: "timeout" }, stageFirebase: { error: "failed" } },
 		OPTS,
 	);
 	assert.equal(p?.current, "lab");
@@ -167,7 +169,7 @@ test("Stage read errors show error de lectura with warning tone", () => {
 
 test("one Stage source erroring does not hide another source's match", () => {
 	const p = computePipeline(
-		{ lab: { headSha: HEAD }, stageWeb: { error: "ssh" }, stageFirebase: { headSha: HEAD, runId: 1, observedAt: NOW } },
+		{ lab: { headSha: HEAD }, stageWeb: { error: "unavailable" }, stageFirebase: { headSha: HEAD, runId: 1, observedAt: NOW } },
 		OPTS,
 	);
 	assert.equal(p?.current, "stage");
@@ -195,7 +197,7 @@ test("error outranks stale when no source gives fresh evidence", () => {
 	const p = computePipeline(
 		{
 			lab: { headSha: HEAD },
-			stageWeb: { error: "ssh" },
+			stageWeb: { error: "unavailable" },
 			stageFirebase: { headSha: HEAD, runId: 1, observedAt: NOW - 2 * 30 * MINUTE },
 		},
 		OPTS,
@@ -234,7 +236,7 @@ test("production evidence for another SHA, error or stale never reaches Producci
 	const other = computePipeline({ lab: { headSha: HEAD }, production: { headSha: OTHER, observedAt: NOW } }, OPTS);
 	assert.equal(other?.current, "lab");
 	assert.deepEqual(step(other, "production").evidence, { text: "otra versión · 9b1e2d3c4a5f", tone: "info" });
-	const error = computePipeline({ lab: { headSha: HEAD }, production: { error: "x" } }, OPTS);
+	const error = computePipeline({ lab: { headSha: HEAD }, production: { error: "auth" } }, OPTS);
 	assert.deepEqual(step(error, "production").evidence, { text: "error de lectura", tone: "warning" });
 	const stale = computePipeline(
 		{ lab: { headSha: HEAD }, production: { headSha: HEAD, observedAt: NOW - 31 * MINUTE } },
@@ -282,7 +284,7 @@ test("tones are abstract names only", () => {
 	const allowed = new Set([undefined, "warning", "failure", "running", "info"]);
 	const cases: DdataEnvEvidence[] = [
 		{ lab: { headSha: HEAD } },
-		{ lab: { headSha: HEAD }, stageWeb: { error: "x" }, production: { error: "y" } },
+		{ lab: { headSha: HEAD }, stageWeb: { error: "parse" }, production: { error: "timeout" } },
 		{ lab: { headSha: HEAD }, stageWeb: { releaseName: HEAD, observedAt: NOW } },
 	];
 	for (const evidence of cases) {
@@ -290,4 +292,40 @@ test("tones are abstract names only", () => {
 			assert.ok(allowed.has(s.evidence.tone), String(s.evidence.tone));
 		}
 	}
+});
+
+test("read errors are typed as a closed set of short codes", () => {
+	assert.deepEqual([...DDATA_ENV_ERROR_CODES], ["timeout", "auth", "unavailable", "parse", "no-key", "no-runs", "config", "failed"]);
+	// @ts-expect-error free-form strings are not read errors
+	const bad: DdataEnvEvidence = { lab: { headSha: HEAD }, stageWeb: { error: "ssh said no" } };
+	assert.ok(bad);
+});
+
+test("SHA matching uses its own minimum length, independent of display", () => {
+	assert.equal(SHA_MATCH_MIN_LENGTH, 12);
+	const eleven = computePipeline(
+		{ lab: { headSha: HEAD }, stageFirebase: { headSha: HEAD.slice(0, 11), runId: 1, observedAt: NOW } },
+		OPTS,
+	);
+	assert.equal(eleven?.current, "lab");
+});
+
+test("a kept last-known-good record with a transient lastError still labels by its age", () => {
+	const fresh = computePipeline(
+		{ lab: { headSha: HEAD }, stageWeb: { releaseName: "37af7f4-x", observedAt: NOW - MINUTE, lastError: "timeout" } },
+		OPTS,
+	);
+	assert.equal(fresh?.current, "stage");
+	assert.equal(step(fresh, "stage").evidence.text, "en vivo · 37af7f4-x");
+	const aged = computePipeline(
+		{ lab: { headSha: HEAD }, stageWeb: { releaseName: "37af7f4-x", observedAt: NOW - 31 * MINUTE, lastError: "unavailable" } },
+		OPTS,
+	);
+	assert.equal(aged?.current, "lab");
+	assert.deepEqual(step(aged, "stage").evidence, { text: "registro antiguo", tone: "warning" });
+	const firebase = computePipeline(
+		{ lab: { headSha: HEAD }, stageFirebase: { headSha: OTHER, runId: 1, observedAt: NOW - 31 * MINUTE, lastError: "timeout" } },
+		OPTS,
+	);
+	assert.deepEqual(step(firebase, "stage").evidence, { text: "registro antiguo", tone: "warning" });
 });

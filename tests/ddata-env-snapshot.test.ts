@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import test from "node:test";
 import { DDATA_GIT_COMMON_DIR } from "../lib/promotion-guard.ts";
 import {
 	createDdataEnvSnapshot,
 	DDATA_ENV_CACHE_RELATIVE,
 	DDATA_ENV_CONFIG_RELATIVE,
+	nodeExec,
+	nodeGitAsync,
 	parseReleaseLink,
 	parseStageRunJson,
 	type ExecFn,
@@ -48,6 +52,10 @@ function fakeFs(initial: Record<string, string> = {}): FakeFs {
 			ops.push(`write ${path}`);
 			files.set(path, { data, mode });
 		},
+		async unlink(path) {
+			ops.push(`unlink ${path}`);
+			files.delete(path);
+		},
 		async rename(from, to) {
 			ops.push(`rename ${from} ${to}`);
 			const entry = files.get(from);
@@ -75,18 +83,19 @@ function harness(options: {
 	ssh?: () => Promise<ExecResult>;
 	gh?: () => Promise<ExecResult>;
 	head?: string;
+	fs?: FakeFs;
 } = {}): Harness {
 	const calls: Harness["calls"] = [];
 	const gitCalls: string[] = [];
 	const clock = { t: 1_800_000_000_000 };
-	const fs = fakeFs({ [KEY]: "PRIVATE", ...options.files });
+	const fs = options.fs ?? fakeFs({ [KEY]: "PRIVATE", ...options.files });
 	const exec: ExecFn = async (file, args, opts) => {
 		calls.push({ file, args, timeoutMs: opts.timeoutMs });
 		if (file === "ssh") return options.ssh ? options.ssh() : ok("releases/37af7f4-captcha-disabled\n");
 		if (file === "gh") return options.gh ? options.gh() : ghOk();
 		throw new Error(`unexpected ${file}`);
 	};
-	const git = (cwd: string, args: readonly string[]) => {
+	const git = async (cwd: string, args: readonly string[]) => {
 		gitCalls.push(`${cwd} ${args.join(" ")}`);
 		if (cwd !== DDATA_CWD) return args.includes("--git-common-dir") ? "/srv/git/other.git" : HEAD;
 		if (args.includes("--git-common-dir")) return `${DDATA_GIT_COMMON_DIR}/`;
@@ -157,7 +166,7 @@ test("concurrent refreshes share one in-flight promise", async () => {
 	const h = harness({ ssh: async () => (await gate, ok("releases/37af7f4-x")) });
 	const a = h.snapshot.refresh(DDATA_CWD);
 	const b = h.snapshot.refresh(DDATA_CWD);
-	const c = h.snapshot.refresh(DDATA_CWD, { force: true });
+	const c = h.snapshot.refresh(DDATA_CWD);
 	release();
 	const [ra, rb, rc] = await Promise.all([a, b, c]);
 	assert.equal(h.calls.filter((x) => x.file === "ssh").length, 1);
@@ -315,4 +324,111 @@ test("git failure or invalid HEAD never throws", async () => {
 	const evidence = await h.snapshot.refresh(DDATA_CWD);
 	assert.equal(evidence.lab, undefined);
 	assert.equal(h.calls.length, 0);
+});
+
+test("force during a non-forced in-flight refresh runs a fresh remote read afterwards", async () => {
+	let release!: () => void;
+	const gate = new Promise<void>((resolve) => (release = resolve));
+	let sshCount = 0;
+	const h = harness({
+		ssh: async () => {
+			sshCount += 1;
+			if (sshCount === 1) await gate;
+			return ok(sshCount === 1 ? "releases/aaaaaaa-old" : "releases/37af7f4-new");
+		},
+	});
+	const plain = h.snapshot.refresh(DDATA_CWD);
+	const forced = h.snapshot.refresh(DDATA_CWD, { force: true });
+	const forcedAgain = h.snapshot.refresh(DDATA_CWD, { force: true });
+	release();
+	const [a, b, c] = await Promise.all([plain, forced, forcedAgain]);
+	assert.equal(sshCount, 2, "one plain read plus one forced read, the second force coalesces");
+	assert.equal((a.stageWeb as { releaseName: string }).releaseName, "aaaaaaa-old");
+	assert.equal((b.stageWeb as { releaseName: string }).releaseName, "37af7f4-new");
+	assert.deepEqual(b, c);
+});
+
+test("transient failures keep last-known-good records with lastError; other failures replace them", async () => {
+	let mode: "ok" | "timeout" | "down" | "auth" = "ok";
+	const h = harness({
+		ssh: async () =>
+			mode === "ok"
+				? ok("releases/37af7f4-x")
+				: mode === "timeout"
+					? { code: null, stdout: "", stderr: "", timedOut: true }
+					: mode === "down"
+						? { code: 255, stdout: "", stderr: "ssh: connect to host: No route to host" }
+						: { code: 255, stdout: "", stderr: "Permission denied (publickey)." },
+		gh: async () => (mode === "ok" ? ghOk() : { code: null, stdout: "", stderr: "", timedOut: true }),
+	});
+	const goodAt = h.clock.t;
+	await h.snapshot.refresh(DDATA_CWD);
+	mode = "timeout";
+	h.clock.t += MINUTE;
+	let evidence = await h.snapshot.refresh(DDATA_CWD, { force: true });
+	assert.deepEqual(evidence.stageWeb, { releaseName: "37af7f4-x", observedAt: goodAt, lastError: "timeout" });
+	assert.deepEqual(evidence.stageFirebase, { headSha: FB_SHA, runId: 123, observedAt: goodAt, lastError: "timeout" });
+	mode = "down";
+	evidence = await h.snapshot.refresh(DDATA_CWD, { force: true });
+	assert.deepEqual(evidence.stageWeb, { releaseName: "37af7f4-x", observedAt: goodAt, lastError: "unavailable" });
+	const cached = JSON.parse(h.fs.files.get(CACHE)?.data ?? "{}");
+	assert.deepEqual(cached.stageWeb, { releaseName: "37af7f4-x", observedAt: goodAt, lastError: "unavailable" });
+	mode = "auth";
+	evidence = await h.snapshot.refresh(DDATA_CWD, { force: true });
+	assert.deepEqual(evidence.stageWeb, { error: "auth" });
+	mode = "ok";
+	h.clock.t += MINUTE;
+	evidence = await h.snapshot.refresh(DDATA_CWD, { force: true });
+	assert.deepEqual(evidence.stageWeb, { releaseName: "37af7f4-x", observedAt: h.clock.t });
+});
+
+test("a transient failure without a prior record reports the error", async () => {
+	const h = harness({ ssh: async () => ({ code: null, stdout: "", stderr: "", timedOut: true }) });
+	assert.deepEqual((await h.snapshot.refresh(DDATA_CWD)).stageWeb, { error: "timeout" });
+});
+
+test("a cache with fetchedAt in the future is treated as expired", async () => {
+	const future = JSON.stringify({
+		version: 1,
+		fetchedAt: 1_800_000_000_000 + 60 * MINUTE,
+		stageWeb: { releaseName: "aaaaaaa-old", observedAt: 1 },
+	});
+	const h = harness({ files: { [CACHE]: future } });
+	const evidence = await h.snapshot.refresh(DDATA_CWD);
+	assert.equal(h.calls.length, 2);
+	assert.equal((evidence.stageWeb as { releaseName: string }).releaseName, "37af7f4-captcha-disabled");
+});
+
+test("a failed cache write removes its temp file", async () => {
+	const fs = fakeFs({ [KEY]: "PRIVATE" });
+	fs.rename = async () => {
+		throw new Error("EXDEV");
+	};
+	const h = harness({ fs });
+	const evidence = await h.snapshot.refresh(DDATA_CWD);
+	assert.equal((evidence.stageWeb as { releaseName: string }).releaseName, "37af7f4-captcha-disabled");
+	assert.ok(fs.ops.some((op) => op.startsWith("unlink ")));
+	assert.deepEqual([...fs.files.keys()].filter((k) => k.startsWith(CACHE)), []);
+});
+
+test("nodeExec maps a timeout to timedOut and a maxBuffer overflow to outputLimit (local node only)", async () => {
+	const slow = await nodeExec(process.execPath, ["-e", "setTimeout(() => {}, 5000)"], { timeoutMs: 200 });
+	assert.equal(slow.timedOut, true);
+	assert.notEqual(slow.outputLimit, true);
+	const loud = await nodeExec(process.execPath, ["-e", "process.stdout.write('x'.repeat(10000))"], { timeoutMs: 5000, maxBufferBytes: 64 });
+	assert.equal(loud.outputLimit, true);
+	assert.notEqual(loud.timedOut, true);
+});
+
+test("an output-limit overflow maps to failed, not timeout", async () => {
+	const h = harness({ ssh: async () => ({ code: null, stdout: "", stderr: "", outputLimit: true }) });
+	assert.deepEqual((await h.snapshot.refresh(DDATA_CWD)).stageWeb, { error: "failed" });
+});
+
+test("git runs asynchronously: no synchronous child process in the refresher", async () => {
+	const source = readFileSync(new URL("../lib/ddata-env-snapshot.ts", import.meta.url), "utf8");
+	assert.ok(!/execFileSync|spawnSync|execSync/.test(source));
+	const pending = nodeGitAsync(tmpdir(), ["rev-parse", "HEAD"]);
+	assert.ok(pending instanceof Promise);
+	assert.equal(await pending, undefined);
 });
