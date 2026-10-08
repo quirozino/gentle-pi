@@ -1392,12 +1392,12 @@ test("Lab case at inner width 38 renders the approved layout", (t) => {
 		" Estado               sin verificación",
 		DOTS(38),
 		" ╭────────╮   ╭─────────╮   ╭────────╮",
-		" │ ⚒ Lab  │┄┄┄│ ◎ Stage │┄┄┄│ ★ Prod │",
+		" │ ⬢ Lab  │┄┄┄│ ◎ Stage │┄┄┄│ ★ Prod │",
 		" ╰────────╯   ╰─────────╯   ╰────────╯",
 		DOTS(38),
 		" ◈ Entorno  paso 1 de 3 · construcción",
 		DOTS(38),
-		" ⚒ Lab             HEAD · 731c35826fe2",
+		" ⬢ Lab             HEAD · 731c35826fe2",
 		DOTS(38),
 		" ◎ Stage    ≠ 37af7f4-captcha-disabled",
 		DOTS(38),
@@ -1422,7 +1422,7 @@ test("no group line exceeds the inner width at 38, 46 and 30, in both panel styl
 
 test("boxes and connectors take their step's role: current accent, passed success with ✓, pending dim", () => {
 	let rows = renderShellSidebarBar(envModel(OTHER_RELEASE), recordingMatrixTheme, 46);
-	assert.ok(paintedIn(rows, "accent", "╭────────╮") && paintedIn(rows, "accent", "│ ⚒ Lab  │"), "current Lab box in accent");
+	assert.ok(paintedIn(rows, "accent", "╭────────╮") && paintedIn(rows, "accent", "│ ⬢ Lab  │"), "current Lab box in accent");
 	assert.ok(paintedIn(rows, "dim", "│ ◎ Stage │") && paintedIn(rows, "dim", "│ ★ Prod │"), "pending boxes dim");
 	assert.ok(paintedIn(rows, "dim", "┄┄┄"), "dotted connector towards pending");
 	rows = renderShellSidebarBar(envModel(AT_STAGE), recordingMatrixTheme, 46);
@@ -1440,7 +1440,7 @@ test("detail rows carry icons in their step colour and values in their tone", ()
 	const offline = { stageWeb: { releaseName: "731c358-x", observedAt: ENV_NOW, lastError: "timeout" as const } };
 	let rows = renderShellSidebarBar(envModel(offline), recordingMatrixTheme, 54);
 	assert.ok(paintedIn(rows, "accent", "◈"), "Entorno icon in accent");
-	assert.ok(paintedIn(rows, "success", "⚒"), "passed Lab icon in success");
+	assert.ok(paintedIn(rows, "success", "⬢"), "passed Lab icon in success");
 	assert.ok(paintedIn(rows, "accent", "◎"), "current Stage icon in accent");
 	assert.ok(paintedIn(rows, "dim", "★"), "pending Producción icon dim");
 	assert.ok(paintedIn(rows, "warning", "sin conexión · en vivo · 731c358-x"), "the offline warning keeps its tone");
@@ -1452,7 +1452,7 @@ test("a dotted separator sits between every detail row and between verifier rows
 	useCardStyle(t, CARD_STYLE.NEON);
 	const report: ShellBarModel["promotion"] = { kind: "captured", report: { candidateId: "lib/x.ts", step: "validacion-stage", verdict: "APTO" } };
 	const lines = groupLines(renderShellSidebarBar(envModel(OTHER_RELEASE, undefined, { promotion: report }), recordingMatrixTheme, 46));
-	const keys = ["Fase ODD", "Candidato", "Paso", "Veredicto", "◈ Entorno", "⚒ Lab", "◎ Stage", "★ Producción", "⛁ Backend"];
+	const keys = ["Fase ODD", "Candidato", "Paso", "Veredicto", "◈ Entorno", "⬢ Lab", "◎ Stage", "★ Producción", "⛁ Backend"];
 	const rowOf = (key: string) => lines.findIndex((line) => line.startsWith(` ${key} `));
 	for (const [i, key] of keys.entries()) {
 		const at = rowOf(key);
@@ -1508,8 +1508,16 @@ test("the group paints with theme roles only, never hex", () => {
 
 test("no pipeline (non-DDATA cwd) or another theme hides the environment rows", () => {
 	const none = flattened(renderShellSidebarBar(model(), recordingMatrixTheme, 60));
-	assert.doesNotMatch(none, /Entorno|Backend|⚒|╭─/);
+	assert.doesNotMatch(none, /Entorno|Backend|⬢|╭─/);
 	assert.match(none, /Fase ODD/);
 	const gentle = flattened(renderShellSidebarBar(envModel(AT_STAGE), { ...recordingMatrixTheme, name: "Gentle" }, 60));
 	assert.doesNotMatch(gentle, /Entorno|Backend|Stage|Fase ODD/);
+});
+
+test("environment glyphs are text symbols, never emoji (emoji render two columns wide)", () => {
+	for (const evidence of [OTHER_RELEASE, AT_STAGE]) {
+		const text = renderShellSidebarBar(envModel(evidence), recordingMatrixTheme, 46).join("\n");
+		const emoji = [...text].filter((ch) => /\p{Emoji}/u.test(ch) && !/[0-9#*]/.test(ch));
+		assert.deepEqual(emoji, [], `no emoji glyphs in the environment group: ${emoji.join(" ")}`);
+	}
 });

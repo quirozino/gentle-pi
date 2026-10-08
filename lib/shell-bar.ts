@@ -158,7 +158,7 @@ const PROMOTION_TONE_ROLE: Record<PromotionRowTone, string> = { warning: ROLE.WA
 // Widths are measured with visibleWidth, like every other row in this file.
 const ENV_ROLE = { CURRENT: "accent", PASSED: "success", PENDING: "dim", SEPARATOR: "dim" } as const;
 const ENV_TONE_ROLE: Record<DdataEnvTone, string> = { warning: ROLE.WARNING, failure: ROLE.FAILURE, running: ROLE.RUNNING, info: "syntaxType" };
-const STEP_ICON: Record<DdataPipeline["steps"][number]["id"], string> = { lab: "⚒", stage: "◎", production: "★" };
+const STEP_ICON: Record<DdataPipeline["steps"][number]["id"], string> = { lab: "⬢", stage: "◎", production: "★" };
 const ENTORNO_ICON = "◈";
 const BACKEND_ICON = "⛁";
 const PASSED_MARK = "✓";
@@ -207,7 +207,7 @@ export function renderDdataStepBoxes(pipeline: DdataPipeline, theme: ShellBarThe
 	];
 }
 
-/** The plain one-line pipeline (`⚒ Lab › ◎ Stage › ★ Prod`), clipped to `width`. */
+/** The plain one-line pipeline (`⬢ Lab › ◎ Stage › ★ Prod`), clipped to `width`. */
 export function renderDdataPipelineLine(pipeline: DdataPipeline, theme: ShellBarTheme, width: number): string {
 	if (width <= 0) return "";
 	const line = pipeline.steps
