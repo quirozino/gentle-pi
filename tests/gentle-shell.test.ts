@@ -5951,7 +5951,7 @@ test("gentleShell records SSE rate-limit headers from provider responses", async
 
 test("gentleShell ignores incomplete Codex headers and retains the last real quota without assuming 5h", async () => {
 	const { pi, handlers } = fakePi();
-	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fakeFetch({}, false).fetchFn, now: () => 0 });
+	gentleShell(pi, { ...BAR_ON, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fakeFetch({}, false).fetchFn, now: () => 0 });
 	const { ctx, ui } = fakeContext();
 	await fire(handlers, "session_start", ctx);
 	const respond = (headers: Record<string, string>) => {
@@ -7049,6 +7049,9 @@ test("an explicit session binding routes the Usage scope ahead of the pin and th
 		const { pi, commands } = fakePi();
 		gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fakeFetch(NAN_QUOTA_PAYLOAD).fetchFn, now: () => 1_788_600_000_000, resolveWorktree: () => ({ root: "/repo", commonDir }) });
 		const { ctx, ui } = fakeContext({ token: JWT });
+		// The fork's panel draws no active-provider mark, so the session's own
+		// model must not be the codex route this test keeps out of the scope.
+		(ctx as unknown as { model: unknown }).model = { id: "glm5.3", provider: "nan", reasoning: true, contextWindow: 200_000 };
 		const opened = commands.get("gentle:usage")!.handler("", ctx);
 		await settle();
 		const lines = openPanelLines(ui).join("\n");

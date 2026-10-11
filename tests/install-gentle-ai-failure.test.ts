@@ -16,6 +16,8 @@ function postinstall(failure: string) {
 		mkdirSync(scripts, { recursive: true });
 		copyFileSync(new URL("../scripts/install-gentle-ai.mjs", import.meta.url), join(scripts, "install-gentle-ai.mjs"));
 		copyFileSync(new URL("../scripts/install-tui-mode-setting.mjs", import.meta.url), join(scripts, "install-tui-mode-setting.mjs"));
+		// The fork's postinstall also imports the engram chrome patch; it only runs after a successful install.
+		copyFileSync(new URL("../scripts/patch-engram-chrome.mjs", import.meta.url), join(scripts, "patch-engram-chrome.mjs"));
 		writeFileSync(join(scripts, "gentle-ai-installer.mjs"), `export const INSTALLER_VERSION = "4.0.0";\nexport async function installGentleAi() {\n${failure}\n}\n`);
 		return spawnSync(process.execPath, [join(scripts, "install-gentle-ai.mjs")], { encoding: "utf8",
 			env: { ...process.env, GENTLE_PI_AGENT_HOME: join(root, "agent"), GENTLE_PI_SKIP_GENTLE_AI_INSTALL: "0" } });

@@ -3375,7 +3375,7 @@ test("each subagent_run timeline block is scoped to only the task it launched, n
 	const rendered = (tools.get("subagent_list_agents") as unknown as { renderResult(result: unknown, options: { expanded: boolean; isPartial: boolean }, theme: unknown, context: { args: unknown; toolCallId: string }): { render(width: number): string[] } }).renderResult(
 		listResult, { expanded: true, isPartial: false }, plainTheme, { args: {}, toolCallId: "call-c" },
 	).render(72);
-	assert.deepEqual(rendered, ["- explore (global): maps things"], "the answer text alone, unchanged");
+	assert.deepEqual(rendered, ["- explore (global): maps things [declared tools (not verified): read, grep]"], "the answer text alone, unchanged");
 
 	// The launching tools are where the duplicate showed: call-a's block draws
 	// the card once, and its result adds only the tool's own output under it.

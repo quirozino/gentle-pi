@@ -120,7 +120,8 @@ test("expanded discovery has a fixed height even with dozens of rich records and
 				const rows = view.render(width);
 				assert.ok(rows.length <= 16, `${style}/${width}: ${rows.length} physical rows`);
 				for (const row of rows) assert.ok(visibleWidth(row) <= width);
-				if (style === CARD_STYLE.FLOAT && width === 140) assert.ok(rows.some(row => stripAnsi(row).trimStart().startsWith("▎")), "exercise real float chrome, not its no-background fallback");
+				// Fork: float cards keep a frame (FRAMED_FLOAT_CHROME), so real float chrome is told apart by its painted background.
+				if (style === CARD_STYLE.FLOAT && width === 140) assert.ok(rows.some(row => row.includes("\x1b[48;2;20;20;20m")), "exercise real float chrome, not its no-background fallback");
 				if (width === 140) {
 					const output = stripAnsi(rows.join("\n"));
 					assert.match(output, /9 without recent metadata/);
