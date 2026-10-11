@@ -39,9 +39,9 @@ Runner: `pnpm test`; typecheck `CI=true pnpm run typecheck`.
 
 ## Tasks
 - [x] T1 Merge upstream/main, resolve the 15 conflicting files, `pnpm install --frozen-lockfile`. Route: delegated (15 conflicts, 417 changed files; writer trigger).
-- [ ] T2 Audit new upstream UI (installer/upgrade prompts, startup update offer, any new cards/panels) for raw ANSI/hex; route through theme roles. Route: delegated.
-- [ ] T3 Verify: typecheck, full suite vs base baseline, survival tests (shell-card, agents-widget, gentle-agents, selection-frame-trim, gentle-ai-renderer, quiet-tool-frame-glyphs), Matrix-Green byte-identical, headless pi load smoke from the worktree, `check:pi-contracts`. Route: delegated.
-- [ ] T4 Hand-off: report how to switch the live tree (WIP carry-over plan, `pnpm install --frozen-lockfile`, gentle-studio `verify-customizations.mjs`, `patch-pi` if Pi core changed, restart, rollback branch). Route: inline.
+- [x] T2 Audit new upstream UI (installer/upgrade prompts, startup update offer, any new cards/panels) for raw ANSI/hex; route through theme roles. Route: delegated (read-only verifier). One hit, left as is (see evidence).
+- [x] T3 Verify: typecheck, full suite vs base baseline, survival tests (shell-card, agents-widget, gentle-agents, selection-frame-trim, gentle-ai-renderer, quiet-tool-frame-glyphs), Matrix-Green byte-identical, headless pi load smoke from the worktree, `check:pi-contracts`. Route: delegated.
+- [x] T4 Hand-off: report how to switch the live tree (WIP carry-over plan, `pnpm install --frozen-lockfile`, gentle-studio `verify-customizations.mjs`, `patch-pi` if Pi core changed, restart, rollback branch). Route: inline.
 
 ## Conflicting files (dry-run merge-tree)
 assets/orchestrator-delegation.md, docs/gentle-shell.md,
@@ -106,5 +106,38 @@ Strategy: exception-ok (upstream merge; size is upstream's, not authored).
   suffix, compact bar opt-in, no active-provider mark, engram patch import,
   framed float chrome).
 
+## Verification (T2/T3, independent read-only verifier)
+- Conflict resolutions (`git show --remerge-diff b50901dad`) and post-merge
+  fixes reviewed: all fork features and upstream behaviors kept, no duplicate
+  paths, no hardcoded colours. Verdict pass-with-minor.
+- Minor 1: `lib/gentle-shell-update-panel.ts:59` raw RGB rose (upstream).
+  Pre-Pi bundled-only update offer, no theme exists yet; never reached from a
+  source-checkout fork. Left unchanged.
+- Minor 2: `lib/orchestrator-message-card.ts:61-66` (new upstream card) uses
+  `cardRunningLine` without the fork's card sweep. Consistency gap, not a
+  regression; follow-up candidate.
+- Theme: `git diff 8dbab6b49 HEAD -- themes/` empty; sha256 `f80ced6e1bda…`
+  equals gentle-studio `THEME_SHA256`.
+- `npm run check:pi-contracts`: 7 passed, 0 drifted. Installed pi 1.1.0.
+- RPC smoke (isolated HOME/PI_CODING_AGENT_DIR/GENTLE_PI_CONFIG_HOME,
+  packages=[worktree]): exit 0, no extension errors; new command
+  `gentle:status-timing`. PTY smoke: no fallback-to-system warning, Matrix-Green
+  RGB values painted, double frame visible.
+- RDD: full range 8dbab6b49..HEAD high, consent granted, START refused
+  `lens_context_budget_exceeded` (72,878 lines; no authority). Post-merge range
+  b50901dad..HEAD medium `under_budget` (pending in slice).
+
+## Hand-off (T4)
+- The sync changes 2 of the live tree's WIP files (`lib/shell-usage.ts`,
+  `tests/shell-usage.test.ts`), so a plain `git switch` in the live tree is
+  refused. Carry-over plan: back up the WIP as a patch file, then
+  `git switch -m` (three-way merge of local changes, kept uncommitted).
+- The branch is checked out in this worktree; remove the worktree before
+  switching the live tree to it.
+- package.json/pnpm-lock unchanged vs base; still run
+  `pnpm install --frozen-lockfile`. Then gentle-studio
+  `node scripts/verify-customizations.mjs`, `patch-pi` only if it reports
+  drift, full pi restart. Rollback branch: `feat/usage-parsers-collapsible-sidebar`.
+
 ## Next step
-T2.
+User decision: switch the live install to this branch.
