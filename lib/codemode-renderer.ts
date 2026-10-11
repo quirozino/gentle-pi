@@ -10,8 +10,8 @@ import {
 import { getCapabilities, imageFallback, type Component } from "@earendil-works/pi-tui";
 import { liveCardSweep, scheduleCardSweep, type SweepRowContext } from "./card-sweep.ts";
 import {
-	CARD_TONE, cardAwaitingResult, cardBodyText, cardBottom, cardLine, cardRunningLine, cardTop, floatRows, markCardResult,
-	type CardRowContext, type CardSweep, type CardTheme, type CardTone,
+	CARD_TONE, cardAwaitingResult, cardBodyText, cardBottom, cardLine, cardRunningLine, cardStyle, cardTop, floatRows, markCardResult,
+	type CardRowContext, type CardStyle, type CardSweep, type CardTheme, type CardTone,
 } from "./shell-card.ts";
 import { sanitizeTerminalText, stripAnsi } from "./terminal-theme.ts";
 
@@ -94,6 +94,8 @@ class CodemodeCard implements Component {
 	// A running card sweeps its frame; `state` is the row state both parts share.
 	private readonly sweep?: CardSweep;
 	private readonly state?: unknown;
+	// Content and expansion belong to this component; only layout and row state can change.
+	private cachedFrame?: { width: number; style: CardStyle; running: boolean; lines: string[] };
 
 	constructor(theme: CardTheme, tone: CardTone, body: (width: number) => string[], top: boolean, hint?: string, afterBody = false, row?: CardRowContext, sweep?: CardSweep, state?: unknown) {
 		this.theme = theme;
@@ -111,21 +113,30 @@ class CodemodeCard implements Component {
 		const target = Math.max(0, Math.floor(width));
 		if (target === 0) return [];
 		const running = this.top && this.row !== undefined && cardAwaitingResult(this.row);
+		const style = cardStyle();
+		// A sweeping frame changes every animation tick, so only a still card caches.
+		if (!this.sweep && this.cachedFrame?.width === target && this.cachedFrame.style === style && this.cachedFrame.running === running) {
+			return this.cachedFrame.lines;
+		}
 		// The call row alone while it closes the frame, else the head (call) or
 		// tail (partial result) of the card the sweep travels around.
 		const split = !this.sweep || running ? undefined : { state: this.state, part: this.top ? "head" as const : "tail" as const };
-		return floatRows(this.tone, this.theme, target, (inner, roles) => {
-			const lines = this.body(inner).map((line, index) => cardLine(line, this.tone, this.theme, inner, roles?.body(index)));
+		const lines = floatRows(this.tone, this.theme, target, (inner, roles) => {
+			const rows = this.body(inner).map((line, index) => cardLine(line, this.tone, this.theme, inner, roles?.body(index)));
 			return {
 				head: this.top ? [cardTop({ title: "Code", glyph: "λ", body: [], tone: this.tone }, this.theme, inner, this.hint, roles?.head(0))] : [],
-				body: running ? [...lines, cardRunningLine(this.tone, this.theme, inner, roles?.body(lines.length))] : lines,
+				body: running ? [...rows, cardRunningLine(this.tone, this.theme, inner, roles?.body(rows.length))] : rows,
 				bottom: this.top && !running ? undefined : cardBottom(this.tone, this.theme, inner, undefined, roles?.bottom()),
 				afterHeading: !this.top && !this.afterBody,
 			};
 		}, { sweep: this.sweep, split });
+		this.cachedFrame = this.sweep ? undefined : { width: target, style, running, lines };
+		return lines;
 	}
 
-	invalidate(): void {}
+	invalidate(): void {
+		this.cachedFrame = undefined;
+	}
 }
 
 /** Replace presentation only: execute, schema and every loadout/exposure field retain their references. */

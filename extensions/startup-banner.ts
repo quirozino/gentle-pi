@@ -19,6 +19,7 @@ import { PI_SUBCOMMANDS } from "../lib/gentle-shell-launcher.ts";
 import { countEnabledMcpServers, MCP_STATUS_KEY, mcpStatusText } from "../lib/mcp-servers-status.ts";
 import { afterShellChrome } from "../lib/shell-chrome-gate.ts";
 import { armBuiltInHeaderHold, installBuiltInHeaderHold, releaseBuiltInHeaderHold } from "../lib/builtin-header-hold.ts";
+import { bundledGentlePiConfigHome } from "../lib/gentle-shell-bundled.ts";
 
 
 export type BannerColor = "pink" | "cyan" | "yellow" | "green";
@@ -83,7 +84,7 @@ function rgb(r: number, g: number, b: number, text: string): string {
 }
 
 function gentleAiConfigHome(): string {
-  return process.env.GENTLE_PI_CONFIG_HOME ?? join(os.homedir(), ".pi", "gentle-ai");
+  return bundledGentlePiConfigHome(process.env) ?? process.env.GENTLE_PI_CONFIG_HOME ?? join(os.homedir(), ".pi", "gentle-ai");
 }
 
 function bannerConfigPath(configHome = gentleAiConfigHome()): string {
@@ -730,6 +731,12 @@ export default function (pi: ExtensionAPI) {
     ownership = { installed: false, rendered: false };
     ownershipReported = false;
     if (!ctx.hasUI) {
+      releaseBuiltInHeaderHold();
+      return;
+    }
+    // Delegated rpc children report hasUI=true but have no terminal to paint
+    // (gentle-shell#1690); do not rely on a piped stdout lacking rows/columns.
+    if (process.env.GENTLE_PI_AGENTS_CHILD === "1") {
       releaseBuiltInHeaderHold();
       return;
     }

@@ -30,6 +30,23 @@ const binUrl = new URL("../bin/gentle-shell.mjs", import.meta.url);
 const binPath = fileURLToPath(binUrl);
 const packageRoot = dirname(dirname(binPath));
 
+test("Herdr activity is discoverable through the isolated launcher package", async () => {
+	const { buildPiInvocation } = await import("../lib/gentle-shell-launcher.ts");
+	const manifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
+	assert.ok(manifest.pi.extensions.includes("./extensions"));
+	assert.ok(existsSync(join(packageRoot, "extensions", "gentle-herdr-activity.ts")));
+	for (const takeOver of [false, true]) {
+		const invocation = buildPiInvocation({
+			runtime: { kind: "path", command: "fake-pi", args: [] },
+			home: { mode: "isolated", source: "default", dir: "/fake/home" },
+			packageRoot, declaration: undefined, takeOver, otherPackagePaths: [],
+			passthrough: [], baseEnv: {}, homedir: "/fake", cwd: "/fake/cwd",
+		});
+		assert.ok(invocation.args.includes(packageRoot));
+		assert.equal(invocation.env.PI_CODING_AGENT_DIR, "/fake/home");
+	}
+});
+
 test("real adjacent Pi resolves through its public entry without PATH or a runtime override", (t) => {
 	const f = fixture(t);
 	const result = spawnSync(process.execPath, [binPath, "--version"], {
@@ -53,13 +70,17 @@ function standaloneLauncher(t: test.TestContext) {
 	writeFileSync(join(root, "bin", "gentle-shell.mjs"), readFileSync(binPath));
 	writeFileSync(join(root, "package.json"), readFileSync(join(packageRoot, "package.json")));
 	for (const dir of ["runtime", "scripts"]) symlinkSync(join(packageRoot, dir), join(root, dir), "junction");
-	const env = { HOME: f.home, USERPROFILE: f.home, PATH: `${root}${delimiter}${dirname(process.execPath)}`, GENTLE_SHELL_NO_AUTO_SETUP: "1" };
+	const env = {
+		HOME: f.home, USERPROFILE: f.home, PATH: `${root}${delimiter}${dirname(process.execPath)}`, GENTLE_SHELL_NO_AUTO_SETUP: "1",
+		// Keep executable discovery isolated without making cmd shims unlaunchable.
+		...(process.platform === "win32" ? { ComSpec: process.env.ComSpec, SystemRoot: process.env.SystemRoot } : {}),
+	};
 	return { ...f, root, env, launcher: join(root, "bin", "gentle-shell.mjs") };
 }
 
 test("a genuinely absent adjacent peer falls back to PATH", (t) => {
 	const f = standaloneLauncher(t);
-	writePiScript(join(f.root, "pi"), "0.99.2");
+	writePathPiScript(f.root, "0.99.2");
 	const result = spawnSync(process.execPath, [f.launcher, "--version"], { env: f.env, encoding: "utf8" });
 	assert.equal(result.status, 0, result.stderr);
 	assert.match(result.stdout, /pi 0\.99\.2/);
@@ -71,8 +92,7 @@ test("malformed adjacent metadata never silently falls back to PATH; env overrid
 	mkdirSync(join(peer, "dist", "bundle"), { recursive: true });
 	writeFileSync(join(peer, "dist", "index.js"), "");
 	writePiScript(join(peer, "dist", "bundle", "cli.js"), "0.99.1");
-	const fallback = join(f.root, "pi");
-	writePiScript(fallback, "0.99.2");
+	const fallback = writePathPiScript(f.root, "0.99.2");
 	const base = { name: "@earendil-works/pi-coding-agent", type: "module", exports: { ".": { import: "./dist/index.js" } }, bin: { pi: "dist/bundle/cli.js" } };
 	for (const metadata of [{ ...base, name: "impostor" }, { ...base, bin: { pi: "../outside.js" } }, { ...base, bin: {} }, "malformed"]) {
 		writeFileSync(join(peer, "package.json"), metadata === "malformed" ? "{" : JSON.stringify(metadata));
@@ -117,6 +137,9 @@ function fixture(t: test.TestContext) {
 		GENTLE_SHELL_PI: piScript,
 		GENTLE_SHELL_NO_AUTO_SETUP: "1",
 	};
+	// A suite launched from inside a Gentle Shell session inherits the outer
+	// session's recorded user Pi home, which --link now honours first (#2015).
+	delete env.GENTLE_SHELL_USER_PI_HOME;
 	return { root, home, gentleShellHome, piScript, env };
 }
 
@@ -152,12 +175,24 @@ function writePiScript(path: string, version: string, removeExitCode = 0) {
 			"  PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR,",
 			"  GENTLE_PI_AGENT_HOME: process.env.GENTLE_PI_AGENT_HOME,",
 			"  GENTLE_SHELL_USER_PI_HOME: process.env.GENTLE_SHELL_USER_PI_HOME,",
+			"  GENTLE_SHELL_CHILD_PACKAGE_INJECTION: process.env.GENTLE_SHELL_CHILD_PACKAGE_INJECTION,",
 			"}));",
 			"process.exit(0);",
 			"",
 		].join("\n"),
 	);
 	chmodSync(path, 0o755);
+}
+
+// Match the real platform lookup: POSIX accepts the shebang executable,
+// Windows discovers a .cmd shim via PATHEXT. Bundled JS peers stay unchanged.
+function writePathPiScript(root: string, version: string): string {
+	const script = join(root, process.platform === "win32" ? "pi-fixture.mjs" : "pi");
+	writePiScript(script, version);
+	if (process.platform !== "win32") return script;
+	const command = join(root, "pi.cmd");
+	writeFileSync(command, `@echo off\r\n"${process.execPath}" "${script}" %*\r\nexit /b %errorlevel%\r\n`);
+	return command;
 }
 
 function run(env: NodeJS.ProcessEnv, args: string[], options: { cwd?: string } = {}) {
@@ -642,6 +677,20 @@ test("forwarded args reach pi after the injected extension flags, in order", (t)
 	assert.equal(payload.GENTLE_PI_AGENT_HOME, f.gentleShellHome);
 });
 
+// #1690: the spawned pi must carry the launcher's own -e set so the subagent
+// runner can forward it to delegated children; a stale inherited value is replaced.
+test("an isolated launch without a gentle-pi declaration signals its package injection to pi", (t) => {
+	const f = fixture(t);
+	const stale = JSON.stringify({ version: 1, noExtensions: true, extensionPaths: [join(f.root, "outer")] });
+	for (const inherited of [undefined, stale]) {
+		const result = run({ ...f.env, GENTLE_SHELL_CHILD_PACKAGE_INJECTION: inherited }, ["--mode", "rpc"]);
+		assert.equal(result.status, 0, result.stderr);
+		const payload = JSON.parse(result.stdout);
+		assert.deepEqual(payload.args.slice(0, 2), ["-e", packageRoot]);
+		assert.deepEqual(JSON.parse(payload.GENTLE_SHELL_CHILD_PACKAGE_INJECTION), { version: 1, noExtensions: false, extensionPaths: [packageRoot] });
+	}
+});
+
 test("an isolated launch keeps its own agent home and carries the user's original Pi home, even when nested", (t) => {
 	const f = fixture(t);
 	const base = { ...f.env };
@@ -667,6 +716,10 @@ test("an isolated launch keeps its own agent home and carries the user's origina
 	const linked = launch({ PI_CODING_AGENT_DIR: customHome }, ["--link"]);
 	assert.equal(linked.PI_CODING_AGENT_DIR, customHome);
 	assert.equal(linked.GENTLE_SHELL_USER_PI_HOME, customHome);
+	// --link from inside an isolated session reuses the preserved original home (#2015).
+	const nestedLinked = launch({ PI_CODING_AGENT_DIR: f.gentleShellHome, GENTLE_SHELL_USER_PI_HOME: customHome }, ["--link"]);
+	assert.equal(nestedLinked.PI_CODING_AGENT_DIR, customHome);
+	assert.equal(nestedLinked.GENTLE_SHELL_USER_PI_HOME, customHome);
 	assert.equal(existsSync(join(customHome, "sessions")), false);
 });
 
@@ -845,6 +898,119 @@ test("gentle-shell setup passes through the gentle-ai exit code", (t) => {
 
 	const result = run(env, ["setup"]);
 	assert.equal(result.status, 3);
+});
+
+// Windows cannot execute a shebang fixture directly; use the launcher's
+// existing .cmd support without changing the runtime under test.
+function setupMCPExecutable(path: string): string {
+	chmodSync(path, 0o755);
+	if (process.platform !== "win32") return path;
+	const wrapper = `${path}.cmd`;
+	writeFileSync(wrapper, `@echo off\r\n"${process.execPath}" "${path}" %*\r\n`);
+	return wrapper;
+}
+
+test("setup MCP migration warns without re-enabling configured servers", async (t) => {
+	for (const mode of ["link", "path"] as const) {
+		await t.test(mode, (t) => {
+			const f = fixture(t);
+			const target = mode === "link" ? join(f.home, ".pi", "agent") : f.gentleShellHome;
+			mkdirSync(join(target, "npm"), { recursive: true });
+			const settingsPath = join(target, "settings.json");
+			const settings = { theme: "kanagawa", packages: ["npm:pi-mcp-adapter", "npm:other"], extensions: ["-builtin:mcp", "user-extension.ts"] };
+			writeFileSync(settingsPath, JSON.stringify(settings));
+			const npmPath = join(target, "npm", "package.json");
+			writeFileSync(npmPath, JSON.stringify({ dependencies: { "pi-mcp-adapter": "^3.0.0", other: "1.0.0" } }));
+			const mcpPath = join(target, "mcp.json");
+			const mcpText = '{"mcpServers":{"context7":{"command":"npx","args":["context7-mcp"]}}}';
+			writeFileSync(mcpPath, mcpText);
+			const installer = join(f.root, "retire-adapter.mjs");
+			writeFileSync(installer, [
+				"#!/usr/bin/env node",
+				'import { readFileSync, writeFileSync } from "node:fs";',
+				'import { join } from "node:path";',
+				'const home = process.env.PI_CODING_AGENT_DIR;',
+				'const settingsPath = join(home, "settings.json");',
+				'const settings = JSON.parse(readFileSync(settingsPath, "utf8"));',
+				'settings.packages = settings.packages.filter(p => p !== "npm:pi-mcp-adapter");',
+				'writeFileSync(settingsPath, JSON.stringify(settings));',
+				'const npmPath = join(home, "npm", "package.json");',
+				'const manifest = JSON.parse(readFileSync(npmPath, "utf8"));',
+				'delete manifest.dependencies["pi-mcp-adapter"];',
+				'writeFileSync(npmPath, JSON.stringify(manifest));',
+				'console.log("installed");',
+			].join("\n"));
+			assert.equal(readFileSync(installer, "utf8").split("\n")[0], "#!/usr/bin/env node");
+			const args = mode === "link" ? ["--link", "setup"] : ["--home", target, "setup"];
+			const result = run({ ...f.env, PI_CODING_AGENT_DIR: target, GENTLE_SHELL_PI: setupMCPExecutable(f.piScript), GENTLE_SHELL_GENTLE_AI_BIN: setupMCPExecutable(installer) }, args);
+			assert.equal(result.status, 0, result.stderr);
+			assert.equal(result.stdout, "installed\n");
+			assert.equal(result.stderr, `gentle-shell: provisioning ${target} with the gentle-ai companion packages\n` +
+				`gentle-shell: WARNING: Pi built-in MCP is disabled in ${settingsPath}; pi-mcp-adapter is absent or inactive, so servers in ${mcpPath} will not load. If you want these servers enabled, remove -builtin:mcp from extensions in ${settingsPath}, then restart Pi. If MCP is intentionally disabled, keep the setting.\n`);
+			assert.deepEqual(JSON.parse(readFileSync(settingsPath, "utf8")), { ...settings, packages: ["npm:other"] });
+			assert.deepEqual(JSON.parse(readFileSync(npmPath, "utf8")), { dependencies: { other: "1.0.0" } });
+			assert.equal(readFileSync(mcpPath, "utf8"), mcpText);
+		});
+	}
+});
+
+test("setup MCP migration keeps enabled, unconfigured and dry-run homes unchanged", async (t) => {
+	for (const scenario of ["enabled", "unconfigured", "dry-run", "active-adapter"] as const) {
+		await t.test(scenario, (t) => {
+			const f = fixture(t);
+			const target = join(f.home, ".pi", "agent");
+			mkdirSync(target, { recursive: true });
+			const settingsPath = join(target, "settings.json");
+			const settingsText = JSON.stringify({ extensions: scenario === "enabled" ? [] : ["-builtin:mcp"], packages: scenario === "active-adapter" ? ["npm:pi-mcp-adapter@3.0.0"] : [] });
+			writeFileSync(settingsPath, settingsText);
+			const mcpPath = join(target, "mcp.json");
+			const mcpText = JSON.stringify({ mcpServers: scenario === "unconfigured" ? {} : { context7: { command: "npx" } } });
+			writeFileSync(mcpPath, mcpText);
+			const installer = join(f.root, "fake-gentle-ai.mjs");
+			writeGentleAiScript(installer);
+			const dryRun = scenario === "dry-run";
+			const result = run({ ...f.env, PI_CODING_AGENT_DIR: target, GENTLE_SHELL_PI: setupMCPExecutable(f.piScript), GENTLE_SHELL_GENTLE_AI_BIN: setupMCPExecutable(installer) }, ["--link", "setup", ...(dryRun ? ["--dry-run"] : [])]);
+			assert.equal(result.status, 0, result.stderr);
+			assert.deepEqual(JSON.parse(result.stdout).args, ["install", "--agent", "pi", "--scope", "global", ...(dryRun ? ["--dry-run"] : [])]);
+			assert.doesNotMatch(result.stderr, /WARNING:|built-in MCP/);
+			assert.equal(readFileSync(settingsPath, "utf8"), settingsText);
+			assert.equal(readFileSync(mcpPath, "utf8"), mcpText);
+		});
+	}
+});
+
+test("setup MCP migration warns when adapter resource loading is disabled", async (t) => {
+	for (const adapter of [
+		{ source: "npm:pi-mcp-adapter", autoload: false },
+		{ source: "npm:pi-mcp-adapter", autoload: false, extensions: ["!**"] },
+		{ source: "npm:pi-mcp-adapter", extensions: ["!**"] },
+		{ source: "npm:pi-mcp-adapter", extensions: ["index.ts"] },
+	]) {
+		await t.test(JSON.stringify(adapter), (t) => {
+			const f = fixture(t);
+			const target = join(f.home, ".pi", "agent");
+			mkdirSync(target, { recursive: true });
+			const settingsPath = join(target, "settings.json");
+			const uncertain = "extensions" in adapter && adapter.extensions.includes("index.ts");
+			const settingsText = JSON.stringify({ extensions: ["-builtin:mcp"], packages: [adapter] });
+			writeFileSync(settingsPath, settingsText);
+			const mcpPath = join(target, "mcp.json");
+			const mcpText = '{"mcpServers":{"context7":{"command":"npx"}}}';
+			writeFileSync(mcpPath, mcpText);
+			const installer = join(f.root, "fake-gentle-ai.mjs");
+			writeGentleAiScript(installer);
+			const result = run({ ...f.env, PI_CODING_AGENT_DIR: target, GENTLE_SHELL_PI: setupMCPExecutable(f.piScript), GENTLE_SHELL_GENTLE_AI_BIN: setupMCPExecutable(installer) }, ["--link", "setup"]);
+			assert.equal(result.status, 0, result.stderr);
+			assert.deepEqual(JSON.parse(result.stdout).args, ["install", "--agent", "pi", "--scope", "global"]);
+			const diagnosis = uncertain
+				? "pi-mcp-adapter activity cannot be confirmed from its extension filters, so servers in " + mcpPath + " may not load"
+				: "pi-mcp-adapter is absent or inactive, so servers in " + mcpPath + " will not load";
+			assert.equal(result.stderr, `gentle-shell: provisioning ${target} with the gentle-ai companion packages\n` +
+				`gentle-shell: WARNING: Pi built-in MCP is disabled in ${settingsPath}; ${diagnosis}. If you want these servers enabled, remove -builtin:mcp from extensions in ${settingsPath}, then restart Pi. If MCP is intentionally disabled, keep the setting.\n`);
+			assert.equal(readFileSync(settingsPath, "utf8"), settingsText);
+			assert.equal(readFileSync(mcpPath, "utf8"), mcpText);
+		});
+	}
 });
 
 // --- setup subcommand's self-heal for a missing package-local binary -------

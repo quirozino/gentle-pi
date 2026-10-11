@@ -14,6 +14,8 @@ import { oddPhaseLabel, type OddPhase } from "./odd-phase.ts";
 import { promotionSidebarRows, type PromotionRowTone, type PromotionState } from "./promotion-report.ts";
 import type { DdataEnvTone, DdataPipeline } from "./ddata-env.ts";
 import type { DdataEnvView } from "./ddata-env-snapshot.ts";
+import type { RunningJobDisplay } from "./jobs-sidebar-state.ts";
+import { JOB_GLYPH } from "./background-jobs-tools.ts";
 
 type Presentation = Pick<VisualSettings, "density" | "visibility">;
 type HeaderPresentation = Presentation & Partial<Pick<VisualSettings, "headerPlacement" | "statusPlacement">>;
@@ -26,6 +28,7 @@ export { gaugeTone, renderGauge, type GaugeTone };
 
 export interface ShellBarModel {
 	review?: ReviewSidebarSnapshot;
+	jobs?: RunningJobDisplay[];
 	profile?: string;
 	/**
 	 * Models the active profile routes to. The Usage block lists one row per
@@ -75,11 +78,10 @@ export interface ShellBarModel {
 }
 
 // The live header row above the fullscreen rail: session identity plus the
-// two counters that tick every frame (context, cost). Deliberately narrower
-// than ShellBarModel — extension statuses and the working/thinking state
-// never reach the header, so there is nothing on this type for them to leak
-// through.
+// live counters. Only the structured jobs count may join context/cost when
+// Status is absent; opaque extension statuses and working state stay excluded.
 export interface ShellHeaderModel {
+	jobs?: number;
 	cwd: string;
 	branch: string | null;
 	dirty: number | undefined;
@@ -95,9 +97,14 @@ export interface ShellHeaderModel {
 	usage: ProviderUsage | undefined;
 }
 
-export function buildShellHeaderModel(model: ShellBarModel): ShellHeaderModel {
+export function buildShellHeaderModel(model: ShellBarModel, showJobs = false): ShellHeaderModel {
 	const { cwd, branch, dirty, modelId, effort, profile, contextPercent, costTotal, subscription, usage } = model;
-	return { cwd, branch, dirty, modelId, effort, profile, contextPercent, costTotal, subscription, usage };
+	return { cwd, branch, dirty, modelId, effort, profile, contextPercent, costTotal, subscription, usage,
+		...(showJobs && model.jobs?.length ? { jobs: model.jobs.length } : {}) };
+}
+
+export function shellJobsCount(count: number): string {
+	return `${JOB_GLYPH} ${count} job${count === 1 ? "" : "s"}`;
 }
 
 /** A column span (`[start, end)`, in the rendered line's visible columns) a click must land in to hit the usage segment. */
@@ -323,6 +330,13 @@ export function shellBarEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
 	return value === "1" || value === "true" || value === "on";
 }
 
+// Herdr's native Pi detection matches Pi's standard loader row ("⠋ Working...").
+// Inside a Herdr pane keep that row, which Pi shows only during real activity,
+// so detection works without a local manifest override.
+export function keepNativeWorkingRow(env: NodeJS.ProcessEnv = process.env): boolean {
+	return env.HERDR_ENV === "1" && env.GENTLE_PI_AGENTS_CHILD !== "1";
+}
+
 export function formatTokens(count: number): string {
 	if (count < 1000) return count.toString();
 	if (count < 10_000) return `${(count / 1000).toFixed(1)}k`;
@@ -379,6 +393,7 @@ function buildSegments(model: ShellBarModel, theme: ShellBarTheme, presentation?
 		location,
 		...(presentation?.visibility.modelDetails === false ? [] : [modelSegment]),
 		...(presentation?.visibility.usageCost === false ? [] : [context, cost, ...(usage ? [usage] : [])]),
+		...(model.jobs?.length ? [theme.fg(ROLE.STATUS, shellJobsCount(model.jobs.length))] : []),
 		...statuses,
 	];
 }
@@ -700,6 +715,10 @@ function sidebarCardRows(model: ShellBarModel, theme: ShellBarTheme, width: numb
 				// Unknown scope is an internal sentinel, not something the user acts on.
 				...(model.review.scope !== REVIEW_SCOPE_UNAVAILABLE ? [label(sanitizeStatus(model.review.scope))] : []),
 			],
+		}] : []),
+		...(model.jobs?.length ? [{
+			title: "Jobs",
+			lines: [...model.jobs].sort((a, b) => b.startedAt - a.startedAt).map((job) => value(sanitizeStatus(job.label))),
 		}] : []),
 		{ title: "Integrations", lines: model.statuses.length
 			? model.statuses.map((status) => theme.fg(ROLE.STATUS, sanitizeStatus(status)))
@@ -1036,7 +1055,11 @@ export function shellHeaderUsageHit(chrome: ShellHeaderChrome, x: number, y: num
 
 function headerContent(model: ShellHeaderModel, theme: ShellBarTheme, width: number, usageHint?: string, presentation?: Presentation, tick?: number): ShellHeaderResult {
 	const targetWidth = Math.max(0, Math.floor(width));
-	const ctxCost = joinSegments([contextSegment(model.contextPercent, theme, tick), costSegment(model.costTotal, model.subscription, theme)], theme);
+	const jobs = model.jobs ? theme.fg(ROLE.STATUS, shellJobsCount(model.jobs)) : undefined;
+	const ctxCost = joinSegments([
+		...(jobs ? [jobs] : []),
+		...(presentation?.visibility.usageCost === false ? [] : [contextSegment(model.contextPercent, theme, tick), costSegment(model.costTotal, model.subscription, theme)]),
+	], theme);
 	const windows = model.usage ? (selectUsageLimit(model.usage, model.modelId)?.windows ?? []) : [];
 	const leftStages = headerLeftStages(model, theme, presentation?.visibility.modelDetails !== false, tick)
 		.map((stage) => presentation?.density === "minimal" ? stage.slice(1) : stage);
@@ -1057,7 +1080,7 @@ function headerContent(model: ShellHeaderModel, theme: ShellBarTheme, width: num
 	];
 	for (const { leftIndex, usageStage } of attempts) {
 		const usageText = usageStage ? usageSegmentText(windows, theme, usageStage, usageHint, tick) : undefined;
-		const right = presentation?.visibility.usageCost === false ? "" : usageText ? joinSegments([ctxCost, usageText], theme) : ctxCost;
+		const right = usageText ? joinSegments([ctxCost, usageText], theme) : ctxCost;
 		const left = joinSegments(leftStages[leftIndex]!, theme);
 		if (visibleWidth(left) + (right ? RIGHT_PADDING : 0) + visibleWidth(right) > targetWidth) continue;
 		const text = left + " ".repeat(targetWidth - visibleWidth(left) - visibleWidth(right)) + right;
@@ -1067,6 +1090,10 @@ function headerContent(model: ShellHeaderModel, theme: ShellBarTheme, width: num
 	}
 	const animatedText = bannerFrame(HEADER_BRAND_TEXT, tick, { stride: HEADER_BRAND_STRIDE });
 	const brand = presentation?.density === "minimal" ? "" : fixedWidthBrand(animatedText, theme);
+	if (jobs && visibleWidth(jobs) <= targetWidth) {
+		const left = visibleWidth(brand) + RIGHT_PADDING + visibleWidth(jobs) <= targetWidth ? brand : "";
+		return { text: left + " ".repeat(targetWidth - visibleWidth(left) - visibleWidth(jobs)) + jobs };
+	}
 	return { text: visibleWidth(brand) <= targetWidth ? brand : "" };
 }
 
@@ -1076,11 +1103,14 @@ export function renderShellBelowInputFloat(model: ShellBarModel, theme: ShellBar
 	if (presentation?.headerPlacement !== "below-input") return undefined;
 	const targetWidth = Math.max(0, Math.floor(width));
 	if (floatHeaderPaint(theme, targetWidth, () => "") === undefined) return undefined;
-	const chrome = renderShellHeaderChrome(buildShellHeaderModel(model), theme, targetWidth, usageHint, presentation, model.tick);
+	const chrome = renderShellHeaderChrome(buildShellHeaderModel(model, presentation.statusPlacement === "hidden"), theme, targetWidth, usageHint, presentation, model.tick);
 	const changesRow = changes?.files.length && presentation.visibility.changes !== false
 		? floatHeaderRow(theme, targetWidth, (inner) => renderChangesWidget(changes, theme, inner)[0] ?? "")
 		: undefined;
-	const statuses = presentation.statusPlacement === "hidden" ? [] : model.statuses.map(sanitizeStatus).filter(Boolean);
+	const statuses = presentation.statusPlacement === "hidden" ? [] : [
+		...(model.jobs?.length ? [shellJobsCount(model.jobs.length)] : []),
+		...model.statuses.map(sanitizeStatus).filter(Boolean),
+	];
 	const statusRow = statuses.length
 		? floatHeaderRow(theme, targetWidth, () => joinSegments(statuses.map((status) => theme.fg(ROLE.STATUS, status)), theme))
 		: undefined;
@@ -1106,7 +1136,7 @@ export function renderShellBelowInputFloat(model: ShellBarModel, theme: ShellBar
 export function renderShellBottomOnlyBar(model: ShellBarModel, theme: ShellBarTheme, width: number, usageHint?: string, presentation?: HeaderPresentation, changes?: ChangesModel): string[] {
 	const grouped = renderShellBelowInputFloat(model, theme, width, usageHint, presentation, changes);
 	if (grouped) return grouped.rows;
-	const headerModel = buildShellHeaderModel(model);
+	const headerModel = buildShellHeaderModel(model, true);
 	// Neon, missing backgrounds and sub-minimum widths keep the old row count.
 	const rows = [headerContent(headerModel, theme, width, usageHint, presentation, model.tick).text];
 	const statuses = model.statuses.map(sanitizeStatus).filter((status) => status.length > 0).map((status) => theme.fg(ROLE.STATUS, status));

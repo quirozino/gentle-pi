@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -14,10 +14,12 @@ import {
 	NativeReviewCliV216,
 	NativeReviewIntegrationError,
 	createNodeExecFileAdapter,
+	gentleAiProcessEnvironment,
 	isNativeReviewUnachievableVerbRefused,
 	type ExecFileAdapter,
 	type NativeTargetStatusRequest,
 } from "../lib/native-review-cli.ts";
+import { setBundledInstallForTesting } from "../lib/gentle-shell-bundled.ts";
 
 const fixture = (name: string): Record<string, unknown> => JSON.parse(
 	readFileSync(join(process.cwd(), "tests", "fixtures", "devbinary", name), "utf8"),
@@ -418,6 +420,63 @@ test("native START queries STATUS then executes only the provider-rendered order
 	]);
 });
 
+// Captured from the released gentle-ai 4.0.0 binary, which predates START
+// lens selection (verify-always-rdd-high S8).
+const LENS_SELECTION_UNSUPPORTED_FAILURE = {
+	schema: "gentle-ai.review-integration.failure/v2", contract: "gentle-ai.review-integration/v2", operation: "review.status",
+	phase: "preflight", code: "invalid_request", message: "The negotiated review request is invalid.", mutation_outcome: "not_started",
+	authority_applicability: "not_evaluated", retry_safe: true, replayability: "not_replayable", required_inputs: [],
+	next_action: "correct_request", cause: "flag provided but not defined: -lenses",
+};
+
+test("native START preflights the agent lens selection through STATUS", async () => {
+	const tokens = [
+		"--contract=gentle-ai.review-integration/v2", "--cwd=/repo", `--target=${TARGET}`,
+		"--projection=workspace", "--agent=pi", "--consent=relay",
+		"--lenses=review-risk,review-reliability", "--lenses-reason=changes token parsing",
+	];
+	const queue = queuedAdapter([
+		{ stdout: JSON.stringify(negotiatedStartStatus(TARGET, tokens)) },
+		{ stdout: JSON.stringify(fixture("start-v3-zero-lens-closed.captured.json")) },
+	]);
+	await client(queue.adapter).start({ cwd: "/repo", targetIdentity: TARGET, lenses: ["review-risk", "review-reliability"], lensesReason: "changes token parsing" });
+	assert.deepEqual(queue.calls.map((call) => call.arguments), [
+		["review", "status", "--contract", "gentle-ai.review-integration/v2", "--cwd", "/repo", "--projection", "workspace", "--agent", "pi",
+			"--lenses", "review-risk,review-reliability", "--lenses-reason", "changes token parsing", "--next-transition"],
+		["review", "start", ...tokens],
+	]);
+});
+
+test("native START falls back to the tier default when the provider predates lens selection", async () => {
+	const tokens = [
+		"--contract=gentle-ai.review-integration/v2", "--cwd=/repo", `--target=${TARGET}`,
+		"--projection=workspace", "--agent=pi", "--consent=relay",
+	];
+	const queue = queuedAdapter([
+		{ stdout: JSON.stringify(LENS_SELECTION_UNSUPPORTED_FAILURE), exitCode: 1 },
+		{ stdout: JSON.stringify(negotiatedStartStatus(TARGET, tokens)) },
+		{ stdout: JSON.stringify(fixture("start-v3-zero-lens-closed.captured.json")) },
+	]);
+	const result = await client(queue.adapter).start({ cwd: "/repo", targetIdentity: TARGET, lenses: ["review-risk"], lensesReason: "changes token parsing" });
+	assert.equal(result.action, "closed");
+	assert.deepEqual(queue.calls.map((call) => call.arguments), [
+		["review", "status", "--contract", "gentle-ai.review-integration/v2", "--cwd", "/repo", "--projection", "workspace", "--agent", "pi",
+			"--lenses", "review-risk", "--lenses-reason", "changes token parsing", "--next-transition"],
+		["review", "status", "--contract", "gentle-ai.review-integration/v2", "--cwd", "/repo", "--projection", "workspace", "--agent", "pi", "--next-transition"],
+		["review", "start", ...tokens],
+	]);
+});
+
+test("native START never retries a selection refusal that is not an unknown lens flag", async () => {
+	const refusal = { ...LENS_SELECTION_UNSUPPORTED_FAILURE, cause: 'review status --lenses names unknown lens "security"' };
+	const queue = queuedAdapter([{ stdout: JSON.stringify(refusal), exitCode: 1 }]);
+	await assert.rejects(
+		() => client(queue.adapter).start({ cwd: "/repo", targetIdentity: TARGET, lenses: ["security"], lensesReason: "why" }),
+		(error: unknown) => error instanceof NativeReviewIntegrationError && error.failureEnvelope.cause === refusal.cause,
+	);
+	assert.equal(queue.calls.length, 1);
+});
+
 test("native START relays provider-owned intended-untracked selection and transition argv verbatim", async () => {
 	const selectionValue = JSON.stringify(["new.ts", "nested/other.ts"]);
 	const selectionTokens = ["--selection-kind=untracked", "--selection-json={{value}}", "--selection-proof=provider-issued"];
@@ -493,6 +552,85 @@ test("native consent completion decodes START/v4 and replays its provider argv u
 	if (answered.kind !== "started") throw new Error("expected started consent result");
 	assert.equal(answered.start.nextTransition?.execute?.operation, "review.status");
 	assert.deepEqual(queue.calls[0]?.arguments, consent.choices[0].invocation.split(" ").slice(1));
+});
+
+// Builds a Pi-bound consent/v3 envelope whose choices carry `--lenses-reason`
+// rendered exactly as `rendered`, plus the argv Pi must replay for the granted
+// choice when that rendering splits into `reason`.
+function consentWithLensReason(rendered: string, reason: string): { consent: ReturnType<typeof decodeReviewConsentV3>; expected: readonly string[] } {
+	const rawConsent = fixture("consent-v3.captured.json");
+	rawConsent.agent = "pi";
+	const expected: string[][] = [];
+	for (const choice of rawConsent.choices as Record<string, unknown>[]) {
+		const bound = String(choice.invocation)
+			.replace(/--cwd \S+ --target/, "--cwd /repo --target")
+			.replace(" --consent ", " --agent pi --lenses-reason REASON --consent ");
+		choice.invocation = bound.replace("REASON", () => rendered);
+		expected.push(bound.split(" ").slice(1).map((word) => word === "REASON" ? reason : word));
+	}
+	const consent = decodeReviewConsentV3(rawConsent, "pi");
+	assert.ok(consent.choices[0].invocation.includes(` --lenses-reason ${rendered} `));
+	return { consent, expected: expected[0]! };
+}
+
+// Answers the granted choice and proves Pi launched the package binary exactly
+// once with the exact argv, through execFile and never through a shell.
+async function assertLensReasonReplay(rendered: string, reason: string): Promise<void> {
+	const { consent, expected } = consentWithLensReason(rendered, reason);
+	const queue = queuedAdapter([{ stdout: JSON.stringify(reviewingStartV4(consent.targetIdentity)) }]);
+	const answered = await client(queue.adapter).answerConsent({ cwd: "/repo", consent, answer: "granted" });
+	assert.equal(answered.kind, "started");
+	assert.equal(queue.calls.length, 1);
+	assert.equal(queue.calls[0]?.file, "/package/.gentle-ai/gentle-ai");
+	assert.deepEqual(queue.calls[0]?.arguments, expected);
+	const replayed = queue.calls[0]?.arguments ?? [];
+	const reasonIndex = replayed.indexOf("--lenses-reason");
+	assert.deepEqual(replayed.slice(reasonIndex, reasonIndex + 2), ["--lenses-reason", reason]);
+}
+
+// gentle-ai renders a lens reason with POSIX shell quoting, so an apostrophe
+// arrives as `'...'\''...'`. Pi splits it into exact argv and never runs a shell.
+test("native consent answer replays a POSIX-quoted apostrophe lens reason as one exact argument", async () => {
+	await assertLensReasonReplay("'touched the package'\\''s parser'", "touched the package's parser");
+});
+
+test("native consent answer treats a backslash before an apostrophe outside quotes as an escaped apostrophe", async () => {
+	await assertLensReasonReplay("package\\'s", "package's");
+});
+
+test("native consent answer treats a backslash before a double quote outside quotes as an escaped double quote", async () => {
+	await assertLensReasonReplay('say\\"x\\"', 'say"x"');
+});
+
+test("native consent answer joins a token across a backslash-escaped space outside quotes", async () => {
+	await assertLensReasonReplay("touched\\ parser", "touched parser");
+});
+
+test("native consent answer keeps a backslash before any other character verbatim outside quotes", async () => {
+	await assertLensReasonReplay("C:\\repo", "C:\\repo");
+	await assertLensReasonReplay("\\\\server\\share", "\\\\server\\share");
+	await assertLensReasonReplay("touched\\nparser", "touched\\nparser");
+});
+
+test("native consent answer keeps single quotes literal around double quotes and backslashes", async () => {
+	await assertLensReasonReplay("'say \"x\" and \\y'", 'say "x" and \\y');
+	await assertLensReasonReplay("'touched the package\\'", "touched the package\\");
+});
+
+test("native consent answer keeps backslashes verbatim inside double quotes", async () => {
+	await assertLensReasonReplay('"C:\\repo\\"', "C:\\repo\\");
+});
+
+test("native consent answer still rejects an unterminated quote before launching the provider", async () => {
+	for (const rendered of ["'touched the package'\\''s parser", "'touched the package", '"say x']) {
+		const { consent } = consentWithLensReason(rendered, "unused");
+		const queue = queuedAdapter([]);
+		await assert.rejects(
+			() => client(queue.adapter).answerConsent({ cwd: "/repo", consent, answer: "granted" }),
+			(error: unknown) => error instanceof TypeError && error.message === "Native consent invocation has invalid quoting",
+		);
+		assert.deepEqual(queue.calls, []);
+	}
 });
 
 test("native START refuses invalid committed-range and target bindings before STATUS", async () => {
@@ -908,4 +1046,29 @@ test("acknowledge-approved keeps its fail-closed stderr and typed refusal discip
 		() => client(queuedAdapter([{ stdout: "", stderr: "Error: approved acknowledgement names no live compact authority\n", exitCode: 1 }]).adapter).acknowledgeApproved({ argumentTokens: ACKNOWLEDGEMENT_TOKENS, cwd: "/repo", binding: ACKNOWLEDGED_BINDING }),
 		(error: unknown) => error instanceof NativeReviewCliError && error.code === NATIVE_REVIEW_ERROR_CODE.EMPTY_OUTPUT,
 	);
+});
+
+// S9: this package running from a bundled install (the testing overlay stands
+// in for its location; the detection itself is tested with real installs in
+// gentle-ai-binary-isolation.test.ts) and the launcher's GENTLE_SHELL_PREFIX.
+function bundledIsolation(t: { after: (fn: () => void) => void }): { prefix: string; env: NodeJS.ProcessEnv } {
+	const prefix = realpathSync(mkdtempSync(join(tmpdir(), "gentle-ai-isolation-site-")));
+	setBundledInstallForTesting({ root: prefix });
+	t.after(() => {
+		setBundledInstallForTesting(undefined);
+		rmSync(prefix, { recursive: true, force: true });
+	});
+	return { prefix, env: { PATH: "/usr/bin", GENTLE_SHELL_PREFIX: prefix } };
+}
+
+test("the central gentle-ai environment carries Gentle AI's isolation variables only in a bundled install", (t) => {
+	const { prefix, env } = bundledIsolation(t);
+	const bundled = gentleAiProcessEnvironment(env);
+	assert.equal(bundled.GENTLE_AI_HOME, join(prefix, "gentle-ai"));
+	assert.equal(bundled.GENTLE_AI_PI_CONFIG_DIR, join(prefix, "config", "gentle-ai"));
+	assert.equal(bundled.GENTLE_PI_CONFIG_HOME, join(prefix, "config"), "the parent Gentle AI 4.0.0 reads it as");
+	assert.equal(bundled.GENTLE_AI_NO_SELF_UPDATE, "1");
+	assert.equal(bundled.GENTLE_PI_REVIEW_RELAY_CONTRACT, "gentle-pi.review-relay/v1");
+	const ordinary = gentleAiProcessEnvironment({ PATH: "/usr/bin" });
+	assert.deepEqual(ordinary, { PATH: "/usr/bin", GENTLE_PI_REVIEW_RELAY_CONTRACT: "gentle-pi.review-relay/v1" });
 });
