@@ -104,7 +104,7 @@ test("mouse events move into the frame's content box only while framed", () => {
 	const dialog = new Dialog();
 	setAlertFrameTheme(() => MATRIX);
 	dialog.render(40);
-	assert.deepEqual(alertFrameMouseEvent(dialog, { x: 5, width: 40 }), { x: 3, width: 36 });
+	assert.deepEqual(alertFrameMouseEvent(dialog, { x: 5, width: 40 }), { x: 3, width: 36 }, "no y: columns only");
 	assert.equal(alertFrameMouseEvent(dialog, { x: 1, width: 40 }), undefined, "a click on the rail hits nothing");
 	setAlertFrameTheme(() => OTHER);
 	dialog.render(40);
@@ -194,4 +194,22 @@ test("a notice added under Matrix falls back to plain text if the theme changes"
 test("missing notice methods are recorded as contract drift", () => {
 	installAlertNoticeFrames(class Bare {} as never);
 	assert.ok(missingPiContracts().has("interactive-mode-notices"));
+});
+
+test("content without a top rule gains the ╔ row, so mouse rows shift down by one", () => {
+	const component = frameAlertComponent({ render: (_width: number) => ["row0", "row1"], invalidate() {} });
+	setAlertFrameTheme(() => MATRIX);
+	assert.equal(component.render(40).length, 4);
+	assert.deepEqual(alertFrameMouseEvent(component, { x: 5, y: 1, width: 40, height: 4 }), { x: 3, y: 0, width: 36, height: 2 });
+	assert.equal(alertFrameMouseEvent(component, { x: 5, y: 0, width: 40, height: 4 }), undefined, "the ╔ row hits nothing");
+	assert.equal(alertFrameMouseEvent(component, { x: 5, y: 3, width: 40, height: 4 }), undefined, "the ╚ row hits nothing");
+});
+
+test("content that opens with a rule keeps its rows: the ╔ row replaces it", () => {
+	const Dialog = dialogClass();
+	installAlertDialogFrames({ ExtensionSelectorComponent: Dialog, ExtensionInputComponent: dialogClass(), ExtensionEditorComponent: dialogClass() });
+	setAlertFrameTheme(() => MATRIX);
+	const dialog = new Dialog();
+	const rows = dialog.render(40).length;
+	assert.deepEqual(alertFrameMouseEvent(dialog, { x: 5, y: 1, width: 40, height: rows }), { x: 3, y: 1, width: 36, height: rows });
 });

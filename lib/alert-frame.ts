@@ -84,12 +84,12 @@ function isRule(line: string): boolean {
 
 // pi's dialogs open and close with a DynamicBorder (a full-width ─ rule); the
 // double frame replaces them, so a leading and a trailing rule are dropped.
-function withoutEdgeRules(lines: string[]): string[] {
+function withoutEdgeRules(lines: string[]): { body: string[]; droppedTop: boolean } {
 	let start = 0;
 	let end = lines.length;
 	if (end > start && isRule(lines[start]!)) start += 1;
 	if (end > start && isRule(lines[end - 1]!)) end -= 1;
-	return lines.slice(start, end);
+	return { body: lines.slice(start, end), droppedTop: start === 1 };
 }
 
 /** Wraps already-rendered inner lines (rendered at alertFrameInnerWidth) in the double frame. */
@@ -107,31 +107,38 @@ export function frameAlertLines(inner: string[], width: number, theme: AlertThem
 	return [lead + paint(`╔${rule}╗`), ...body, lead + paint(`╚${rule}╝`)];
 }
 
-// Widths at which each component was last drawn framed, so mouse events can
-// be moved into the frame's content box (the ╔ row replaces pi's ─ rule, so
-// rows line up; columns shift by the margin and the left rail).
-const framedWidths = new WeakMap<object, number>();
+// How each component was last drawn framed, so mouse events can be moved into
+// the frame's content box: columns shift by the margin and the left rail; rows
+// line up when the ╔ row replaced a top ─ rule and shift by one when it was added.
+type FramedLayout = { width: number; rowOffset: number; stockRows: number };
+const framedLayouts = new WeakMap<object, FramedLayout>();
 const CONTENT_OFFSET_X = LEFT_MARGIN + 1;
 
 function framedRender(owner: object, stock: (width: number) => string[], width: number): string[] {
 	const theme = framedTheme(width);
 	if (!theme) {
-		framedWidths.delete(owner);
+		framedLayouts.delete(owner);
 		return stock(width);
 	}
-	framedWidths.set(owner, width);
-	return frameAlertLines(withoutEdgeRules(stock(alertFrameInnerWidth(width))), width, theme);
+	const stockLines = stock(alertFrameInnerWidth(width));
+	const { body, droppedTop } = withoutEdgeRules(stockLines);
+	framedLayouts.set(owner, { width, rowOffset: droppedTop ? 0 : 1, stockRows: stockLines.length });
+	return frameAlertLines(body, width, theme);
 }
 
-type MouseEventLike = { x: number; width: number } & Record<string, unknown>;
+type MouseEventLike = { x: number; width: number; y?: number; height?: number } & Record<string, unknown>;
 
 /** Moves a mouse event into the content box when its owner was drawn framed at that width. */
 export function alertFrameMouseEvent<T extends MouseEventLike>(owner: object, event: T): T | undefined {
-	if (framedWidths.get(owner) !== event.width) return event;
+	const layout = framedLayouts.get(owner);
+	if (!layout || layout.width !== event.width) return event;
 	const innerWidth = alertFrameInnerWidth(event.width);
 	const x = event.x - CONTENT_OFFSET_X;
 	if (x < 0 || x >= innerWidth) return undefined;
-	return { ...event, x, width: innerWidth };
+	if (typeof event.y !== "number") return { ...event, x, width: innerWidth };
+	const y = event.y - layout.rowOffset;
+	if (y < 0 || y >= layout.stockRows) return undefined;
+	return { ...event, x, width: innerWidth, y, height: layout.stockRows };
 }
 
 type MouseHandler = (this: unknown, event: MouseEventLike) => unknown;
