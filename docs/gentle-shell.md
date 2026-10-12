@@ -46,6 +46,7 @@ Some fullscreen layout patches lean on undocumented pi internals: the startup-li
 
 - `npm run check:pi-contracts`: checks the `pi` on PATH. Each contract reports `passed`, `drifted` or `could-not-check`. It exits 1 only on drift.
 - `node --experimental-strip-types --test tests/pi-contracts.test.ts tests/startup-listing-margin.test.ts tests/builtin-header-hold.test.ts tests/window-frame.test.ts tests/shell-sidebar-layout.test.ts tests/selection-frame-trim.test.ts tests/user-message-frame.test.ts tests/startup-banner.test.ts tests/gentle-shell.test.ts`: the pinned geometry and the verbatim pi fixtures in `tests/fixtures/pi-contracts/`. Re-capture a fixture only after you review its drift.
+- You do not have to remember the first one: at the first interactive start of each pi version, Gentle Shell runs the same checks against the running pi and, only when something drifted or a patch turned itself off, shows one warning naming the pi version and the contracts. The same drift on the same pi version is announced once (`pi-contract-watch.json` in the Gentle Pi config home).
 
 The regular-mode compact bar replaces pi's three-line footer with a single line of segments:
 

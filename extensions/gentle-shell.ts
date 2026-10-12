@@ -12,6 +12,9 @@ import { installStartupListingMargin } from "../lib/startup-listing-margin.ts";
 import { installUserMessageFrame, setUserMessageFrameTheme } from "../lib/user-message-frame.ts";
 import { installAlertDialogFrames, installAlertNoticeFrames, setAlertFrameTheme } from "../lib/alert-frame.ts";
 import * as piCodingAgent from "@earendil-works/pi-coding-agent";
+import * as piTui from "@earendil-works/pi-tui";
+import { contractDriftNotice, locatePiInstall, PI_CONTRACT_WATCH_STATE } from "../lib/pi-contract-watch.ts";
+import { missingPiContracts } from "../lib/pi-contracts.ts";
 import * as os from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { buildShellHeaderModel, createUsageCollapse, renderShellBar, renderShellBelowInputFloat, renderShellBottomOnlyBar, renderShellHeaderChrome, keepNativeWorkingRow, renderShellSidebarCard, shellBarEnabled, shellEnabled, shellHeaderUsageHit, shellJobsCount, statusTitleText, type ShellBarModel, type ShellBarTheme, type ShellSidebarCard } from "../lib/shell-bar.ts";
@@ -2581,6 +2584,28 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	pi.on("session_start", async (_event, ctx) => {
 		setUserMessageFrameTheme(ctx.hasUI && isInteractiveMode(ctx.mode) ? () => ctx.ui.theme : () => undefined);
 		setAlertFrameTheme(ctx.hasUI && isInteractiveMode(ctx.mode) ? () => ctx.ui.theme : () => undefined);
+		// After a pi update, say once which layout patches turned themselves off
+		// (lib/pi-contract-watch.ts), off the startup path and never throwing.
+		const watchStore = globalThis as unknown as Record<symbol, boolean | undefined>;
+		const watchKey = Symbol.for("gentle-pi.pi-contract-watch");
+		if (ctx.hasUI && isInteractiveMode(ctx.mode) && !watchStore[watchKey]) {
+			watchStore[watchKey] = true;
+			setTimeout(() => {
+				try {
+					const install = locatePiInstall({ env });
+					if (!install) return;
+					const notice = contractDriftNotice({
+						piVersion: install.version,
+						source: (file) => install.source(file),
+						codingAgent: piCodingAgent as unknown as Record<string, unknown>,
+						tui: piTui as unknown as Record<string, unknown>,
+						statePath: join(gentlePiConfigHome(env), PI_CONTRACT_WATCH_STATE),
+						missing: missingPiContracts(),
+					});
+					if (notice) ctx.ui.notify(notice, "warning");
+				} catch { /* a startup check never breaks the session */ }
+			}, 0);
+		}
 		shellChrome.begin();
 		// pi falls back to `system` silently when the configured theme fails to
 		// load; say so once per session, off the startup path, never throwing.
