@@ -71,15 +71,24 @@ export function formatReviewConsentUi(consent: ReviewConsentV3): ReviewConsentUi
 	};
 }
 
+// The TUI prompt is a ui.custom, which herdr's prompt bridge treats as a
+// panel, not a question; this event tells gentle-ai's herdr lifecycle that a
+// real question is open (label "Review consent awaiting input").
+export const REVIEW_CONSENT_BLOCKED_EVENT = "gentle-pi:review-consent:blocked";
+
 export async function presentReviewConsentUi(
 	context: ExtensionContext,
 	consent: ReviewConsentEnvelope,
+	events?: { emit(channel: string, data: unknown): void },
 ): Promise<ReviewConsentUiSelection | undefined> {
 	if (!isPiConsentV3(consent)) return undefined;
 	const model = formatReviewConsentUi(consent);
+	const signal = (active: boolean) => { try { events?.emit(REVIEW_CONSENT_BLOCKED_EVENT, { active }); } catch { /* signalling never blocks the prompt */ } };
 	try {
 		if (context.mode === "tui") {
-			return await context.ui.custom<ReviewConsentUiSelection | undefined>((tui, theme, keybindings, done) => {
+			signal(true);
+			try {
+				return await context.ui.custom<ReviewConsentUiSelection | undefined>((tui, theme, keybindings, done) => {
 				const component = new ReviewConsentComponent({
 					content: model.content,
 					theme,
@@ -99,6 +108,9 @@ export async function presentReviewConsentUi(
 					},
 				});
 			});
+			} finally {
+				signal(false);
+			}
 		}
 		const selected = await context.ui.select(model.title, [...model.options]);
 		if (selected === model.options[0]) return { kind: "provider", answer: "granted" };

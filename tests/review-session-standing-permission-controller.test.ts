@@ -17,6 +17,7 @@ import {
 	HOST_REVIEW_SESSION_PERMISSION_LABEL,
 	formatReviewConsentUi,
 	presentReviewConsentUi,
+	REVIEW_CONSENT_BLOCKED_EVENT,
 } from "../lib/review-consent-ui.ts";
 
 function consentFixture(): Record<string, unknown> {
@@ -652,4 +653,21 @@ test("a package-owned child replays its exact pending ordinary grant from a sibl
 	broker.close();
 	childToParent.destroy();
 	parentToChild.destroy();
+});
+
+test("the TUI consent prompt marks herdr blocked while open, also when the UI fails", async () => {
+	const envelope = consent();
+	const model = formatReviewConsentUi(envelope);
+	const emitted: unknown[] = [];
+	const events = { emit: (channel: string, data: unknown) => emitted.push({ channel, data }) };
+	const ctx = { mode: "tui", ui: { custom: consentCustom(async () => model.options[1]) } } as unknown as ExtensionContext;
+	assert.deepEqual(await presentReviewConsentUi(ctx, envelope, events), { kind: "provider", answer: "declined" });
+	const failed = { mode: "tui", ui: { custom: consentCustom(async () => { throw new Error("UI unavailable"); }) } } as unknown as ExtensionContext;
+	assert.equal(await presentReviewConsentUi(failed, envelope, events), undefined);
+	assert.deepEqual(emitted, [
+		{ channel: REVIEW_CONSENT_BLOCKED_EVENT, data: { active: true } },
+		{ channel: REVIEW_CONSENT_BLOCKED_EVENT, data: { active: false } },
+		{ channel: REVIEW_CONSENT_BLOCKED_EVENT, data: { active: true } },
+		{ channel: REVIEW_CONSENT_BLOCKED_EVENT, data: { active: false } },
+	]);
 });

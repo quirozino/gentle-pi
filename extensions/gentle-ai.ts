@@ -257,7 +257,7 @@ import { insideGitWorktree, publishRddModeChip } from "../lib/rdd-mode-chip.ts";
 import { AutoPermissionRuntime, updateAutoPrompt, type AutoRuntimeClassifier } from "../lib/auto-permission-runtime.ts";
 import { AutoPermissionClassifier } from "../lib/auto-permission-classifier.ts";
 import { acquireChildStandingReviewPermissionClient, type ChildStandingReviewPermissionClient } from "../lib/review-session-standing-permission-ipc.ts";
-import { isPiConsentV3, presentReviewConsentUi } from "../lib/review-consent-ui.ts";
+import { isPiConsentV3, presentReviewConsentUi, REVIEW_CONSENT_BLOCKED_EVENT } from "../lib/review-consent-ui.ts";
 import {
 	captureReviewSessionIdentity,
 	grantReviewSessionPermission,
@@ -1760,6 +1760,7 @@ const HERDR_BLOCKER_LABEL = {
 	CHOICE: "Choice awaiting input",
 	GUARDED_CONFIRMATION: "Guarded command confirmation",
 	QUESTIONNAIRE: "Questionnaire awaiting input",
+	REVIEW_CONSENT: "Review consent awaiting input",
 } as const;
 
 type HerdrBlockerLabel = (typeof HERDR_BLOCKER_LABEL)[keyof typeof HERDR_BLOCKER_LABEL];
@@ -1774,15 +1775,18 @@ function createHerdrConfirmationLifecycle(events: ExtensionAPI["events"]): Herdr
 	let choiceActive = false;
 	let nativeQuestionnaireActive = false;
 	let legacyQuestionnaireActive = false;
+	let reviewConsentActive = false;
 	let emittedLabel: HerdrBlockerLabel | undefined;
 	const emitEffectiveBlocker = (): void => {
 		const nextLabel = choiceActive
 			? HERDR_BLOCKER_LABEL.CHOICE
 			: nativeQuestionnaireActive || legacyQuestionnaireActive
 				? HERDR_BLOCKER_LABEL.QUESTIONNAIRE
-				: pending > 0
-					? HERDR_BLOCKER_LABEL.GUARDED_CONFIRMATION
-					: undefined;
+				: reviewConsentActive
+					? HERDR_BLOCKER_LABEL.REVIEW_CONSENT
+					: pending > 0
+						? HERDR_BLOCKER_LABEL.GUARDED_CONFIRMATION
+						: undefined;
 		// Herdr bridges count active/inactive edges. Keep the first label until
 		// every source releases; relabel activations would leak a blocked count.
 		if ((nextLabel === undefined) === (emittedLabel === undefined)) return;
@@ -1800,6 +1804,12 @@ function createHerdrConfirmationLifecycle(events: ExtensionAPI["events"]): Herdr
 	events?.on?.(ASK_USER_QUESTION_BLOCKED_EVENT, (event) => {
 		if (!isRecord(event) || typeof event.active !== "boolean" || event.active === nativeQuestionnaireActive) return;
 		nativeQuestionnaireActive = event.active;
+		emitEffectiveBlocker();
+	});
+
+	events?.on?.(REVIEW_CONSENT_BLOCKED_EVENT, (event) => {
+		if (!isRecord(event) || typeof event.active !== "boolean" || event.active === reviewConsentActive) return;
+		reviewConsentActive = event.active;
 		emitEffectiveBlocker();
 	});
 
@@ -9942,7 +9952,7 @@ function createGentleAiExtensionForTesting(
 						? undefined
 						: permissionAlreadyActive
 							? { kind: "host-session" as const }
-							: await presentReviewConsentUi(ctx, eligiblePending.consent);
+							: await presentReviewConsentUi(ctx, eligiblePending.consent, pi.events);
 					if (selection !== undefined) {
 						const confirmedIdentity = await capturePermissionIdentity(ctx, permissionWorkspaceRoot);
 						if (initialEpoch !== undefined && confirmedIdentity !== undefined && sameReviewSessionIdentity(initialIdentity, confirmedIdentity) && reviewSessionPermissionEpoch(confirmedIdentity) === initialEpoch) {

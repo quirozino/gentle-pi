@@ -1682,8 +1682,8 @@ test(`${channel} emits only a private, balanced Herdr projection`, () => {
 	const privateHostDiscovery = "gentle:yolo:host-ui";
 	assert.equal(eventHandlers.has(privateHostDiscovery), true);
 	assert.deepEqual([...eventHandlers.keys()].filter(name => name !== privateHostDiscovery).sort(), [
-		"gentle-pi:ask-user-choice:blocked", "gentle-pi:ask-user-question:blocked", "rpiv:ask-user:blocked",
-	], "only the original three blocked channels remain besides the known private host adapter");
+		"gentle-pi:ask-user-choice:blocked", "gentle-pi:ask-user-question:blocked", "gentle-pi:review-consent:blocked", "rpiv:ask-user:blocked",
+	], "only the four blocked channels remain besides the known private host adapter");
 	assert.deepEqual(published, [], "registering host discovery emits no public event or private payload");
 	assert.equal(eventHandlers.has("gentle-pi:ask-user-choice:blocked"), true);
 	assert.equal(eventHandlers.has("rpiv:ask-user:blocked"), true);
@@ -4045,4 +4045,32 @@ test("Enter without a parent session id fails loud and writes nothing", async (t
 	assert.equal(existsSync(fixture.globalPath), false);
 	assert.equal(notifications.at(-1)?.severity, "warning");
 	resetSessionProfileBindingsForTesting();
+});
+
+test("an open Review consent prompt raises one labelled herdr blocker", () => {
+	type Handler = (event: unknown) => void;
+	const listeners = new Map<string, Handler[]>();
+	const emitted: Array<{ active: boolean; label?: string }> = [];
+	const pi = {
+		on() {},
+		events: {
+			on(channel: string, handler: Handler) {
+				listeners.set(channel, [...(listeners.get(channel) ?? []), handler]);
+			},
+			emit(channel: string, data: unknown) {
+				if (channel === "herdr:blocked") emitted.push(data as { active: boolean; label?: string });
+				for (const handler of listeners.get(channel) ?? []) handler(data);
+			},
+		},
+		registerCommand() {},
+		registerTool() {},
+	} as unknown as ExtensionAPI;
+	createGentleAiExtension({ nativeReviewCli: null })(pi);
+	pi.events.emit("gentle-pi:review-consent:blocked", { active: true });
+	pi.events.emit("gentle-pi:review-consent:blocked", { active: true });
+	pi.events.emit("gentle-pi:review-consent:blocked", { active: false });
+	assert.deepEqual(emitted, [
+		{ active: true, label: "Review consent awaiting input" },
+		{ active: false },
+	]);
 });
