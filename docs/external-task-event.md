@@ -2,7 +2,9 @@
 
 A pi extension tool that is not a Gentle subagent can show its run in the Agents card above the editor and in the `gentle:agents` overlay (alt+a): it appears in the task list, and its steps stream into the overlay's thread pane, which follows the newest step when follow mode (`f`) is on.
 
-The tasks are display-only. Gentle Agents never launches, cancels, persists, or messages them; the model's `subagent_list_tasks` can list them, but no tool can cancel or reply to them. They live for the current pi process only.
+The tasks are display-only. Gentle Agents never launches, cancels, persists, or messages them. The model can read them through `subagent_list_tasks`, `subagent_status`, and `subagent_result`, so never put anything there the model should not see; `subagent_cancel` and `subagent_send_message` report them as not running, and `subagent_continue` refuses them. They live for the current pi process only.
+
+Always emit `end`: a task without it stays on the Agents card as running until pi restarts.
 
 ## Emitting
 
