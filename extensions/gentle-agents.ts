@@ -31,6 +31,7 @@ import { AGENT_MODE, discoverAgents, formatModelRef, loadAgentsConfig, resolveAg
 import { readSessionProfileBinding, sessionOrPinModelProfiles } from "../lib/session-profile-binding.ts";
 import { resolveBackgroundSubagentsPolicy } from "../lib/background-subagents-policy.ts";
 import { installBackgroundCacheWarming } from "../lib/background-cache-warming.ts";
+import { installExternalTaskBridge } from "../lib/external-tasks.ts";
 import { isFinished, MISSING_TOOLS_NOTE_PREFIX, TASK_EVENT, TASK_STATUS, TaskStore, type AskRequest, type TaskRecord } from "../lib/agents-protocol.ts";
 import { AgentRunner, piCommand, abortReasonText, REQUESTED_TOOLS_ENV, type AskAnswer, type RunnerDeps, type TaskRequest } from "../lib/agents-runner.ts";
 import { parseChildPackageInjection } from "../lib/child-package-injection.ts";
@@ -622,7 +623,16 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		clearTaskMetrics();
 		unsubscribeMetrics();
 		unsubscribeScope();
+		unsubscribeExternalTasks();
 		scopeCache.clear();
+	});
+	// Other extensions' tool runs, shown as display-only tasks (docs/external-task-event.md).
+	const unsubscribeExternalTasks = installExternalTaskBridge({
+		events: pi.events,
+		store,
+		activeSessionId: () => activeSessionId(),
+		requestRender: () => requestRender(),
+		now: () => deps.now(),
 	});
 	let stopAllConfirmation: Promise<void> | undefined;
 
