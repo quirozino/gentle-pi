@@ -1,3 +1,4 @@
+import { frameAlertComponent } from "./alert-frame.ts";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ReviewConsentComponent, type ReviewConsentContent } from "./review-consent-component.ts";
 import type { ReviewConsentEnvelope, ReviewConsentV3 } from "./review-integration-v2.ts";
@@ -88,7 +89,7 @@ export async function presentReviewConsentUi(
 						: index === 1 ? { kind: "provider", answer: "declined" } : { kind: "host-session" }),
 					onCancel: () => done(undefined),
 				});
-				return {
+				return frameAlertComponent({
 					getActionOptions: () => component.getActionOptions(),
 					render: (width) => component.render(width),
 					invalidate: () => component.invalidate(),
@@ -96,7 +97,7 @@ export async function presentReviewConsentUi(
 						component.handleInput(data);
 						tui.requestRender();
 					},
-				};
+				});
 			});
 		}
 		const selected = await context.ui.select(model.title, [...model.options]);

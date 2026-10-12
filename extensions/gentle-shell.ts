@@ -10,6 +10,8 @@ import { readSessionProfileBinding } from "../lib/session-profile-binding.ts";
 import { resolveProfilePin } from "../lib/agent-profile-pin.ts";
 import { installStartupListingMargin } from "../lib/startup-listing-margin.ts";
 import { installUserMessageFrame, setUserMessageFrameTheme } from "../lib/user-message-frame.ts";
+import { installAlertDialogFrames, installAlertNoticeFrames, setAlertFrameTheme } from "../lib/alert-frame.ts";
+import * as piCodingAgent from "@earendil-works/pi-coding-agent";
 import * as os from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { buildShellHeaderModel, createUsageCollapse, renderShellBar, renderShellBelowInputFloat, renderShellBottomOnlyBar, renderShellHeaderChrome, keepNativeWorkingRow, renderShellSidebarCard, shellBarEnabled, shellEnabled, shellHeaderUsageHit, shellJobsCount, statusTitleText, type ShellBarModel, type ShellBarTheme, type ShellSidebarCard } from "../lib/shell-bar.ts";
@@ -1890,6 +1892,9 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	installStartupListingMargin(InteractiveMode);
 	// Frame sent user messages in themes that ask for it (lib/user-message-frame.ts).
 	installUserMessageFrame(UserMessageComponent);
+	// Double-frame every alert (dialogs and Warning/Error notices) in themes that ask for it (lib/alert-frame.ts).
+	installAlertDialogFrames(piCodingAgent as unknown as Record<string, unknown>);
+	installAlertNoticeFrames(InteractiveMode);
 	const profileReader = createActiveProfileReader(env);
 	const deps: ShellDeps = {
 		...defaultShellDeps,
@@ -2575,6 +2580,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	const themeFallbackWarned = new Set<string>();
 	pi.on("session_start", async (_event, ctx) => {
 		setUserMessageFrameTheme(ctx.hasUI && isInteractiveMode(ctx.mode) ? () => ctx.ui.theme : () => undefined);
+		setAlertFrameTheme(ctx.hasUI && isInteractiveMode(ctx.mode) ? () => ctx.ui.theme : () => undefined);
 		shellChrome.begin();
 		// pi falls back to `system` silently when the configured theme fails to
 		// load; say so once per session, off the startup path, never throwing.

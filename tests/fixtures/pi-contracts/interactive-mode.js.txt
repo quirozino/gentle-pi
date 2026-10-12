@@ -266,3 +266,14 @@
         this.lastStatusText = text;
         this.ui.requestRender();
     }
+
+    showError(errorMessage) {
+        this.chatContainer.addChild(new Spacer(1));
+        this.chatContainer.addChild(new ThemedText(() => theme.fg("error", `Error: ${errorMessage}`), this.outputPad, 0));
+        this.ui.requestRender();
+    }
+    showWarning(warningMessage) {
+        this.chatContainer.addChild(new Spacer(1));
+        this.chatContainer.addChild(new ThemedText(() => theme.fg("warning", `Warning: ${warningMessage}`), 1, 0));
+        this.ui.requestRender();
+    }

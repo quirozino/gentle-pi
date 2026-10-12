@@ -1,3 +1,4 @@
+import { frameAlertComponent } from "../lib/alert-frame.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
@@ -294,7 +295,7 @@ export default function askUserQuestion(pi: ExtensionAPI): void {
 					container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
 					container.addChild(view);
 					container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
-					return container;
+					return frameAlertComponent(container);
 				});
 			}
 			finally {

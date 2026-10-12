@@ -1,3 +1,4 @@
+import { frameAlertComponent } from "../lib/alert-frame.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder } from "@earendil-works/pi-coding-agent";
 import { Container, Input, isKeyRelease, matchesKey, Text, type KeybindingsManager, type TuiMouseEvent } from "@earendil-works/pi-tui";
@@ -296,7 +297,7 @@ export default function askUserChoice(pi: ExtensionAPI): void {
 					container.addChild(view);
 					container.addChild(new Text(theme.fg("dim", "↑↓ navigate • Enter select • Esc cancel"), 1, 0));
 					container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
-					return container;
+					return frameAlertComponent(container);
 				});
 			} finally {
 				pi.events.emit(ASK_USER_CHOICE_BLOCKED_EVENT, { active: false });

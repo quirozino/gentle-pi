@@ -1,0 +1,60 @@
+export class ExtensionEditorComponent extends Container {
+    editor;
+    onSubmitCallback;
+    onCancelCallback;
+    tui;
+    keybindings;
+    externalEditorCommand;
+    _focused = false;
+    get focused() {
+        return this._focused;
+    }
+    set focused(value) {
+        this._focused = value;
+        this.editor.focused = value;
+    }
+    constructor(tui, keybindings, title, prefill, onSubmit, onCancel, options, externalEditorCommand) {
+        super();
+        this.tui = tui;
+        this.keybindings = keybindings;
+        this.externalEditorCommand =
+            externalEditorCommand ||
+                process.env.VISUAL ||
+                process.env.EDITOR ||
+                (process.platform === "win32" ? "notepad" : "nano");
+        this.onSubmitCallback = onSubmit;
+        this.onCancelCallback = onCancel;
+        const { description, ...editorOptions } = options ?? {};
+        // Add top border
+        this.addChild(new DynamicBorder());
+        this.addChild(new Spacer(1));
+        // Add title and optional description
+        this.addChild(new Text(theme.fg("accent", title), 1, 0));
+        if (description) {
+            this.addChild(new Spacer(1));
+            this.addChild(new Text(theme.fg("text", description), 1, 0));
+        }
+        this.addChild(new Spacer(1));
+        // Create editor
+        this.editor = new Editor(tui, getEditorTheme(), editorOptions);
+        if (prefill) {
+            this.editor.setText(prefill);
+        }
+        // Wire up Enter to submit (Shift+Enter for newlines, like the main editor)
+        this.editor.onSubmit = (text) => {
+            this.onSubmitCallback(text);
+        };
+        this.addChild(this.editor);
+        this.addChild(new Spacer(1));
+        // Add hint
+        const hint = keyHint("tui.select.confirm", "submit") +
+            "  " +
+            keyHint("tui.input.newLine", "newline") +
+            "  " +
+            keyHint("tui.select.cancel", "cancel") +
+            `  ${keyHint("app.editor.external", "external editor")}`;
+        this.addChild(new Text(hint, 1, 0));
+        this.addChild(new Spacer(1));
+        // Add bottom border
+        this.addChild(new DynamicBorder());
+    }

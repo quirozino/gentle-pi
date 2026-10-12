@@ -23,7 +23,11 @@ export type PiSourceFile =
 	| "theme.js"
 	| "layout-node.js"
 	| "scroll-view.js"
-	| "tui-alt-screen.js";
+	| "tui-alt-screen.js"
+	| "extension-selector.js"
+	| "extension-input.js"
+	| "extension-editor.js"
+	| "dynamic-border.js";
 
 /** Where each source file lives inside the installed packages. */
 export const PI_SOURCE_PATHS: Record<PiSourceFile, { pkg: "pi-coding-agent" | "pi-tui"; path: string }> = {
@@ -35,6 +39,10 @@ export const PI_SOURCE_PATHS: Record<PiSourceFile, { pkg: "pi-coding-agent" | "p
 	"layout-node.js": { pkg: "pi-tui", path: "dist/layout-node.js" },
 	"scroll-view.js": { pkg: "pi-tui", path: "dist/components/scroll-view.js" },
 	"tui-alt-screen.js": { pkg: "pi-tui", path: "dist/tui-alt-screen.js" },
+	"extension-selector.js": { pkg: "pi-coding-agent", path: "dist/modes/interactive/components/extension-selector.js" },
+	"extension-input.js": { pkg: "pi-coding-agent", path: "dist/modes/interactive/components/extension-input.js" },
+	"extension-editor.js": { pkg: "pi-coding-agent", path: "dist/modes/interactive/components/extension-editor.js" },
+	"dynamic-border.js": { pkg: "pi-coding-agent", path: "dist/modes/interactive/components/dynamic-border.js" },
 };
 
 export type PiContractInputs = {
@@ -223,6 +231,50 @@ export const PI_CONTRACTS: PiContract[] = [
 			expectIncludes(problems, render, "lines[0] = OSC133_ZONE_START + lines[0];", "UserMessageComponent.render");
 			expectIncludes(problems, message, "const OSC133_ZONE_START = \"\\x1b]133;A\\x07\";", "UserMessageComponent OSC 133 markers");
 			expectIncludes(problems, src(inputs, "theme.js"), "export class Theme {\n    name;", "Theme.name");
+			return problems;
+		},
+	},
+	{
+		id: "extension-dialog-components",
+		summary: "ui.select/confirm, ui.input and ui.editor dialogs are exported Container subclasses that open and close with a DynamicBorder ─ rule",
+		guards: ["lib/alert-frame.ts", "extensions/gentle-shell.ts", "tests/alert-frame.test.ts"],
+		sources: ["extension-selector.js", "extension-input.js", "extension-editor.js", "dynamic-border.js"],
+		check(inputs) {
+			const problems: string[] = [];
+			for (const [name, file] of [["ExtensionSelectorComponent", "extension-selector.js"], ["ExtensionInputComponent", "extension-input.js"], ["ExtensionEditorComponent", "extension-editor.js"]] as const) {
+				const proto = prototypeOf(inputs.codingAgent, name, "pi-coding-agent", problems);
+				if (proto) expectFunction(problems, proto, "render", `${name}.prototype`);
+				const source = src(inputs, file);
+				expectIncludes(problems, source, `export class ${name} extends Container {`, name);
+				const constructor = methodBody(source, "constructor(") ?? "";
+				const children = constructor.match(/this\.addChild\([^;]*\);/g) ?? [];
+				if (children[0] !== "this.addChild(new DynamicBorder());") problems.push(`${name}: the dialog no longer opens with a DynamicBorder rule`);
+				if (children.at(-1) !== "this.addChild(new DynamicBorder());") problems.push(`${name}: the dialog no longer closes with a DynamicBorder rule`);
+			}
+			expectIncludes(problems, src(inputs, "dynamic-border.js"), "return [this.color(\"─\".repeat(Math.max(1, width)))];", "DynamicBorder.render");
+			return problems;
+		},
+	},
+	{
+		id: "interactive-mode-notices",
+		summary: "ui.notify warning/error land in InteractiveMode.showWarning/showError, which append a Spacer and a themed line to chatContainer",
+		guards: ["lib/alert-frame.ts", "extensions/gentle-shell.ts", "tests/alert-frame.test.ts"],
+		sources: ["interactive-mode.js"],
+		check(inputs) {
+			const problems: string[] = [];
+			const proto = prototypeOf(inputs.codingAgent, "InteractiveMode", "pi-coding-agent", problems);
+			if (proto) {
+				expectFunction(problems, proto, "showWarning", "InteractiveMode.prototype");
+				expectFunction(problems, proto, "showError", "InteractiveMode.prototype");
+			}
+			const source = src(inputs, "interactive-mode.js");
+			const warning = methodBody(source, "showWarning(warningMessage) {");
+			expectIncludes(problems, warning, "this.chatContainer.addChild(new Spacer(1));", "InteractiveMode.showWarning");
+			expectIncludes(problems, warning, "theme.fg(\"warning\", `Warning: ${warningMessage}`)", "InteractiveMode.showWarning");
+			expectIncludes(problems, warning, "this.ui.requestRender();", "InteractiveMode.showWarning");
+			const error = methodBody(source, "showError(errorMessage) {");
+			expectIncludes(problems, error, "theme.fg(\"error\", `Error: ${errorMessage}`), this.outputPad, 0)", "InteractiveMode.showError");
+			expectIncludes(problems, error, "this.ui.requestRender();", "InteractiveMode.showError");
 			return problems;
 		},
 	},

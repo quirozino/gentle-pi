@@ -65,6 +65,8 @@ const DRIFTS: Record<string, { file: PiSourceFile; from: string; to: string }> =
 	"scroll-view-content-width": { file: "scroll-view.js", from: "this.scrollbar === \"always\"", to: "this.scrollbar !== \"hidden\"" },
 	"selection-internals": { file: "tui-alt-screen.js", from: "getSelectionColumns(line, row, selection,", to: "selectionColumns(line, row, selection," },
 	"user-message-component": { file: "user-message.js", from: "lines[0] = OSC133_ZONE_START + lines[0];", to: "lines.unshift(OSC133_ZONE_START);" },
+	"extension-dialog-components": { file: "extension-input.js", from: "        this.addChild(new DynamicBorder());\n    }", to: "    }" },
+	"interactive-mode-notices": { file: "interactive-mode.js", from: "theme.fg(\"warning\", `Warning: ${warningMessage}`)", to: "theme.fg(\"warning\", warningMessage)" },
 	"chat-viewport-dock": { file: "chat-viewport.js", from: "{ component: options.footer, shrink: 1, minSize: 0 },", to: "{ component: options.footer, shrink: 0, minSize: 1 }," },
 };
 
