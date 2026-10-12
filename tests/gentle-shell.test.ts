@@ -5293,7 +5293,7 @@ test("Changes lists the session root's Git state at turn end, never at startup",
 
 test("committed work leaves the widget and the footer counter at the next turn end", async () => {
  const { handlers, git, pi } = fakePi([{numstat:"1\t0\tlib/b.ts\n",porcelain:" M lib/b.ts\0"},{numstat:"",porcelain:""}]);
- gentleShell(pi,{});
+ gentleShell(pi,{ ...BAR_ON });
  const {ctx,ui}=fakeContext();
  await fire(handlers,"session_start",ctx);
  assert.equal(git.length,0,"startup never scans");
