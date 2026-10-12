@@ -9974,9 +9974,15 @@ function createGentleAiExtensionForTesting(
 	// session events there never reach native review.
 	// While Gentle Shell is still installing its footer the chip waits for it
 	// (afterShellChrome), so it never paints on Pi's native footer line.
-	const refreshRddModeChip = (ctx: ExtensionContext): void => {
+	// A home-rooted repository gets no chip: its native read would scan the
+	// whole home tree, the same reason startup skips review negotiation there.
+	// `after` lets startup reuse its own in-flight mode read (it fills the memo)
+	// instead of spawning a second STATUS.
+	const refreshRddModeChip = (ctx: ExtensionContext, after?: Promise<unknown>): void => {
 		if (!ctx.hasUI || permissionEnvironment.GENTLE_PI_AGENTS_CHILD === "1") return;
+		if (homeRootedRepository(ctx.cwd) !== undefined) return;
 		void (async () => {
+			if (after !== undefined) await after.catch(() => undefined);
 			if (!await insideGitWorktree(ctx.cwd)) return;
 			const status = await resolveRddModeStatus(nativeReviewCli, ctx.cwd, AbortSignal.timeout(RDD_STATUS_TIMEOUT_MS));
 			afterShellChrome(pi, () => publishRddModeChip(ctx, status));
@@ -9986,7 +9992,6 @@ function createGentleAiExtensionForTesting(
 	pi.on("session_start", async (event, ctx) => {
 		auto.reset();
 		yolo.reset(ctx);
-		refreshRddModeChip(ctx);
 		// Package-owned children reset local state but never initialize primary defaults.
 		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1") await yolo.mode(ctx);
 		reviewSidebar.reset(ctx);
@@ -10089,6 +10094,9 @@ function createGentleAiExtensionForTesting(
 			.then(() => undefined, () => undefined) // Best-effort only; never surface or throw.
 			.finally(() => { startupNegotiations.delete(negotiation); });
 		startupNegotiations.add(negotiation);
+		// The Status card's RDD chip waits for the startup mode read, which
+		// memoizes the status, so the chip costs no second spawn.
+		refreshRddModeChip(ctx, startupModeReads.get(ctx.cwd) ?? negotiation);
 	};
 
 	pi.on("before_agent_start", async (event, ctx) => {
