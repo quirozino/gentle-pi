@@ -4,52 +4,45 @@
 //
 // pi-tui paints the scrollbar one cell per row, top to bottom, through the
 // scroll view's scrollbarTrackStyle / scrollbarThumbStyle callbacks, which get
-// the glyph but no row (layout.js paintScrollbar). The row is recovered by
-// counting calls within one paint: a paint is synchronous, so a microtask
-// queued by its first call resets the count after it. The thumb is computed
-// from the scroll state with pi-tui's own formula (getScrollbarGeometry), and
-// the first thumb cell of a paint resyncs the count, so a clipped row can skew
-// at most the rows above the thumb for one frame. Other themes keep pi's look.
+// the glyph but no row (layout.js paintScrollbar). The row is the call count
+// within one paint: a paint is synchronous, so a microtask queued by its first
+// call closes it. pi's thumb is read from the paint itself (its thumb
+// callbacks), never from the scroll view's fields, which a measuring layout
+// pass can overwrite with an unbounded viewport mid-frame. The taller thumb is
+// laid out from the previous paint's track length and pi thumb, and re-anchored
+// on the current paint's first thumb cell, so only rows above the thumb can lag
+// one frame while scrolling. Other themes keep pi's look.
 import type { ShellBarTheme } from "./shell-bar.ts";
 
 export const SCROLLBAR_THEMES: ReadonlySet<string> = new Set(["Matrix-Green"]);
 export const MIN_THUMB_ROWS = 4;
 export const TRACK_GLYPH = "║";
 export const THUMB_GLYPH = "█";
-/** Theme roles: the rule, the thumb, and the sweeping band (Matrix-Green's brightest text). */
-export const SCROLLBAR_ROLES = { TRACK: "scrollbarTrack", THUMB: "scrollbarThumb", SWEEP: "text" } as const;
+/** Theme roles: rule and thumb in the Matrix frame green, the sweeping band in its brightest text. */
+export const SCROLLBAR_ROLES = { TRACK: "border", THUMB: "border", SWEEP: "text" } as const;
 
 type Style = (text: string) => string;
 
-export interface ScrollbarState {
-	scrollTop: number;
-	contentHeight: number;
-	viewportHeight: number;
+export interface ScrollbarCallbacks {
 	scrollbarTrackStyle: Style;
 	scrollbarThumbStyle: Style;
 }
 
-export interface ThumbRows {
-	/** pi-tui's own thumb, as layout.js computes it. */
-	readonly piTop: number;
-	readonly piHeight: number;
-	/** The drawn thumb: at least MIN_THUMB_ROWS, containing pi's, inside the track. */
+export interface ThumbSpan {
 	readonly top: number;
 	readonly height: number;
 }
 
-/** pi-tui's thumb (getScrollbarGeometry) and the taller one drawn over it, as track offsets. */
-export function thumbRows(contentHeight: number, trackHeight: number, scrollTop: number, minRows = MIN_THUMB_ROWS): ThumbRows | undefined {
-	if (!(trackHeight > 0)) return undefined;
-	const content = Math.max(contentHeight, 1);
-	const piHeight = Math.max(Math.min(2, trackHeight), Math.min(trackHeight, Math.round((trackHeight * trackHeight) / content)));
-	const maxScrollTop = Math.max(0, content - trackHeight);
-	const piTop = maxScrollTop === 0 ? 0 : Math.round((scrollTop / maxScrollTop) * (trackHeight - piHeight));
-	const height = Math.min(trackHeight, Math.max(piHeight, minRows));
+/**
+ * The drawn thumb around pi's: at least `minRows` tall, containing pi's thumb,
+ * centred on it and kept inside a track of `trackLength` rows.
+ */
+export function thumbSpan(piTop: number, piHeight: number, trackLength: number, minRows = MIN_THUMB_ROWS): ThumbSpan {
+	const track = Math.max(trackLength, piTop + piHeight, 1);
+	const height = Math.min(track, Math.max(piHeight, minRows));
 	const centered = piTop - Math.floor((height - piHeight) / 2);
 	const lowest = Math.max(0, piTop + piHeight - height);
-	const top = Math.min(Math.max(centered, lowest), piTop, trackHeight - height);
-	return { piTop, piHeight, top: Math.max(0, top), height };
+	return { top: Math.max(0, Math.min(Math.max(centered, lowest), piTop, track - height)), height };
 }
 
 export interface TranscriptScrollbarOptions {
@@ -64,41 +57,52 @@ export interface TranscriptScrollbarOptions {
  * pi's callbacks. Nothing changes for a state without the expected fields.
  */
 export function installTranscriptScrollbar(state: unknown, options: TranscriptScrollbarOptions): () => void {
-	const host = state as Partial<ScrollbarState> | undefined;
+	const host = state as Partial<ScrollbarCallbacks> | undefined;
 	if (!host || typeof host.scrollbarTrackStyle !== "function" || typeof host.scrollbarThumbStyle !== "function") return () => {};
-	if (typeof host.scrollTop !== "number" || typeof host.contentHeight !== "number" || typeof host.viewportHeight !== "number") return () => {};
 	const stockTrack = host.scrollbarTrackStyle;
 	const stockThumb = host.scrollbarThumbStyle;
 	const defer = options.queueMicrotask ?? queueMicrotask;
-	let row = 0;
-	let rows: ThumbRows | undefined;
-	let synced = false;
+	/** What the previous paint saw: its row count and pi's thumb. */
+	let last: { track: number; piTop: number; piHeight: number } | undefined;
 	let painting = false;
+	let row = 0;
+	let piTop: number | undefined;
+	let piHeight = 0;
+	let span: ThumbSpan | undefined;
 
 	const begin = () => {
 		if (painting) return;
 		painting = true;
 		row = 0;
-		synced = false;
-		rows = thumbRows(host.contentHeight!, host.viewportHeight!, host.scrollTop!);
+		piTop = undefined;
+		piHeight = 0;
+		span = last ? thumbSpan(last.piTop, last.piHeight, last.track) : undefined;
 		defer(() => {
 			painting = false;
+			if (piTop !== undefined) last = { track: row, piTop, piHeight };
 		});
 	};
 
-	const cell = (pieThumb: boolean, glyph: string, stock: Style): string => {
+	const cell = (piThumb: boolean, glyph: string, stock: Style): string => {
 		const theme = options.theme();
 		if (!theme || !SCROLLBAR_THEMES.has(theme.name ?? "")) return stock(glyph);
 		try {
 			begin();
-			if (pieThumb && !synced && rows) {
-				synced = true;
-				row = rows.piTop;
-			}
 			const at = row++;
-			if (!rows || at < rows.top || at >= rows.top + rows.height) return theme.fg(SCROLLBAR_ROLES.TRACK, TRACK_GLYPH);
+			if (piThumb) {
+				if (piTop === undefined) {
+					// Re-anchor on this paint's thumb; its height is pi's from the last paint (or 1 so far).
+					piTop = at;
+					span = thumbSpan(at, Math.max(last?.piHeight ?? 1, 1), last?.track ?? at + MIN_THUMB_ROWS);
+				}
+				piHeight += 1;
+			}
+			const inThumb = piThumb || (span !== undefined && at >= span.top && at < span.top + span.height);
+			if (!inThumb) return theme.fg(SCROLLBAR_ROLES.TRACK, TRACK_GLYPH);
+			const top = span ? Math.min(span.top, piTop ?? span.top) : at;
+			const height = span ? span.height : 1;
 			const tick = options.tick();
-			const band = tick === undefined ? undefined : rows.top + (((tick % rows.height) + rows.height) % rows.height);
+			const band = tick === undefined ? undefined : top + (((tick % height) + height) % height);
 			return theme.fg(at === band ? SCROLLBAR_ROLES.SWEEP : SCROLLBAR_ROLES.THUMB, THUMB_GLYPH);
 		} catch {
 			return stock(glyph);
