@@ -1,4 +1,4 @@
-/* ENGRAM_CHROME_PATCHED_V6 */
+/* ENGRAM_CHROME_PATCHED_V7 */
 import test from "node:test";
 import assert from "node:assert/strict";
 import {

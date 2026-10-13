@@ -42,8 +42,12 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // cards: one column on the left, and one on the right unless gentle-pi flags
 // the transcript's reserved scrollbar column as the right gap
 // (lib/transcript-gutter.ts). Its frame edges then meet the header's columns
-// instead of opening one column left of every other card.
-const CHROME_MARKER = "/* ENGRAM_CHROME_PATCHED_V6 */";
+// instead of opening one column left of every other card. V7 keeps V6 but
+// also drops the left margin where gentle-pi flags that the transcript host
+// already insets the content one column (the Matrix scrollbar rails,
+// lib/transcript-gutter.ts "transcript-left-inset"), so the box keeps meeting
+// the other cards' edges there.
+const CHROME_MARKER = "/* ENGRAM_CHROME_PATCHED_V7 */";
 // Index history: V1 made renderCall/renderResult return a width-aware,
 // multi-line-capable component instead of a fixed-content Text(). That
 // shape is exactly what V4's two-line box output needs (it already
@@ -78,8 +82,8 @@ const STRAY_V2_RE =
 // textLine, plus V5's sweep helpers and memoryCallSweep), sitting in front of
 // their own renderCallText. Matches from the marker through to (but not
 // including) the renderCallText that follows it, so re-patching a V3, V4 or
-// V5 install replaces the whole block with V6's.
-const STRAY_V3_V5_RE = /\n*\/\* ENGRAM_CHROME_PATCHED_V[345] \*\/[\s\S]*?(?=\n+export function renderCallText)/;
+// V5 install replaces the whole block with the current one (V6 too).
+const STRAY_V3_V5_RE = /\n*\/\* ENGRAM_CHROME_PATCHED_V[3456] \*\/[\s\S]*?(?=\n+export function renderCallText)/;
 
 // Anchors on the signature, so this matches the pristine, never-patched
 // function, a healed V1 patch (which just prefixed the same signature with
@@ -196,10 +200,14 @@ function textLine(color, content, width, litLeft, litRight) {
 // header's. \`frame\` is the box width; \`row\` pads a box line back to the
 // full width the row was given.
 const TRANSCRIPT_GUTTER = Symbol.for("gentle-pi.transcript-right-gutter");
+// Set while gentle-pi's transcript already insets the content one column on
+// the left (its Matrix scrollbar rails): the box then drops its left margin.
+const TRANSCRIPT_LEFT_INSET = Symbol.for("gentle-pi.transcript-left-inset");
 
 function boxGeometry(width) {
   const right = globalThis[TRANSCRIPT_GUTTER] === true ? 0 : 1;
-  return { frame: width - 1 - right, row: (line) => (line === undefined ? undefined : " " + line + " ".repeat(right)) };
+  const left = globalThis[TRANSCRIPT_LEFT_INSET] === true ? 0 : 1;
+  return { frame: width - left - right, row: (line) => (line === undefined ? undefined : " ".repeat(left) + line + " ".repeat(right)) };
 }
 
 // The running sweep. It mirrors gentle-pi's lib/card-sweep.ts (tick, pace,
@@ -518,7 +526,7 @@ function patchTests(engramDir, quiet) {
   const testFile = join(engramDir, "test", "memory-tool-chrome.test.mjs");
   if (!existsSync(testFile)) return;
   const content = readFileSync(testFile, "utf8");
-  if (content.includes("ENGRAM_CHROME_PATCHED_V6")) {
+  if (content.includes("ENGRAM_CHROME_PATCHED_V7")) {
     if (!quiet) console.log("patch-engram-chrome: tests already patched; skipping.");
     return;
   }
