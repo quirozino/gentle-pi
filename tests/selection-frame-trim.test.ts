@@ -185,3 +185,43 @@ test("installSelectionFrameTrim applies the window padding only to lines as wide
 		assert.equal(tui.getSelectionColumns("║  text  ║", 0, {}).start, 2, "unframed: one padding space only");
 	} finally { dispose(); }
 });
+
+// pi >= 1.2 hands extensions createInteractiveTuiReference(): a Proxy over the
+// renderer whose methods read back as fresh zero-arity `(...args) => ...` shims.
+function piTuiReference<T extends object>(real: T): T {
+	return new Proxy({}, {
+		get: (_target, property) => {
+			const value = Reflect.get(real, property, real);
+			return typeof value === "function" ? (...args: unknown[]) => Reflect.apply(value, real, args) : value;
+		},
+		set: (_target, property, value) => Reflect.set(real, property, value, real),
+		has: (_target, property) => Reflect.has(real, property),
+		getPrototypeOf: () => Reflect.getPrototypeOf(real),
+	}) as T;
+}
+
+class AltScreen {
+	mode = "fullscreen";
+	getSelectionColumns(line: string, _row: number, _selection: unknown) { return { start: 0, end: visibleWidth(line) }; }
+	applySelection() {}
+	getActiveSelectionText() {}
+}
+
+test("install through pi's TUI reference proxy trims the renderer's own calls", () => {
+	const real = new AltScreen();
+	const dispose = installSelectionFrameTrim(piTuiReference(real));
+	assert.deepEqual(real.getSelectionColumns("║ text ║", 0, {}), { start: 2, end: 6 });
+	dispose();
+	assert.deepEqual(real.getSelectionColumns("║ text ║", 0, {}), { start: 0, end: 8 });
+});
+
+test("install through the proxy reports no drift and never double-wraps", async () => {
+	const { missingPiContracts } = await import("../lib/pi-contracts.ts");
+	const real = new AltScreen();
+	const reference = piTuiReference(real);
+	installSelectionFrameTrim(reference);
+	const wrapped = real.getSelectionColumns;
+	installSelectionFrameTrim(reference);
+	assert.equal(real.getSelectionColumns, wrapped);
+	assert.equal(missingPiContracts().has("selection-internals"), false);
+});

@@ -118,17 +118,34 @@ export interface SelectionFrameTrimOptions {
 	windowFramePad?: () => number;
 }
 
+/**
+ * The method pi-tui's renderer will call. pi >= 1.2 hands extensions
+ * createInteractiveTuiReference(): a Proxy whose methods read back as fresh
+ * zero-arity shims, so the real method is read from the prototype it reports.
+ */
+function selectionColumnsOf(host: SelectionHost): { method?: GetSelectionColumns; viaPrototype: boolean } {
+	const own = host.getSelectionColumns;
+	if (typeof own === "function" && own.length >= 3) return { method: own, viaPrototype: false };
+	if (typeof own !== "function") return { viaPrototype: false };
+	for (let proto = Object.getPrototypeOf(host); proto && proto !== Object.prototype; proto = Object.getPrototypeOf(proto)) {
+		const candidate = Object.getOwnPropertyDescriptor(proto, "getSelectionColumns")?.value;
+		if (typeof candidate === "function" && candidate.length >= 3) return { method: candidate as GetSelectionColumns, viaPrototype: true };
+	}
+	return { viaPrototype: false };
+}
+
 export function installSelectionFrameTrim(tui: unknown, options: SelectionFrameTrimOptions = {}): () => void {
-	const host = tui as SelectionHost | undefined;
-	const original = host?.getSelectionColumns;
+	const host = tui as (SelectionHost & { [WRAPPED]?: unknown }) | undefined;
 	if (!host) return () => {};
-	if (typeof original !== "function" || original.length < 3 || typeof host.applySelection !== "function" || typeof host.getActiveSelectionText !== "function") {
+	const { method: original, viaPrototype } = selectionColumnsOf(host);
+	if (!original || typeof host.applySelection !== "function" || typeof host.getActiveSelectionText !== "function") {
 		// Main-screen TUIs have no selection; on a fullscreen TUI this is drift.
 		if ((host as { mode?: unknown }).mode === "fullscreen") notePiContractMissing("selection-internals", "TuiAltScreen getSelectionColumns/applySelection/getActiveSelectionText missing");
 		return () => {};
 	}
-	if ((original as unknown as Record<symbol, unknown>)[WRAPPED]) return () => {};
-	const hadOwn = Object.prototype.hasOwnProperty.call(host, "getSelectionColumns");
+	// The mark lives on the host: through pi's proxy a read never returns the wrapper itself.
+	if (host[WRAPPED] || (original as unknown as Record<symbol, unknown>)[WRAPPED]) return () => {};
+	const hadOwn = !viaPrototype && Object.prototype.hasOwnProperty.call(host, "getSelectionColumns");
 	const wrapped = function (this: unknown, ...args: Parameters<GetSelectionColumns>): ColumnRange {
 		const range = original.apply(this, args);
 		try {
@@ -141,13 +158,18 @@ export function installSelectionFrameTrim(tui: unknown, options: SelectionFrameT
 	};
 	Object.defineProperty(wrapped, WRAPPED, { value: true });
 	Object.defineProperty(wrapped, "length", { value: original.length });
+	// A plain object, not the function: the proxy hands functions back as new shims.
+	const mark = {};
 	host.getSelectionColumns = wrapped as GetSelectionColumns;
+	host[WRAPPED] = mark;
 	let disposed = false;
 	return () => {
 		if (disposed) return;
 		disposed = true;
-		if (host.getSelectionColumns !== wrapped) return;
-		if (hadOwn) host.getSelectionColumns = original;
+		if (host[WRAPPED] !== mark) return;
+		host[WRAPPED] = undefined;
+		// A proxy forwards assignment but not delete; the prototype method as an own value behaves the same.
+		if (hadOwn || viaPrototype) host.getSelectionColumns = original;
 		else delete host.getSelectionColumns;
 	};
 }
