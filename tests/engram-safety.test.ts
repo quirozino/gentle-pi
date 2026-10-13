@@ -16,7 +16,7 @@ const OTHER_ID = "fedcba9876543210fedcba9876543210";
 const READY = { revision: 1, source: "active", status: "ready", offline_automatic_opening_authorized: false, active_reuse_authorized: true,
 	instance_id: ID, runtime_id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", capability: "startup-verified-store-v1" };
 const REFUSED: shell.EngramProbe = { kind: "refused" };
-const CORE = "3.3.2";
+const CORE = "3.4.0";
 const listening = (compatible: boolean, healthInstanceId?: string, healthVersion = CORE): shell.EngramProbe =>
 	({ kind: "listening", compatible, healthInstanceId, healthVersion: healthInstanceId === undefined ? undefined : healthVersion });
 
@@ -44,9 +44,34 @@ test("existing, unreadable or foreign stores without matching provenance are dis
 	for (const store of ["present", "unknown"] as const) {
 		const result = classify({ store });
 		assert.equal(result.policy, "disabled", store);
-		assert.match(result.notice!, /Back up.*update.*restart.*recheck/is);
+		assert.match(result.notice!, /could not verify.*compatibility.*Back up/is);
+		assert.doesNotMatch(result.notice!, /update Engram and restart/i);
 	}
 	assert.equal(classify({ store: "present", endpoint: listening(false, ID) }).policy, "disabled");
+});
+
+test("a running server older than the first compatibility-capable core is named in the notice, without changing the decision", () => {
+	for (const version of ["3.3.2", "v3.3.2", "2.9.0"]) {
+		const result = classify({ store: "present", endpoint: listening(false, OTHER_ID, version) });
+		assert.equal(result.policy, "disabled", version);
+		assert.equal(result.url, undefined, version);
+		assert.match(result.notice!, new RegExp(`reports version ${version.replace(/^v/, "").replaceAll(".", "\\.")}`), version);
+		assert.match(result.notice!, /update that server to 3\.4\.0 or later.*restart it/s, version);
+		assert.match(result.notice!, /Back up/, version);
+	}
+	// Shell's own store behind an older server gets the same guidance and stays disabled.
+	const own = classify({ store: "present", provenance: { instanceId: ID }, endpoint: listening(false, ID, "3.3.2") });
+	assert.equal(own.policy, "disabled");
+	assert.match(own.notice!, /reports version 3\.3\.2/);
+});
+
+test("a current, unparsable or hostile server version keeps the generic notice and is never echoed", () => {
+	for (const version of ["3.4.0", "3.10.0", "4.0.0", "dev", "", "3.3.2\u001b[31m", "3.3.2 update now", "03.3.2", "3.03.2", "3.3.02", "v03.3.2"]) {
+		const result = classify({ store: "present", endpoint: listening(false, OTHER_ID, version) });
+		assert.equal(result.policy, "disabled", JSON.stringify(version));
+		assert.equal(result.notice, shell.ENGRAM_RECOVERY_NOTICE, JSON.stringify(version));
+	}
+	assert.equal(classify({ store: "present", endpoint: listening(false) }).notice, shell.ENGRAM_RECOVERY_NOTICE);
 });
 
 test("explicit selections and invalid policies are disabled without depending on probes", () => {
@@ -74,7 +99,7 @@ test("Shell provenance allows its own store only for the same instance and the s
 	assert.deepEqual(classify({ store: "present", provenance }), { policy: "allow" });
 	assert.deepEqual(classify({ store: "present", provenance, endpoint: listening(false, ID) }), { policy: "allow" });
 	assert.equal(classify({ store: "present", provenance, endpoint: listening(false, OTHER_ID) }).policy, "disabled");
-	for (const version of ["3.3.3", "v3.3.2", "dev", ""]) {
+	for (const version of ["3.3.3", "v3.4.0", "dev", ""]) {
 		assert.equal(classify({ store: "present", provenance, endpoint: listening(false, ID, version) }).policy, "disabled", version);
 	}
 	assert.equal(classify({ store: "present", provenance, endpoint: listening(false) }).policy, "disabled");
@@ -149,6 +174,7 @@ test("provenance matches only the same directory, instance and core digest", () 
 test("the header is a newer-schema tripwire against the verified bundled schema, never a compatibility proof", () => {
 	// v3.3.2:internal/store/store.go declares schemaVersion = 1.
 	assert.equal(shell.bundledEngramSchema("3.3.2"), 1);
+	assert.equal(shell.bundledEngramSchema("3.4.0"), 1);
 	assert.equal(shell.bundledEngramSchema("3.3.3"), undefined);
 	for (const userVersion of [0, 1]) assert.equal(shell.engramHeaderAllows(userVersion, 1), true, String(userVersion));
 	assert.equal(shell.engramHeaderAllows(2, 1), false);
@@ -215,7 +241,7 @@ test("probe reports refused for a closed port and unknown for a silent listener"
 	assert.ok(Date.now() - started < 2000);
 });
 
-const base = { node: "/node", cli: "/pi", prefix: "/prefix", engram: "/prefix/runtime/engram-3.3.2/engram", guard: GUARD };
+const base = { node: "/node", cli: "/pi", prefix: "/prefix", engram: "/prefix/runtime/engram-3.4.0/engram", guard: GUARD };
 
 test("disabled memory without explicit selections points ENGRAM_BIN at the guard and keeps the policy", () => {
 	const memory = classify({ store: "present" });
@@ -274,8 +300,10 @@ test("the guard fails non-zero, reports the notice and leaves Engram data byte-i
 		assert.match(result.stderr, /Back up first\. \$\(touch injected\)/);
 	}
 	const fallback = spawnSync(GUARD, ["instance-id"], { env: clean({ HOME: root }), encoding: "utf8" });
-	assert.notEqual(fallback.status, 0);
-	assert.match(fallback.stderr, /Engram memory is disabled/);
+	assert.equal(fallback.status, 78);
+	assert.equal(fallback.stdout, "");
+	assert.match(fallback.stderr, /could not verify.*compatibility/i);
+	assert.doesNotMatch(fallback.stderr, /update Engram, restart/i);
 	assert.equal(dataSnapshot(data), before);
 	assert.deepEqual(readdirSync(root).sort(), [".engram"]);
 });

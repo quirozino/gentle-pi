@@ -1356,7 +1356,9 @@ function resolveThemeHex(theme: { colors: Record<string, string>; vars: Record<s
 	assert.ok(value?.startsWith("#"), `${role} resolves to a hex colour`);
 	return value!.toLowerCase();
 }
-const PI_THEME_ROLES = new Set(Object.keys(JSON.parse(readFileSync(new URL("../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme-schema.json", import.meta.url), "utf8")).properties.colors.properties));
+// Pi 1.2 publishes its colour roles as THEME_TOKENS (the theme-schema.json file is gone).
+const { THEME_TOKENS } = await import(new URL("../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme-tokens.js", import.meta.url).href) as { THEME_TOKENS: Record<string, unknown> };
+const PI_THEME_ROLES = new Set(Object.keys(THEME_TOKENS));
 
 test("each ODD phase renders the Fase ODD value as an inverse badge in its mapped theme role", (t) => {
 	for (const style of [CARD_STYLE.NEON, CARD_STYLE.FLOAT]) {

@@ -276,16 +276,11 @@ async function classifyBundledMemory() {
 	return classifyEngramStartup({ ...decision, store: observed.store, endpoint, provenance: ownEngramStore(observed, core) });
 }
 
-// Verified read-only in Engram v3.3.2: `engram instance-id` first runs a GitHub
-// update check that sends GH_TOKEN or GITHUB_TOKEN (cmd/engram/main.go:742-744,
-// 835-847; internal/version/check.go:23-24,60-70,171-176) unless
-// ENGRAM_NO_UPDATE_CHECK is set (check.go:19,49-51,114-117). It then resolves the
-// default ~/.engram (main.go:749-765) and runs EnsureInstanceID
-// (internal/store/instance.go:15-79): the data dir, `.instance-id.lock` (waits
-// up to 60s, internal/store/migration_lock.go:29-76) and `.instance-id`. It
-// returns (main.go:767-775) before orphan migration (main.go:779) and opens no
-// database. The timeout stays below that lock wait: a held lock means a
-// concurrent creator, and memory then stays off for the launch.
+// Verified with the published Engram v3.4.0 darwin-arm64 binary in an isolated
+// HOME: `instance-id` creates only `.instance-id.lock` and `.instance-id`,
+// without a database. Keep update checks suppressed and GitHub tokens removed
+// for this provisioning invocation. The timeout stays below the identity lock
+// wait: a held lock means a concurrent creator, so memory stays off that launch.
 const ENGRAM_PROVISION_TIMEOUT_MS = 15000;
 
 // A fresh launch's store identity, provisioned by Shell itself with the verified
@@ -1782,7 +1777,8 @@ async function main() {
 	const args = parseLauncherArgs(process.argv.slice(2));
 	if (args.error !== undefined) fail(`${args.error}\nRun 'gentle-shell --help' for usage.`, 2);
 	if (args.help) {
-		process.stdout.write(`${helpText()}\nBundled Engram safety: memory opens only a fresh, verified or Shell-provisioned store; otherwise ENGRAM_BIN\nis Shell's guard and memory stays off. Back up data, update Engram, restart its server and Shell, then recheck.\nAn explicit ENGRAM_BIN or ENGRAM_URL is kept and bypasses the guard.\n`);
+		process.stdout.write("Pi updates: update reinstalls the verified supplier of the Pi this launcher runs (a global Pi, or the\nShell package whose adjacent peer it is, at the same Shell version) and reads the resulting Pi version back.\nUnknown ownership refuses without installing; update --extensions-only stays Pi-only.\nPrefix-bundled Pi updates with gentle-shell upgrade.\n");
+		process.stdout.write(`${helpText()}\nBundled Engram safety: memory opens only a fresh, verified or Shell-provisioned store; otherwise ENGRAM_BIN\nis Shell's guard and memory stays off. Matching versions or updating alone do not prove compatibility.\nReuse requires a server with verified /compatibility evidence or matching Shell-provisioned store identity.\nBack up existing data before manual changes; do not delete it or bypass the safety check.\nShell rechecks on every launch and remains usable without memory.\nAn explicit ENGRAM_BIN or ENGRAM_URL is kept and bypasses the guard.\n`);
 		process.exit(0);
 	}
 	if (args.command === "home") {
@@ -1867,6 +1863,15 @@ async function main() {
 			const next = bundledUpdateNext(plan, code);
 			if ("exitCode" in next) process.exit(next.exitCode);
 			if (next.note) process.stderr.write(`${next.note}\n`);
+		}
+		passthrough = plan.piArgs;
+	} else if (args.piSubcommand === "update") {
+		const { managedUpdatePlan, updateSelectedPi } = await import("../scripts/pi-update.mjs");
+		const plan = managedUpdatePlan(args.passthrough);
+		if (plan.self) {
+			process.exitCode = await updateSelectedPi({ runtime, packageRoot, platform: process.platform, currentVersion: versionCheck.version, cwd: tmpdir(),
+				adapters: await packageManagerAdapters(), out: (line) => process.stdout.write(`${line}\n`) });
+			if (plan.piArgs === undefined) return;
 		}
 		passthrough = plan.piArgs;
 	}

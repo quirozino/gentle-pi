@@ -3,6 +3,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { DynamicBorder } from "@earendil-works/pi-coding-agent";
 import { Container, Input, isKeyRelease, matchesKey, Text, type KeybindingsManager, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
+import { captureChoiceAnswer } from "../lib/auto-permission-answers.ts";
 import { NativeChoiceList } from "../lib/native-choice-list.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
 import { isInteractiveMode, isInteractiveRpcHost } from "../lib/rpc-host.ts";
@@ -227,6 +228,7 @@ export default function askUserChoice(pi: ExtensionAPI): void {
 		parameters: ChoiceParamsSchema,
 		executionMode: "sequential",
 		async execute(_toolCallId, params: ChoiceParams, _signal, _onUpdate, ctx) {
+			const captureAnswer = captureChoiceAnswer(ctx, _toolCallId, params, _signal);
 			if (ctx.mode !== "tui") {
 				if (!isInteractiveRpcHost(ctx.mode, process.env)) {
 					throw new Error("ask_user_choice is unavailable outside the interactive TUI");
@@ -239,6 +241,7 @@ export default function askUserChoice(pi: ExtensionAPI): void {
 				finally {
 					pi.events.emit(ASK_USER_CHOICE_BLOCKED_EVENT, { active: false });
 				}
+				captureAnswer(rpcSelection);
 				return choiceToolResult(params, rpcSelection);
 			}
 
@@ -303,6 +306,7 @@ export default function askUserChoice(pi: ExtensionAPI): void {
 				pi.events.emit(ASK_USER_CHOICE_BLOCKED_EVENT, { active: false });
 			}
 
+			captureAnswer(selection);
 			return choiceToolResult(params, selection);
 		},
 		renderCall(args, theme) {
