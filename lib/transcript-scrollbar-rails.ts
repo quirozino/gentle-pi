@@ -1,27 +1,37 @@
 // The Matrix transcript scrollbar as three columns: a left rail, the thumb
 // column and a right rail (`│█│` on thumb rows, `│ │` elsewhere), so the thumb
-// sits between two separate lines.
+// sits between two separate lines, and the transcript aligned with the dock:
+// one blank column on each outer side, like the dock's and header's margins,
+// so content starts on the dock boxes' left edge and the right rail stands on
+// their right edge.
 //
 // pi-tui reserves one column for an "always" scrollbar and paints it there
 // (layout.js paintScrollbar), and nothing may widen a line. So, in Matrix only:
-//   1. the transcript ScrollView reserves three columns (its instance
-//      getContentWidth returns width - 3), leaving two blank content columns;
+//   1. the transcript ScrollView reserves four columns (its instance
+//      getContentWidth returns width - 4: three rails and the right gap); the
+//      transcript gutter (transcript-gutter.ts) insets the content one column
+//      on the left inside that width;
 //   2. after the frame is laid out, TuiAltScreen.compositeScrollToEndIndicator
 //      (the first composition stage that receives the fresh layout, before
-//      overlays and selection) is wrapped to repaint the rect's last three
-//      columns on every row: rails in the frame green and, in the middle, the
-//      cell transcript-scrollbar.ts computed for that row in this paint;
-//   3. pi hit-tests drag and hover only on its own column, so
-//      getScrollbarTargetAt also accepts the two rail columns of the transcript.
+//      overlays and selection) is wrapped to repaint the rect's last four
+//      columns on every row: rail, middle cell, rail, gap, rails in the frame
+//      green and, in the middle, the cell transcript-scrollbar.ts computed for
+//      that row in this paint;
+//   3. pi hit-tests drag and hover only on its own (last) column, so
+//      getScrollbarTargetAt also accepts the three rail columns of the transcript.
 // pi 1.2 hands extensions a Proxy over the renderer: assignments reach the real
 // instance, reads return fresh shims and delete is not forwarded, so wrappers
 // are marked on the host and restored by assignment. Other themes keep pi's
 // one-column scrollbar and widths.
 import { compositeTuiLine } from "@earendil-works/pi-tui";
 import type { ShellBarTheme } from "./shell-bar.ts";
+import { RAILS_RESERVED_COLUMNS } from "./transcript-gutter.ts";
 import { SCROLLBAR_ROLES, SCROLLBAR_THEMES } from "./transcript-scrollbar.ts";
 
-export const RAIL_COLUMNS = 3;
+/** Columns the rails take at the transcript's right: rail, thumb, rail, gap. */
+export const RAIL_COLUMNS = RAILS_RESERVED_COLUMNS;
+/** Below this transcript width the rails would crowd the content: pi's one-column scrollbar stays. */
+export const MIN_RAILS_WIDTH = 30;
 export const RAIL_GLYPH = "│";
 const MARK = Symbol.for("gentle-pi.transcript-scrollbar-rails");
 
@@ -60,12 +70,12 @@ export function findScrollBox(box: LayoutBox | undefined, scrollView: unknown, d
 	return undefined;
 }
 
-/** Repaints the last three columns of `rect` on every visible row: rail, middle cell, rail. */
+/** Repaints the last four columns of `rect` on every visible row: rail, middle cell, rail, blank gap. */
 export function paintRails(screen: string[], rect: Rect, clip: Rect, width: number, rail: string, middle: (row: number) => string): string[] {
 	if (rect.width < RAIL_COLUMNS) return screen;
 	const left = rect.x + rect.width - RAIL_COLUMNS;
-	const right = rect.x + rect.width - 1;
-	if (left < clip.x || right >= clip.x + clip.width || right >= width) return screen;
+	const gap = rect.x + rect.width - 1;
+	if (left < clip.x || gap >= clip.x + clip.width || gap >= width) return screen;
 	const out = screen.slice();
 	for (let offset = 0; offset < rect.height; offset++) {
 		const y = rect.y + offset;
@@ -73,7 +83,8 @@ export function paintRails(screen: string[], rect: Rect, clip: Rect, width: numb
 		let line = out[y] ?? "";
 		line = compositeTuiLine(line, rail, left, 1, width);
 		line = compositeTuiLine(line, middle(offset), left + 1, 1, width);
-		line = compositeTuiLine(line, rail, right, 1, width);
+		line = compositeTuiLine(line, rail, left + 2, 1, width);
+		line = compositeTuiLine(line, " ", gap, 1, width);
 		out[y] = line;
 	}
 	return out;
@@ -100,7 +111,7 @@ export function installTranscriptRails(tui: unknown, state: unknown, options: Tr
 	const stockWidth = scroll.getContentWidth;
 	const active = () => scroll.scrollbar === "always" && matrix(options.theme());
 	const contentWidth = function (this: unknown, width: number): number {
-		return active() && width > RAIL_COLUMNS ? width - RAIL_COLUMNS : stockWidth.call(scroll, width);
+		return active() && width >= MIN_RAILS_WIDTH ? width - RAIL_COLUMNS : stockWidth.call(scroll, width);
 	};
 
 	const composed = (screen: string[], layout: Layout, width: number): string[] => {
@@ -109,7 +120,7 @@ export function installTranscriptRails(tui: unknown, state: unknown, options: Tr
 		if (!active() || !matrix(theme)) return result;
 		try {
 			const box = findScrollBox(layout?.root, state);
-			if (!box?.rect || !box.clip) return result;
+			if (!box?.rect || !box.clip || box.rect.width < MIN_RAILS_WIDTH) return result;
 			const rail = theme.fg(SCROLLBAR_ROLES.TRACK, RAIL_GLYPH);
 			return paintRails(result, box.rect, box.clip, width, rail, (row) => {
 				const cell = options.cells[row];
@@ -124,7 +135,7 @@ export function installTranscriptRails(tui: unknown, state: unknown, options: Tr
 		const found = target.call(host, x, y, includeHiddenAuto);
 		if (found || !active()) return found;
 		// The rails sit left of pi's hit column: retry there, for the transcript only.
-		for (const shift of [1, 2]) {
+		for (const shift of [1, 2, 3]) {
 			const shifted = target.call(host, x + shift, y, includeHiddenAuto);
 			if (shifted?.scrollView === state) return shifted;
 		}

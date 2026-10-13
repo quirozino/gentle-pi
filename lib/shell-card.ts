@@ -1,6 +1,6 @@
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { SHELL_GLYPHS } from "./shell-glyphs.ts";
-import { transcriptRightGutter } from "./transcript-gutter.ts";
+import { transcriptLeftInset, transcriptRightGutter } from "./transcript-gutter.ts";
 
 // Gentle Shell cards: the shape every Gentle notice takes in the transcript
 // and above the editor. The same rounded frame as the prompt and the
@@ -413,13 +413,18 @@ const FLOAT_MIN_WIDTH = 10;
 // The float card's right margin: none inside a transcript whose reserved
 // scrollbar column already is the gap (see transcript-gutter.ts), so its right
 // edge meets the header's and the prompt's column.
+/** The left margin, dropped where the transcript host already insets the column (Matrix rails). */
+function floatLeftMargin(): number {
+	return transcriptLeftInset() ? 0 : FLOAT_MARGIN;
+}
+
 function floatRightMargin(): number {
 	return transcriptRightGutter() ? 0 : FLOAT_MARGIN;
 }
 
 /** Columns a float card at this width draws between its margins. */
 function floatSpan(width: number): number {
-	return Math.floor(width) - FLOAT_MARGIN - floatRightMargin();
+	return Math.floor(width) - floatLeftMargin() - floatRightMargin();
 }
 const FLOAT_BG_ROLE: Record<CardTone, string> = {
 	[CARD_TONE.INFO]: "toolSuccessBg",
@@ -586,7 +591,7 @@ function floatOpener(theme: CardTheme, tone: CardTone, width: number): string {
 // tone-coloured accent just like content rows. An empty opener is the flat
 // card: the same margins, nothing painted.
 function paintFloat(rows: readonly string[], open: string): string[] {
-	const left = " ".repeat(FLOAT_MARGIN);
+	const left = " ".repeat(floatLeftMargin());
 	const right = " ".repeat(floatRightMargin());
 	if (!open) return rows.map((row) => `${left}${row}${right}`);
 	return rows.map((row) => `${left}${open}${row.replace(BG_CLEARING, (reset) => reset + open)}${BG_RESET}${right}`);

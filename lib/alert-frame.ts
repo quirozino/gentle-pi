@@ -21,7 +21,7 @@
 
 import { Spacer, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { notePiContractMissing } from "./pi-contracts.ts";
-import { transcriptRightGutter } from "./transcript-gutter.ts";
+import { transcriptLeftInset, transcriptRightGutter } from "./transcript-gutter.ts";
 
 export const ALERT_FRAME_THEMES: ReadonlySet<string> = new Set(["Matrix-Green"]);
 export const ALERT_FRAME_VERSION = "1";
@@ -67,6 +67,11 @@ function framedTheme(width: number): AlertTheme | undefined {
 	return theme?.name && ALERT_FRAME_THEMES.has(theme.name) && typeof theme.fg === "function" ? theme : undefined;
 }
 
+function leftMargin(transcript: boolean): number {
+	// The Matrix rails inset the whole transcript one column on the left already.
+	return transcript && transcriptLeftInset() ? 0 : LEFT_MARGIN;
+}
+
 function rightMargin(transcript: boolean): number {
 	// An "always" transcript scrollbar reserves its own column outside the content.
 	return transcript && transcriptRightGutter() ? 0 : RIGHT_MARGIN;
@@ -74,7 +79,7 @@ function rightMargin(transcript: boolean): number {
 
 /** Columns left for the content between the two ║ rails. */
 export function alertFrameInnerWidth(width: number, transcript = false): number {
-	return width - 2 - LEFT_MARGIN - rightMargin(transcript);
+	return width - 2 - leftMargin(transcript) - rightMargin(transcript);
 }
 
 function isRule(line: string): boolean {
@@ -96,7 +101,7 @@ function withoutEdgeRules(lines: string[]): { body: string[]; droppedTop: boolea
 export function frameAlertLines(inner: string[], width: number, theme: AlertTheme, role: AlertRole = "border", transcript = false): string[] {
 	if (inner.length === 0) return inner;
 	const innerWidth = alertFrameInnerWidth(width, transcript);
-	const lead = " ".repeat(LEFT_MARGIN);
+	const lead = " ".repeat(leftMargin(transcript));
 	const paint = (text: string) => theme.fg(role, text);
 	const body = inner.map((line) => {
 		const clipped = truncateToWidth(line.replace(OSC_SEQUENCE, ""), innerWidth, "");

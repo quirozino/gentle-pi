@@ -14,10 +14,15 @@
 // (dock widgets, overlays, the rail) ever sees it.
 
 const SLOT = Symbol.for("gentle-pi.transcript-right-gutter");
+// Matrix rails (transcript-scrollbar-rails.ts) also inset the whole transcript
+// one column on the left, where the dock and header keep their left gap; cards
+// drawn there drop their own left margin. A separate slot: the right one keeps
+// the boolean shape gentle-engram reads.
+const LEFT_SLOT = Symbol.for("gentle-pi.transcript-left-inset");
 const ORIGINAL = Symbol.for("gentle-pi.transcript-right-gutter.original");
 const NODE = Symbol.for("@earendil-works/pi-tui/layout-node");
 
-type GutterStore = { [SLOT]?: boolean };
+type GutterStore = { [SLOT]?: boolean; [LEFT_SLOT]?: boolean };
 type Render = (width: number) => string[];
 type Document = { render: Render; [ORIGINAL]?: Render };
 type ScrollState = { getContentWidth(width: number): number };
@@ -30,16 +35,30 @@ export function transcriptRightGutter(): boolean {
 	return store[SLOT] === true;
 }
 
-/** Runs `render` with the gutter flag set to `reserved`, restoring the previous value after. */
-export function withTranscriptRightGutter<T>(reserved: boolean, render: () => T): T {
-	const previous = store[SLOT];
-	store[SLOT] = reserved;
+/** Whether the row being rendered sits in a transcript the host already insets one column on the left. */
+export function transcriptLeftInset(): boolean {
+	return store[LEFT_SLOT] === true;
+}
+
+function withSlot<T>(slot: typeof SLOT | typeof LEFT_SLOT, value: boolean, render: () => T): T {
+	const previous = store[slot];
+	store[slot] = value;
 	try {
 		return render();
 	} finally {
-		if (previous === undefined) delete store[SLOT];
-		else store[SLOT] = previous;
+		if (previous === undefined) delete store[slot];
+		else store[slot] = previous;
 	}
+}
+
+/** Runs `render` with the gutter flag set to `reserved`, restoring the previous value after. */
+export function withTranscriptRightGutter<T>(reserved: boolean, render: () => T): T {
+	return withSlot(SLOT, reserved, render);
+}
+
+/** Runs `render` with the left-inset flag set to `inset`, restoring the previous value after. */
+export function withTranscriptLeftInset<T>(inset: boolean, render: () => T): T {
+	return withSlot(LEFT_SLOT, inset, render);
 }
 
 function layoutNode(component: unknown): LayoutNode | undefined {
@@ -64,8 +83,9 @@ export function transcriptScrollState(root: LayoutNode | undefined): unknown {
 	return scroll?.type === "scroll" ? scroll.state : undefined;
 }
 
-/** Columns a transcript scrollbar may reserve: pi's own, or the Matrix rails. */
-const RESERVED_COLUMNS = [1, 3] as const;
+/** Columns a transcript scrollbar may reserve: pi's own, or the Matrix rails (left inset, rails, right gap). */
+export const RAILS_RESERVED_COLUMNS = 4;
+const RESERVED_COLUMNS = [1, RAILS_RESERVED_COLUMNS] as const;
 
 export function installTranscriptRightGutter(root: LayoutNode | undefined): (() => void) | undefined {
 	const scroll = layoutNode(root?.entries?.[0]?.component);
@@ -82,6 +102,11 @@ export function installTranscriptRightGutter(root: LayoutNode | undefined): (() 
 		// pi's one scrollbar column, or by the Matrix three-column rails
 		// (transcript-scrollbar-rails.ts).
 		const reserved = RESERVED_COLUMNS.some((columns) => state.getContentWidth(width + columns) === width);
+		// Under the Matrix rails the content is inset one column on each side: on
+		// the left like the dock and header, on the right as a gap before the rails.
+		if (width > 2 && state.getContentWidth(width + RAILS_RESERVED_COLUMNS) === width) {
+			return withTranscriptRightGutter(true, () => withTranscriptLeftInset(true, () => stock.call(this, width - 2).map((line) => ` ${line}`)));
+		}
 		return withTranscriptRightGutter(reserved, () => stock.call(this, width));
 	};
 	document[ORIGINAL] = stock;

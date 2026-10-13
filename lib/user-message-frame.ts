@@ -17,7 +17,7 @@
 
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { notePiContractMissing } from "./pi-contracts.ts";
-import { transcriptRightGutter } from "./transcript-gutter.ts";
+import { transcriptLeftInset, transcriptRightGutter } from "./transcript-gutter.ts";
 
 export const USER_MESSAGE_FRAME_THEMES: ReadonlySet<string> = new Set(["Matrix-Green"]);
 export const USER_MESSAGE_FRAME_VERSION = "4";
@@ -64,15 +64,20 @@ export function setUserMessageFrameTheme(getTheme: () => FrameTheme | undefined)
 // colors stay and are measured correctly.
 const OSC_SEQUENCE = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
 
+/** The left margin, dropped where the transcript host already insets the column (Matrix rails). */
+function leftMarginColumns(): number {
+	return transcriptLeftInset() ? 0 : LEFT_MARGIN_COLUMNS;
+}
+
 export function userMessageFrameInnerWidth(width: number): number {
-	return width - 2 - LEFT_MARGIN_COLUMNS - (transcriptRightGutter() ? 0 : RIGHT_MARGIN_COLUMNS);
+	return width - 2 - leftMarginColumns() - (transcriptRightGutter() ? 0 : RIGHT_MARGIN_COLUMNS);
 }
 
 /** Wraps already-rendered inner lines (rendered at userMessageFrameInnerWidth) in the frame. */
 export function frameUserMessageLines(inner: string[], width: number, theme: FrameTheme): string[] {
 	if (inner.length === 0) return inner;
 	const innerWidth = userMessageFrameInnerWidth(width);
-	const lead = " ".repeat(LEFT_MARGIN_COLUMNS);
+	const lead = " ".repeat(leftMarginColumns());
 	const paint = (text: string) => theme.fg("border", text);
 	const body = inner.map((line) => {
 		const clipped = truncateToWidth(line.replace(OSC_SEQUENCE, ""), innerWidth, "");
