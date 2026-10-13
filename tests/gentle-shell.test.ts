@@ -1026,13 +1026,19 @@ test("T2 float prompt installed editor floats flat on live toolSuccessBg support
 });
 
 // Herdr's native Pi manifest detects activity from Pi's standard loader row
-// ("⠋ Working..."); the petal frame alone reads as idle to it.
-test("gentleShell keeps Pi's native Working row inside Herdr so native detection sees activity", () => {
-	const { pi, handlers } = fakePi();
-	gentleShell(pi, { HERDR_ENV: "1" });
-	const { ctx, ui } = fakeContext();
-	installedPrompt(ctx, ui, handlers);
-	assert.notEqual(ui.workingVisible, false, "Herdr needs Pi's standard Working row");
+// ("⠋ Working..."); the petal frame alone reads as idle to it unless the Herdr
+// integration reports state over its socket.
+test("gentleShell keeps Pi's native Working row inside Herdr only when Herdr cannot get state over its socket", () => {
+	const visibleWith = (env: Record<string, string>) => {
+		const { pi, handlers } = fakePi();
+		gentleShell(pi, env);
+		const { ctx, ui } = fakeContext();
+		installedPrompt(ctx, ui, handlers);
+		return ui.workingVisible;
+	};
+	assert.notEqual(visibleWith({ HERDR_ENV: "1" }), false, "without the socket Herdr needs Pi's standard Working row");
+	assert.equal(visibleWith({ HERDR_ENV: "1", HERDR_SOCKET_PATH: "/run/herdr.sock", HERDR_PANE_ID: "w1:p1" }), false, "the socket reports state: the row would only repeat the prompt label");
+	assert.notEqual(visibleWith({ HERDR_ENV: "1", HERDR_SOCKET_PATH: "/run/herdr.sock", HERDR_PANE_ID: "w1:p1", GENTLE_PI_NATIVE_WORKING_ROW: "1" }), false, "the opt-in keeps it");
 });
 
 test("gentleShell frames the editor with the petal prompt and a hint while empty", () => {

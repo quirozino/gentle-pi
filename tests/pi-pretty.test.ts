@@ -51,6 +51,10 @@ test("bundled pretty keeps Pi's native Working row inside Herdr", async () => {
 	await pretty(pi, undefined, async () => {}, { HERDR_ENV: "1" });
 	for (const handler of handlers.get("session_start") ?? []) await handler({}, ctx);
 	assert.notEqual(visible, false, "Herdr's native Pi detection reads the standard Working row");
+	visible = undefined;
+	await pretty(pi, undefined, async () => {}, { HERDR_ENV: "1", HERDR_SOCKET_PATH: "/run/herdr.sock", HERDR_PANE_ID: "w1:p1" });
+	for (const handler of handlers.get("session_start") ?? []) await handler({}, ctx);
+	assert.equal(visible, false, "with the Herdr socket the row is hidden");
 });
 
 test("disabled shell leaves bundled editor behavior untouched", async () => {

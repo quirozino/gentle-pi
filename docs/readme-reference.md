@@ -565,7 +565,7 @@ Automatic loading requires `HERDR_ENV=1`, a nonempty `HERDR_PANE_ID`, an existin
 
 ### Herdr native working detection
 
-Outside Herdr, the petal prompt frame replaces Pi's standard loader row. Inside a Herdr pane (`HERDR_ENV=1`, root sessions only), Gentle Shell keeps Pi's native `⠋ Working...` row visible, because Herdr's native Pi manifest detects activity from that row and otherwise reports idle during real runs. Pi shows the row only while the agent is working, so no local `pi.toml` override is needed.
+The petal prompt frame replaces Pi's standard loader row, whose state its label already shows. Inside a Herdr pane (`HERDR_ENV=1`, root sessions only) without the Herdr integration socket (`HERDR_SOCKET_PATH` and `HERDR_PANE_ID`), Gentle Shell keeps Pi's native `⠋ Working...` row visible, because Herdr's native Pi manifest detects activity from that row and otherwise reports idle during real runs. With the socket, the Herdr integration extension reports working, blocked and idle itself, so the row stays hidden. `GENTLE_PI_NATIVE_WORKING_ROW=1` always keeps it.
 
 ### Herdr blocker events
 

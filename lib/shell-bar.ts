@@ -351,10 +351,14 @@ export function shellBarEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
 }
 
 // Herdr's native Pi detection matches Pi's standard loader row ("⠋ Working...").
-// Inside a Herdr pane keep that row, which Pi shows only during real activity,
-// so detection works without a local manifest override.
+// When the Herdr integration extension can report state over its socket
+// (HERDR_SOCKET_PATH and HERDR_PANE_ID set), that row only repeats the prompt
+// frame's state label, so it stays hidden; without the socket it is kept so
+// detection still sees activity. GENTLE_PI_NATIVE_WORKING_ROW=1 always keeps it.
 export function keepNativeWorkingRow(env: NodeJS.ProcessEnv = process.env): boolean {
-	return env.HERDR_ENV === "1" && env.GENTLE_PI_AGENTS_CHILD !== "1";
+	if (env.GENTLE_PI_AGENTS_CHILD === "1") return false;
+	if (env.GENTLE_PI_NATIVE_WORKING_ROW === "1") return true;
+	return env.HERDR_ENV === "1" && !(env.HERDR_SOCKET_PATH && env.HERDR_PANE_ID);
 }
 
 export function formatTokens(count: number): string {
