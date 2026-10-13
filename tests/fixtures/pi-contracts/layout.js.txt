@@ -23,3 +23,20 @@ function paintScrollbar(box, screen, totalWidth) {
             : box.scrollView.scrollbarTrackStyle("│");
         screen[row] = replaceScrollbarCell(screen[row] ?? "", geometry.column, totalWidth, replacement, box.scrollView.scrollbar !== "always");
     }
+// --- lines 79-91 ---
+        if (node.state.primary || !context.primaryScrollView)
+            context.primaryScrollView = scrollView;
+        const rect = { x, y, width: safeWidth, height: viewportHeight };
+        const childClip = intersect(clip, rect);
+        const box = {
+            component,
+            rect,
+            clip: childClip,
+            children: [childBox],
+            scrollView,
+            scrollContentLines: renderCached(context, node.component, contentWidth),
+            layer: 0,
+        };
+// --- lines 199-200 ---
+    return {
+        column,

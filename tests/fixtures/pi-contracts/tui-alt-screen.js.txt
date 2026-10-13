@@ -18,3 +18,26 @@ export class TuiAltScreen extends TuiBase {
         return { start: Math.max(minColumn, start), end: Math.min(maxColumn, end) };
     }
     getActiveSelectionText() {
+// --- lines 847-860 ---
+    getScrollbarTargetAt(x, y, includeHiddenAuto = false) {
+        if (this.hasOverlay() || !this.currentLayout)
+            return undefined;
+        for (const scrollView of getScrollViewsAt(this.currentLayout, x, y)) {
+            const box = getScrollViewBox(this.currentLayout, scrollView);
+            const geometry = box ? getScrollbarGeometry(box, includeHiddenAuto) : undefined;
+            if (geometry &&
+                x === geometry.column &&
+                y >= geometry.trackTop &&
+                y < geometry.trackTop + geometry.trackHeight) {
+                return { scrollView, geometry };
+            }
+        }
+        return undefined;
+// --- lines 1450-1456 ---
+        let screen = this.resolveFakeCursors(nextLayout.lines.map((line) => line.replace(OSC133_ZONE_PREFIX, "")));
+        screen = this.applySearchHighlights(screen, nextLayout);
+        screen = this.compositeScrollToEndIndicator(screen, nextLayout, width);
+        screen = this.compositeOverlays(screen, width, height);
+        if (screen.length > height)
+            screen = screen.slice(screen.length - height);
+        screen = this.applySelection(screen, nextLayout);

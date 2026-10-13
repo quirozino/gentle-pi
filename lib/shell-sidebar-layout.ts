@@ -8,6 +8,7 @@ import { notePiContractMissing } from "./pi-contracts.ts";
 import { createWindowFrame, fillWindowBackground, WINDOW_FRAME_GAP, WINDOW_FRAME_INSET, windowFrameFits } from "./window-frame.ts";
 import { installTranscriptRightGutter, transcriptScrollState } from "./transcript-gutter.ts";
 import { installTranscriptScrollbar } from "./transcript-scrollbar.ts";
+import { installTranscriptRails } from "./transcript-scrollbar-rails.ts";
 
 export const SIDEBAR_BREAKPOINT = 140;
 const RAIL_WIDTH = 50;
@@ -403,7 +404,11 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			const ungutter = installTranscriptRightGutter(transcriptRoot);
 			if (ungutter) cleanups.push(ungutter);
 			// Matrix: double-rule scrollbar with a taller, sweeping thumb (transcript-scrollbar.ts).
-			cleanups.push(installTranscriptScrollbar(transcriptScrollState(transcriptRoot), { theme: () => theme, animate: () => options.scrollbarAnimate?.() ?? false, requestRender: () => tui.requestRender() }));
+			const transcriptState = transcriptScrollState(transcriptRoot);
+			const scrollbarCells: Array<{ thumb: boolean; text: string }> = [];
+			cleanups.push(installTranscriptScrollbar(transcriptState, { theme: () => theme, animate: () => options.scrollbarAnimate?.() ?? false, requestRender: () => tui.requestRender(), cells: scrollbarCells }));
+			// Matrix: the scrollbar becomes three columns, the thumb between two rails (transcript-scrollbar-rails.ts).
+			cleanups.push(installTranscriptRails(tui, transcriptState, { theme: () => theme, cells: scrollbarCells }));
 			// Fullscreen gives this stretched stack an explicit viewport height.
 			// Its intrinsic-height probe is unused; real painting traverses NODE.
 			// Delegating that probe to root.render would render the transcript twice.

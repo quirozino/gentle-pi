@@ -67,6 +67,12 @@ export interface TranscriptScrollbarOptions {
 	now?: () => number;
 	setInterval?: (callback: () => void, ms: number) => { cancel(): void };
 	queueMicrotask?: (callback: () => void) => void;
+	/**
+	 * Filled during each paint with every row's cell (by track offset), for a
+	 * painter that composites the scrollbar elsewhere in the same frame
+	 * (transcript-scrollbar-rails.ts). Cleared when a paint begins.
+	 */
+	cells?: Array<{ thumb: boolean; text: string }>;
 }
 
 /** A role's foreground ANSI turned into the same colour as background; undefined when unknown. */
@@ -139,6 +145,7 @@ export function installTranscriptScrollbar(state: unknown, options: TranscriptSc
 		piTop = undefined;
 		piHeight = 0;
 		span = last ? thumbSpan(last.piTop, last.piHeight, last.track) : undefined;
+		if (options.cells) options.cells.length = 0;
 		defer(() => {
 			painting = false;
 			if (piTop !== undefined) last = { track: row, piTop, piHeight };
@@ -163,16 +170,20 @@ export function installTranscriptScrollbar(state: unknown, options: TranscriptSc
 				piHeight += 1;
 			}
 			const inThumb = piThumb || (span !== undefined && at >= span.top && at < span.top + span.height);
-			if (!inThumb) return theme.fg(SCROLLBAR_ROLES.TRACK, TRACK_GLYPH);
+			const out = (text: string) => {
+				if (options.cells) options.cells[at] = { thumb: inThumb, text };
+				return text;
+			};
+			if (!inThumb) return out(theme.fg(SCROLLBAR_ROLES.TRACK, TRACK_GLYPH));
 			const top = span ? Math.min(span.top, piTop ?? span.top) : at;
 			const height = span ? span.height : 1;
 			const animate = options.animate();
 			ensureClock(animate);
-			if (!animate) return theme.fg(SCROLLBAR_ROLES.THUMB, THUMB_GLYPH);
+			if (!animate) return out(theme.fg(SCROLLBAR_ROLES.THUMB, THUMB_GLYPH));
 			// The band enters above the thumb and leaves below it: a cycle of height + 1 rows, in eighths.
 			const cycle = (height + 1) * 8;
 			const bandEighths = (Math.floor(now() / SWEEP_STEP_MS) % cycle) - 8;
-			return sweepCell(theme, at - top, bandEighths);
+			return out(sweepCell(theme, at - top, bandEighths));
 		} catch {
 			return stock(glyph);
 		}

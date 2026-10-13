@@ -64,6 +64,9 @@ export function transcriptScrollState(root: LayoutNode | undefined): unknown {
 	return scroll?.type === "scroll" ? scroll.state : undefined;
 }
 
+/** Columns a transcript scrollbar may reserve: pi's own, or the Matrix rails. */
+const RESERVED_COLUMNS = [1, 3] as const;
+
 export function installTranscriptRightGutter(root: LayoutNode | undefined): (() => void) | undefined {
 	const scroll = layoutNode(root?.entries?.[0]?.component);
 	if (scroll?.type !== "scroll") return undefined;
@@ -75,8 +78,10 @@ export function installTranscriptRightGutter(root: LayoutNode | undefined): (() 
 	const stock = document.render;
 	const ownRender = Object.prototype.hasOwnProperty.call(document, "render");
 	const wrapped: Render = function (this: unknown, width: number): string[] {
-		// The content width of a reserved scroll view is one column short of its own width.
-		const reserved = state.getContentWidth(width + 1) === width;
+		// The content width of a reserved scroll view is short of its own width by
+		// pi's one scrollbar column, or by the Matrix three-column rails
+		// (transcript-scrollbar-rails.ts).
+		const reserved = RESERVED_COLUMNS.some((columns) => state.getContentWidth(width + columns) === width);
 		return withTranscriptRightGutter(reserved, () => stock.call(this, width));
 	};
 	document[ORIGINAL] = stock;

@@ -186,6 +186,24 @@ export const PI_CONTRACTS: PiContract[] = [
 		},
 	},
 	{
+		id: "scrollbar-rails",
+		summary: "TuiAltScreen composes compositeScrollToEndIndicator(screen, nextLayout, width) before overlays, hit-tests the scrollbar on its last column, and lays the scroll box out with scrollView, rect and clip",
+		guards: ["lib/transcript-scrollbar-rails.ts", "tests/transcript-scrollbar-rails.test.ts"],
+		sources: ["tui-alt-screen.js", "layout.js"],
+		check(inputs) {
+			const problems: string[] = [];
+			const screen = src(inputs, "tui-alt-screen.js");
+			expectIncludes(problems, screen, "screen = this.compositeScrollToEndIndicator(screen, nextLayout, width);\n        screen = this.compositeOverlays(screen, width, height);", "TuiAltScreen.doRender composition order");
+			expectIncludes(problems, screen, "x === geometry.column &&", "TuiAltScreen.getScrollbarTargetAt column test");
+			const layout = src(inputs, "layout.js");
+			expectIncludes(problems, layout, "const column = box.rect.x + box.rect.width - 1;", "getScrollbarGeometry column");
+			expectIncludes(problems, layout, "children: [childBox],\n            scrollView,", "scroll layout box");
+			const proto = prototypeOf(inputs.tui, "TuiAltScreen", "pi-tui", problems);
+			if (proto) for (const key of ["compositeScrollToEndIndicator", "getScrollbarTargetAt"]) expectFunction(problems, proto, key, "TuiAltScreen.prototype");
+			return problems;
+		},
+	},
+	{
 		id: "scroll-view-content-width",
 		summary: "ScrollView.getContentWidth reserves a column only for scrollbar \"always\"",
 		guards: ["lib/shell-sidebar-layout.ts", "lib/user-message-frame.ts", "lib/transcript-gutter.ts", "tests/shell-sidebar-layout.test.ts"],
