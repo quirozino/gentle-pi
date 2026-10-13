@@ -1,0 +1,25 @@
+// Verbatim excerpt captured from the installed pi-tui 1.2.0 (layout.js). Re-capture only after reviewing a drift reported by `npm run check:pi-contracts`.
+// --- lines 190-197 ---
+        return undefined;
+    const minThumbHeight = Math.min(2, trackHeight);
+    const thumbHeight = Math.max(minThumbHeight, Math.min(trackHeight, Math.round((trackHeight * trackHeight) / contentHeight)));
+    const maxScrollTop = Math.max(0, contentHeight - trackHeight);
+    const maxThumbTop = trackHeight - thumbHeight;
+    const thumbOffset = maxScrollTop === 0 ? 0 : Math.round((box.scrollView.scrollTop / maxScrollTop) * maxThumbTop);
+    const column = box.rect.x + box.rect.width - 1;
+    if (column < box.clip.x || column >= box.clip.x + box.clip.width)
+// --- lines 208-221 ---
+function paintScrollbar(box, screen, totalWidth) {
+    const geometry = getScrollbarGeometry(box);
+    if (!geometry || !box.scrollView)
+        return;
+    for (let offset = 0; offset < geometry.trackHeight; offset++) {
+        const row = geometry.trackTop + offset;
+        if (row < box.clip.y || row >= box.clip.y + box.clip.height || row < 0 || row >= screen.length)
+            continue;
+        const isThumb = row >= geometry.thumbTop && row < geometry.thumbTop + geometry.thumbHeight;
+        const replacement = isThumb
+            ? box.scrollView.scrollbarThumbStyle(box.scrollView.isScrollbarActive ? "█" : "┃")
+            : box.scrollView.scrollbarTrackStyle("│");
+        screen[row] = replaceScrollbarCell(screen[row] ?? "", geometry.column, totalWidth, replacement, box.scrollView.scrollbar !== "always");
+    }

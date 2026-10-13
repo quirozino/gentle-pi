@@ -58,6 +58,12 @@ function layoutNode(component: unknown): LayoutNode | undefined {
  * holds while it renders. Returns a disposer restoring the stock render, or
  * undefined when the layout has another shape (nothing is changed then).
  */
+/** The transcript's scroll view state (the first entry of the fullscreen root stack), or undefined. */
+export function transcriptScrollState(root: LayoutNode | undefined): unknown {
+	const scroll = layoutNode(root?.entries?.[0]?.component);
+	return scroll?.type === "scroll" ? scroll.state : undefined;
+}
+
 export function installTranscriptRightGutter(root: LayoutNode | undefined): (() => void) | undefined {
 	const scroll = layoutNode(root?.entries?.[0]?.component);
 	if (scroll?.type !== "scroll") return undefined;

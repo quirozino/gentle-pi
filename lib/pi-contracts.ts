@@ -27,7 +27,8 @@ export type PiSourceFile =
 	| "extension-selector.js"
 	| "extension-input.js"
 	| "extension-editor.js"
-	| "dynamic-border.js";
+	| "dynamic-border.js"
+	| "layout.js";
 
 /** Where each source file lives inside the installed packages. */
 export const PI_SOURCE_PATHS: Record<PiSourceFile, { pkg: "pi-coding-agent" | "pi-tui"; path: string }> = {
@@ -43,6 +44,7 @@ export const PI_SOURCE_PATHS: Record<PiSourceFile, { pkg: "pi-coding-agent" | "p
 	"extension-input.js": { pkg: "pi-coding-agent", path: "dist/modes/interactive/components/extension-input.js" },
 	"extension-editor.js": { pkg: "pi-coding-agent", path: "dist/modes/interactive/components/extension-editor.js" },
 	"dynamic-border.js": { pkg: "pi-coding-agent", path: "dist/modes/interactive/components/dynamic-border.js" },
+	"layout.js": { pkg: "pi-tui", path: "dist/layout.js" },
 };
 
 export type PiContractInputs = {
@@ -164,6 +166,22 @@ export const PI_CONTRACTS: PiContract[] = [
 					problems.push(`${name} layout node is no longer { type: "${type}", entries, gap, align }`);
 				}
 			}
+			return problems;
+		},
+	},
+	{
+		id: "scrollbar-paint",
+		summary: "pi-tui paints the scrollbar one cell per row, top to bottom, through ScrollView.scrollbarThumbStyle/scrollbarTrackStyle with getScrollbarGeometry's thumb",
+		guards: ["lib/transcript-scrollbar.ts", "tests/transcript-scrollbar.test.ts"],
+		sources: ["layout.js"],
+		check(inputs) {
+			const problems: string[] = [];
+			const source = src(inputs, "layout.js");
+			expectIncludes(problems, source, "for (let offset = 0; offset < geometry.trackHeight; offset++) {", "paintScrollbar row loop");
+			expectIncludes(problems, source, "? box.scrollView.scrollbarThumbStyle(box.scrollView.isScrollbarActive ? \"█\" : \"┃\")", "paintScrollbar thumb callback");
+			expectIncludes(problems, source, ": box.scrollView.scrollbarTrackStyle(\"│\");", "paintScrollbar track callback");
+			expectIncludes(problems, source, "const thumbHeight = Math.max(minThumbHeight, Math.min(trackHeight, Math.round((trackHeight * trackHeight) / contentHeight)));", "getScrollbarGeometry thumb height");
+			expectIncludes(problems, source, "const thumbOffset = maxScrollTop === 0 ? 0 : Math.round((box.scrollView.scrollTop / maxScrollTop) * maxThumbTop);", "getScrollbarGeometry thumb offset");
 			return problems;
 		},
 	},
