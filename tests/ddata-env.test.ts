@@ -377,3 +377,41 @@ test("a Lab candidate keeps the candidate pipeline, never the overview", () => {
 	assert.equal(p?.overview, undefined);
 	assert.equal(p?.progressLabel, "paso 1 de 3");
 });
+
+const part = (pipeline: DdataPipeline | undefined, id: "web" | "firebase") => pipeline?.stageParts.find((entry) => entry.id === id)?.evidence;
+
+test("Stage is split into web and Firebase parts, each with its own evidence", () => {
+	const p = computePipeline({ lab: { headSha: HEAD }, stageWeb: { releaseName: "37af7f4-captcha-disabled", observedAt: NOW } }, OPTS);
+	assert.deepEqual(p?.stageParts.map((entry) => entry.name), ["Stage web", "Stage Firebase"]);
+	assert.deepEqual(part(p, "web"), { text: "en vivo · 37af7f4-captcha-disabled", tone: "running" });
+	assert.deepEqual(part(p, "firebase"), { text: "sin evidencia" });
+});
+
+test("ancestry: Firebase containing the candidate while the web release is behind reaches Stage but shows the old web", () => {
+	const p = computePipeline({
+		lab: { headSha: HEAD },
+		stageWeb: { releaseName: "9b1e2d3-captcha-disabled", observedAt: NOW },
+		stageFirebase: { headSha: OTHER, runId: 1, observedAt: NOW },
+		ancestry: { candidate: HEAD, stageWeb: "behind", stageFirebase: "contains" },
+	}, OPTS);
+	assert.equal(p?.current, "stage");
+	assert.deepEqual(part(p, "web"), { text: "atrasado · 9b1e2d3-captcha-disabled", tone: "info" });
+	assert.deepEqual(part(p, "firebase"), { text: `incluye · ${OTHER.slice(0, 12)}`, tone: "running" });
+});
+
+test("ancestry: diverged reads 'otra rama'; unknown and a relation for another candidate fall back to equality", () => {
+	const record = { stageFirebase: { headSha: OTHER, runId: 1, observedAt: NOW } };
+	const diverged = computePipeline({ lab: { headSha: HEAD }, ...record, ancestry: { candidate: HEAD, stageFirebase: "diverged" } }, OPTS);
+	assert.deepEqual(part(diverged, "firebase"), { text: `otra rama · ${OTHER.slice(0, 12)}`, tone: "info" });
+	assert.equal(diverged?.current, "lab");
+	const unknown = computePipeline({ lab: { headSha: HEAD }, ...record, ancestry: { candidate: HEAD, stageFirebase: "unknown" } }, OPTS);
+	assert.deepEqual(part(unknown, "firebase"), { text: `otra versión · ${OTHER.slice(0, 12)}`, tone: "info" });
+	const stale = computePipeline({ lab: { headSha: HEAD }, ...record, ancestry: { candidate: OTHER, stageFirebase: "contains" } }, OPTS);
+	assert.equal(stale?.current, "lab", "a relation computed for another candidate is ignored");
+});
+
+test("the overview splits Stage too, showing what each part publishes", () => {
+	const p = computePipeline({ stageFirebase: { headSha: OTHER, runId: 1, observedAt: NOW } }, OPTS);
+	assert.deepEqual(part(p, "web"), { text: "sin evidencia" });
+	assert.deepEqual(part(p, "firebase"), { text: `publicado · ${OTHER.slice(0, 12)}`, tone: "info" });
+});

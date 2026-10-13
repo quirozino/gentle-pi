@@ -1578,7 +1578,9 @@ test("Lab case at inner width 38 renders the approved layout", (t) => {
 		DOTS(38),
 		" ⬢ Lab             HEAD · 731c35826fe2",
 		DOTS(38),
-		" ◎ Stage    ≠ 37af7f4-captcha-disabled",
+		" ◎ Stage web ≠ 37af7f4-captcha-disabl…",
+		DOTS(38),
+		" ◎ Stage Firebase        sin evidencia",
 		DOTS(38),
 		" ★ Producción             sin registro",
 		DOTS(38),
@@ -1622,7 +1624,7 @@ test("detail rows carry icons in their step colour and values in their tone", ()
 	assert.ok(paintedIn(rows, "success", "⬢"), "passed Lab icon in success");
 	assert.ok(paintedIn(rows, "accent", "◎"), "current Stage icon in accent");
 	assert.ok(paintedIn(rows, "dim", "★"), "pending Producción icon dim");
-	assert.ok(paintedIn(rows, "warning", "sin conexión · en vivo · 731c358-x"), "the offline warning keeps its tone");
+	assert.ok(paintedIn(rows, "warning", "sin conexión · en vivo"), "the offline warning keeps its tone on the Stage web row");
 	rows = renderShellSidebarBar(envModel({}, { text: "Producción · Firebase", tone: "failure" }), recordingMatrixTheme, 54);
 	assert.ok(paintedIn(rows, "error", "⛁") && paintedIn(rows, "error", "Producción · Firebase"), "a production backend paints icon and value in the failure role");
 });
@@ -1655,7 +1657,8 @@ test("the group has no Promoción title and keeps Fase ODD and Estado together",
 test("values: ≠ for another version and the Entorno step text", (t) => {
 	useCardStyle(t, CARD_STYLE.NEON);
 	let text = flattened(renderShellSidebarBar(envModel(OTHER_RELEASE), recordingMatrixTheme, 54));
-	assert.match(text, /◎ Stage ≠ 37af7f4-captcha-disabled/);
+	assert.match(text, /◎ Stage web ≠ 37af7f4-captcha-disabled/);
+	assert.match(text, /◎ Stage Firebase sin evidencia/);
 	assert.doesNotMatch(text, /otra versión/);
 	assert.match(text, /◈ Entorno paso 1 de 3 · construcción/);
 	text = flattened(renderShellSidebarBar(envModel(AT_STAGE), recordingMatrixTheme, 54));
@@ -1714,7 +1717,9 @@ test("without a candidate the panel is an overview: no current step, published s
 		DOTS(38),
 		" ⬢ Lab                   sin candidato",
 		DOTS(38),
-		" ◎ Stage      37af7f4-captcha-disabled",
+		" ◎ Stage web  37af7f4-captcha-disabled",
+		DOTS(38),
+		" ◎ Stage Firebase        sin evidencia",
 		DOTS(38),
 		" ★ Producción             sin registro",
 		DOTS(38),
@@ -1731,4 +1736,20 @@ test("a candidate from the session's worktree shows an Origen row with worktree 
 	assert.equal(lines[lab + 1], DOTS(38));
 	assert.equal(lines[lab + 2], " ⎇ Origen              ddata-x · fix/y");
 	for (const width of [46, 30, 16]) assert.ok(renderShellSidebarBar(data, recordingMatrixTheme, width).every((row) => visibleWidth(row) <= width));
+});
+
+test("a Firebase deploy containing the candidate never hides an old web release", (t) => {
+	useCardStyle(t, CARD_STYLE.NEON);
+	const pipeline = computePipeline({
+		lab: { headSha: ENV_HEAD },
+		stageWeb: { releaseName: "9b1e2d3-captcha-disabled", observedAt: ENV_NOW },
+		stageFirebase: { headSha: "9b1e2d3c4a5f60718293a4b5c6d7e8f901234567", runId: 1, observedAt: ENV_NOW },
+		ancestry: { candidate: ENV_HEAD, stageWeb: "behind", stageFirebase: "contains" },
+	}, { now: ENV_NOW, staleAfterMs: 30 * 60_000 })!;
+	const rows = renderShellSidebarBar(model({ ddataEnv: { pipeline, backend: { text: "Stage" } } }), recordingMatrixTheme, 54);
+	const text = flattened(rows);
+	assert.match(text, /◈ Entorno paso 2 de 3 · prueba en vivo/);
+	assert.match(text, /◎ Stage web atrasado · 9b1e2d3-captcha/);
+	assert.match(text, /◎ Stage Firebase incluye · 9b1e2d3c4a5f/);
+	assert.ok(paintedIn(rows, "syntaxType", "atrasado · 9b1e2d3"), "behind is informational, never a warning");
 });

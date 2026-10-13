@@ -15,8 +15,8 @@ Branch: `feat/ddata-promotion-map` (worktree `gentle-pi-worktrees/ddata-promotio
 ## Tasks
 
 - [x] T1 — S1, S2: overview mode without candidate; remote reads independent of cwd; session worktree focus; Origen row. Route: inline (no writer trigger). Commit: see Log L4.
-- [ ] T2 — S3: Stage web/Firebase rows with ancestry against the candidate. Route: inline.
-- [ ] T3 — S4: research the PostgreSQL per-domain source (read-only explorer launched 2026-10-13), then implement if a reliable source exists. Route: explorer, then inline.
+- [x] T2 — S3: Stage web/Firebase rows with ancestry against the candidate. Route: inline. Commit: see Log L6.
+- [ ] T3 — S4: research done (L5): no reliable source; pending the user's decision on the source. Route: explorer, then inline.
 
 ## Log
 
@@ -25,3 +25,4 @@ Branch: `feat/ddata-promotion-map` (worktree `gentle-pi-worktrees/ddata-promotio
 - L3: Today `computePipeline` returns undefined without Lab and the snapshot skips remote reads outside a DDATA worktree (`lib/ddata-env-snapshot.ts` run()).
 - L4 (T1 done): overview pipeline when no candidate (`computePipeline`), Stage reads from any cwd, session focus from successful edit/write, tool `cwd`, bash `cd`/`git -C` (in command order) and session history at start (`lib/ddata-env-focus.ts`), Origen row `worktree · branch` under Lab. Checks: focused suites 478/478, typecheck 0 diagnostics; live probe from /srv/workspaces: overview `Stage=publicado · 7f72a0af5c70`, after an edit in ddata-dashboard-pendings `paso 1 de 3`, origin `ddata-dashboard-pendings · feature/dashboard-user-pendings`. Advisory: subshell `cd` is not scoped.
 - L5 (T3 research): no reliable per-domain PostgreSQL source exists. Stage choice is spread over VPS-only env flags (`DDATA_STAGE_ADAPTER_MODE`, `SUPABASE_STAGE_SHADOW_AUDIT_ENABLED`, `DDATA_STAGE_QUOTA_AUTHORITY`, unset on Stage per #7299), deployed edge functions (`/opt/supabase-stage/volumes/functions`, some from unmerged branches), and a hand-edited port-status doc stale since 2026-09-17. Offline repo files would be guesses. Needs the user's decision: a committed machine-readable manifest in DDATA, or an authorized read-only VPS probe.
+- L6 (T2 done): `stageParts` (Stage web, Stage Firebase) with git ancestry against the Lab candidate, computed in /srv/git/ddata.git (`rev-parse --verify`, `merge-base`), cached per candidate × deployed ref except `unknown`; labels `incluye` (contains, reaches Stage), `atrasado` (behind, info), `otra rama` (diverged, info), equality fallback when unknown. Checks: focused suites pass, typecheck 0 diagnostics, light suite 7106/7194 with 6 failures that also fail at base 779658930 in this worktree (float-chrome-roles, shell-sidebar-layout grouped Status, review-host-relay-routing x2, notification-customize x2 — worktree-path environmental). Live probe from /srv/workspaces with focus ddata-dashboard-pendings c755bfcc: Stage web `incluye · 7f72a0af5c70`, Stage Firebase `otra rama · 2148dd10c034`, verified by hand with `git merge-base --is-ancestor`.

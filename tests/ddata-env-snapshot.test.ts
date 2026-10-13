@@ -656,3 +656,35 @@ test("noteWork makes the session's DDATA worktree the candidate source, shown as
 	await controller.noteWork(OTHER_CWD, "s", `${DDATA_CWD}/src/other.ts`);
 	assert.equal(refreshes.length, 2, "the same worktree again does not refresh");
 });
+
+test("Stage ancestry is computed in the DDATA repository against the Lab candidate and cached, except unknown", async () => {
+	const WEB_FULL = "7f72a0af5c7077ecf0a8d28a037188da0ffa5d82";
+	const gitCalls: string[] = [];
+	let firebaseKnown = false;
+	const git = async (cwd: string, args: readonly string[]) => {
+		const line = args.join(" ");
+		if (cwd === DDATA_GIT_COMMON_DIR) {
+			gitCalls.push(line);
+			if (line === "rev-parse --verify --quiet 7f72a0af^{commit}") return WEB_FULL;
+			if (line === `rev-parse --verify --quiet ${FB_SHA}^{commit}`) return firebaseKnown ? FB_SHA : undefined;
+			if (line === `merge-base ${HEAD} ${WEB_FULL}`) return WEB_FULL;
+			if (line === `merge-base ${HEAD} ${FB_SHA}`) return HEAD;
+			return undefined;
+		}
+		if (cwd !== DDATA_CWD) return line.includes("--git-common-dir") ? "/srv/git/other.git" : undefined;
+		if (line.includes("--git-common-dir")) return DDATA_GIT_COMMON_DIR;
+		if (line === "rev-parse HEAD") return HEAD;
+		return undefined;
+	};
+	const exec: ExecFn = async (file) => (file === "gh" ? ghOk() : ok("releases/7f72a0af-captcha-disabled\n"));
+	const snapshot = createDdataEnvSnapshot({ exec, fs: fakeFs({ [KEY]: "K" }), git, homedir: HOME, now: () => 1_800_000_000_000 });
+	const first = await snapshot.refresh(DDATA_CWD);
+	assert.deepEqual(first.ancestry, { candidate: HEAD, stageWeb: "behind" }, "an unknown Firebase commit is left out");
+	firebaseKnown = true;
+	const second = await snapshot.refresh(DDATA_CWD);
+	assert.deepEqual(second.ancestry, { candidate: HEAD, stageWeb: "behind", stageFirebase: "contains" });
+	assert.equal(gitCalls.filter((call) => call === `merge-base ${HEAD} ${WEB_FULL}`).length, 1, "a known relation is cached");
+	const callsBefore = gitCalls.length;
+	assert.deepEqual(snapshot.current(DDATA_CWD)?.ancestry, second.ancestry);
+	assert.equal(gitCalls.length, callsBefore, "current() runs no git");
+});

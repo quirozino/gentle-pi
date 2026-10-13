@@ -83,12 +83,30 @@ export interface ProductionRecord {
 	readonly observedAt: number;
 }
 
+/**
+ * How a deployed commit relates to the candidate, from git history:
+ * `same` commit; it `contains` the candidate (the candidate is an ancestor);
+ * it is `behind` (an ancestor of the candidate); `diverged` (neither); or
+ * `unknown` (the commit is not in the local repository).
+ */
+export type DdataAncestry = "same" | "contains" | "behind" | "diverged" | "unknown";
+
+/** Ancestry of each Stage part's deployed commit against the Lab candidate. */
+export interface DdataStageAncestry {
+	/** The candidate the relations were computed for. */
+	readonly candidate: string;
+	readonly stageWeb?: DdataAncestry;
+	readonly stageFirebase?: DdataAncestry;
+}
+
 export interface DdataEnvEvidence {
 	/** Absent when neither the cwd nor the session's work points at a DDATA worktree. */
 	readonly lab?: LabEvidence;
 	readonly stageWeb?: StageWebRecord | DdataEnvReadError;
 	readonly stageFirebase?: StageFirebaseRecord | DdataEnvReadError;
 	readonly production?: ProductionRecord | DdataEnvReadError;
+	/** Git ancestry of the Stage parts against the Lab candidate; ignored for any other candidate. */
+	readonly ancestry?: DdataStageAncestry;
 }
 
 export interface ComputePipelineOptions {
@@ -111,6 +129,13 @@ export interface DdataPipelineStep extends DdataEnvStepDef {
 	readonly evidence: DdataEnvEvidenceLabel;
 }
 
+/** One Stage part (web release, Firebase deploy) with its own evidence. */
+export interface DdataStagePart {
+	readonly id: "web" | "firebase";
+	readonly name: string;
+	readonly evidence: DdataEnvEvidenceLabel;
+}
+
 export interface DdataPipeline {
 	readonly current: DdataEnvStepId;
 	readonly index: 1 | 2 | 3;
@@ -120,6 +145,8 @@ export interface DdataPipeline {
 	readonly progressLabel: string;
 	readonly candidateShort: string;
 	readonly steps: readonly DdataPipelineStep[];
+	/** Stage split by part, so a green Firebase deploy never hides an old web release. */
+	readonly stageParts: readonly DdataStagePart[];
 	/**
 	 * No candidate: the steps report what each environment publishes now, no
 	 * step is current and there is no "paso N de 3".
@@ -200,13 +227,31 @@ function sourced(kind: "match" | "other", label: DdataEnvEvidenceLabel, lastErro
 const lastErrorOf = (source: object): DdataEnvErrorCode | undefined =>
 	"lastError" in source ? (source as { lastError?: DdataEnvErrorCode }).lastError : undefined;
 
-function classifyStageWeb(source: DdataEnvEvidence["stageWeb"], candidate: string | undefined, options: ComputePipelineOptions): SourceOutcome {
+/** The label for a deployed record by its git relation to the candidate; undefined falls back to equality. */
+function byAncestry(ancestry: DdataAncestry | undefined, shown: string, matchLabel: DdataEnvEvidenceLabel, lastError: DdataEnvErrorCode | undefined): SourceOutcome | undefined {
+	switch (ancestry) {
+		case "same":
+			return sourced("match", matchLabel, lastError);
+		case "contains":
+			return sourced("match", { text: `incluye · ${shown}`, tone: "running" }, lastError);
+		case "behind":
+			return sourced("other", { text: `atrasado · ${shown}`, tone: "info" }, lastError);
+		case "diverged":
+			return sourced("other", { text: `otra rama · ${shown}`, tone: "info" }, lastError);
+		default:
+			return undefined;
+	}
+}
+
+function classifyStageWeb(source: DdataEnvEvidence["stageWeb"], candidate: string | undefined, options: ComputePipelineOptions, ancestry?: DdataAncestry): SourceOutcome {
 	if (!source) return { kind: "missing" };
 	if (isReadError(source)) return { kind: "error" };
 	const lastError = lastErrorOf(source);
 	if (!isFresh(source.observedAt, options)) return { kind: "stale", offline: lastError !== undefined };
 	const release = displayRelease(source.releaseName);
 	if (candidate === undefined) return sourced("other", { text: `${PUBLISHED} · ${release}`, tone: "info" }, lastError);
+	const related = byAncestry(ancestry, release, { text: `en vivo · ${release}`, tone: "running" }, lastError);
+	if (related) return related;
 	if (webMatches(source.releaseName, candidate)) return sourced("match", { text: `en vivo · ${release}`, tone: "running" }, lastError);
 	return sourced("other", { text: `otra versión · ${release}`, tone: "info" }, lastError);
 }
@@ -216,6 +261,7 @@ function classifyShaRecord(
 	candidate: string | undefined,
 	options: ComputePipelineOptions,
 	matchVerb: string,
+	ancestry?: DdataAncestry,
 ): SourceOutcome {
 	if (!source) return { kind: "missing" };
 	if (isReadError(source)) return { kind: "error" };
@@ -223,6 +269,8 @@ function classifyShaRecord(
 	if (!isFresh(source.observedAt, options)) return { kind: "stale", offline: lastError !== undefined };
 	const short = shortSha(source.headSha);
 	if (candidate === undefined) return sourced("other", { text: `${PUBLISHED} · ${short}`, tone: "info" }, lastError);
+	const related = byAncestry(ancestry, short, { text: `${matchVerb} · ${short}`, tone: "running" }, lastError);
+	if (related) return related;
 	if (shaMatches(source.headSha, candidate)) return sourced("match", { text: `${matchVerb} · ${short}`, tone: "running" }, lastError);
 	return sourced("other", { text: `otra versión · ${short}`, tone: "info" }, lastError);
 }
@@ -259,13 +307,10 @@ export function computePipeline(evidence: DdataEnvEvidence, options: ComputePipe
 	const candidate = normalizeSha(candidateSource);
 	const candidateShort = shortSha(candidate);
 
-	const stage = combine(
-		[
-			classifyStageWeb(evidence.stageWeb, candidate, options),
-			classifyShaRecord(evidence.stageFirebase, candidate, options, "registrado"),
-		],
-		"sin evidencia",
-	);
+	const ancestry = evidence.ancestry && normalizeSha(evidence.ancestry.candidate) === candidate ? evidence.ancestry : undefined;
+	const web = classifyStageWeb(evidence.stageWeb, candidate, options, ancestry?.stageWeb);
+	const firebase = classifyShaRecord(evidence.stageFirebase, candidate, options, "registrado", ancestry?.stageFirebase);
+	const stage = combine([web, firebase], "sin evidencia");
 	const production = combine([classifyShaRecord(evidence.production, candidate, options, "en producción")], "sin registro");
 
 	const labLabel: DdataEnvEvidenceLabel = {
@@ -292,15 +337,23 @@ export function computePipeline(evidence: DdataEnvEvidence, options: ComputePipe
 		progressLabel: `paso ${current.index} de ${DDATA_ENV_TOTAL_STEPS}`,
 		candidateShort,
 		steps,
+		stageParts: stageParts(web, firebase),
 	};
+}
+
+/** Each Stage part labelled on its own; a part with no record reads "sin evidencia". */
+function stageParts(web: SourceOutcome, firebase: SourceOutcome): DdataStagePart[] {
+	return [
+		{ id: "web", name: "Stage web", evidence: combine([web], "sin evidencia").label },
+		{ id: "firebase", name: "Stage Firebase", evidence: combine([firebase], "sin evidencia").label },
+	];
 }
 
 function overviewPipeline(evidence: DdataEnvEvidence, options: ComputePipelineOptions): DdataPipeline | undefined {
 	if (!evidence.stageWeb && !evidence.stageFirebase && !evidence.production) return undefined;
-	const stage = combine(
-		[classifyStageWeb(evidence.stageWeb, undefined, options), classifyShaRecord(evidence.stageFirebase, undefined, options, PUBLISHED)],
-		"sin evidencia",
-	);
+	const web = classifyStageWeb(evidence.stageWeb, undefined, options);
+	const firebase = classifyShaRecord(evidence.stageFirebase, undefined, options, PUBLISHED);
+	const stage = combine([web, firebase], "sin evidencia");
 	const production = combine([classifyShaRecord(evidence.production, undefined, options, PUBLISHED)], "sin registro");
 	const labels: Record<DdataEnvStepId, DdataEnvEvidenceLabel> = {
 		lab: { text: NO_CANDIDATE_TEXT },
@@ -315,6 +368,7 @@ function overviewPipeline(evidence: DdataEnvEvidence, options: ComputePipelineOp
 		progressLabel: NO_CANDIDATE_TEXT,
 		candidateShort: "",
 		steps: DDATA_ENV_STEPS.map((def): DdataPipelineStep => ({ ...def, status: "pending", evidence: labels[def.id] })),
+		stageParts: stageParts(web, firebase),
 		overview: true,
 	};
 }

@@ -255,7 +255,7 @@ function originText(origin: NonNullable<DdataEnvView["origin"]>): string {
 	return origin.branch ? `${name} · ${origin.branch}` : name;
 }
 
-/** The environment sections of the promotion group: boxes, Entorno, one row per step (Origen under Lab), Backend. */
+/** The environment sections of the promotion group: boxes, Entorno, one row per step (Origen under Lab, Stage per part), Backend. */
 function ddataEnvSections(env: DdataEnvView, theme: ShellBarTheme): StatusSection[] {
 	const current = env.pipeline.steps[env.pipeline.index - 1]!;
 	const tone = (value: DdataEnvTone | undefined) => (value ? ENV_TONE_ROLE[value] : undefined);
@@ -268,7 +268,12 @@ function ddataEnvSections(env: DdataEnvView, theme: ShellBarTheme): StatusSectio
 				: detailRow(theme, width, { icon: ENTORNO_ICON, iconRole: ENV_ROLE.CURRENT, key: "Entorno", value: `${env.pipeline.progressLabel} · ${current.responsibility}` })],
 		},
 		...env.pipeline.steps.flatMap((step): StatusSection[] => [
-			{ fitted: (width) => [detailRow(theme, width, { icon: STEP_ICON[step.id], iconRole: stepRole(step), key: step.name, value: displayEvidence(step.evidence.text), valueRole: tone(step.evidence.tone) })] },
+			// Stage reads per part (web release, Firebase deploy), in the Stage step's role.
+			...(step.id === "stage" && env.pipeline.stageParts.length > 0
+				? env.pipeline.stageParts.map((part): StatusSection => ({
+					fitted: (width) => [detailRow(theme, width, { icon: STEP_ICON.stage, iconRole: stepRole(step), key: part.name, value: displayEvidence(part.evidence.text), valueRole: tone(part.evidence.tone) })],
+				}))
+				: [{ fitted: (width: number) => [detailRow(theme, width, { icon: STEP_ICON[step.id], iconRole: stepRole(step), key: step.name, value: displayEvidence(step.evidence.text), valueRole: tone(step.evidence.tone) })] }]),
 			// Where the candidate comes from, right under Lab: the worktree, then its branch.
 			...(step.id === "lab" && env.origin ? [{ fitted: (width: number) => [detailRow(theme, width, { icon: ORIGIN_ICON, iconRole: ROLE.LABEL, key: "Origen", value: originText(env.origin!) })] }] : []),
 		]),

@@ -28,6 +28,9 @@ import {
 	type DdataEnvErrorCode,
 	type DdataEnvEvidence,
 	type DdataEnvReadError,
+	type DdataAncestry,
+	type DdataStageAncestry,
+	releaseHexPrefix,
 	type LabEvidence,
 	type LabSource,
 	type StageFirebaseRecord,
@@ -123,6 +126,8 @@ interface RemoteState {
 const COMMON_DIR_ARGS = ["rev-parse", "--path-format=absolute", "--git-common-dir"] as const;
 const HEAD_ARGS = ["rev-parse", "HEAD"] as const;
 const TOPLEVEL_ARGS = ["rev-parse", "--show-toplevel"] as const;
+/** Ancestry results kept (candidate × deployed commit); oldest dropped first. */
+const MAX_ANCESTRY_ENTRIES = 64;
 const BRANCH_ARGS = ["symbolic-ref", "--quiet", "--short", "HEAD"] as const;
 const FULL_SHA = /^[0-9a-f]{40}$/;
 const RELEASE_NAME = /^[A-Za-z0-9._-]{1,80}$/;
@@ -383,6 +388,8 @@ export function createDdataEnvSnapshot(deps: DdataEnvSnapshotDeps = {}): DdataEn
 	let cacheLoaded = false;
 	const inflight = new Map<string, Job<DdataEnvEvidence>>();
 	let remoteJob: Job<void> | undefined;
+	/** `${candidate}\0${deployed ref}` → relation; deployed refs are release names or SHAs. */
+	const ancestryByPair = new Map<string, DdataAncestry>();
 
 	const expandHome = (path: string) => (path.startsWith("~/") ? posix.join(home, path.slice(2)) : path);
 
@@ -393,9 +400,54 @@ export function createDdataEnvSnapshot(deps: DdataEnvSnapshotDeps = {}): DdataEn
 		if (lab) evidence.lab = lab;
 		if (remoteEnabled && remote?.stageWeb) evidence.stageWeb = remote.stageWeb;
 		if (remoteEnabled && remote?.stageFirebase) evidence.stageFirebase = remote.stageFirebase;
+		if (lab) {
+			const ancestry = ancestryFor(lab.headSha, evidence);
+			if (ancestry) evidence.ancestry = ancestry;
+		}
 		// Nothing read yet for this cwd and no remote record: nothing to show.
 		if (own === undefined && !lab && !evidence.stageWeb && !evidence.stageFirebase) return undefined;
 		return evidence;
+	}
+
+	const webRef = (stageWeb: DdataEnvEvidence["stageWeb"]) => (stageWeb && "releaseName" in stageWeb ? releaseHexPrefix(stageWeb.releaseName) : undefined);
+	const firebaseRef = (stageFirebase: DdataEnvEvidence["stageFirebase"]) => (stageFirebase && "headSha" in stageFirebase ? stageFirebase.headSha.toLowerCase() : undefined);
+
+	/** Cached relations for the candidate against the current Stage records; no I/O. */
+	function ancestryFor(candidate: string, evidence: DdataEnvEvidence): DdataStageAncestry | undefined {
+		const web = webRef(evidence.stageWeb);
+		const firebase = firebaseRef(evidence.stageFirebase);
+		const stageWeb = web === undefined ? undefined : ancestryByPair.get(`${candidate}\0${web}`);
+		const stageFirebase = firebase === undefined ? undefined : ancestryByPair.get(`${candidate}\0${firebase}`);
+		if (stageWeb === undefined && stageFirebase === undefined) return undefined;
+		return { candidate, ...(stageWeb ? { stageWeb } : {}), ...(stageFirebase ? { stageFirebase } : {}) };
+	}
+
+	/** How `deployedRef` (a SHA or a release's hex prefix) relates to `candidate`, from the DDATA repository. */
+	async function relate(candidate: string, deployedRef: string): Promise<DdataAncestry> {
+		try {
+			const deployed = (await git(DDATA_GIT_COMMON_DIR, ["rev-parse", "--verify", "--quiet", `${deployedRef}^{commit}`]))?.trim().toLowerCase();
+			if (deployed === undefined || !FULL_SHA.test(deployed)) return "unknown";
+			if (deployed === candidate) return "same";
+			// No merge base (exit 1) means unrelated histories.
+			const base = (await git(DDATA_GIT_COMMON_DIR, ["merge-base", candidate, deployed]))?.trim().toLowerCase();
+			if (base === candidate) return "contains";
+			if (base === deployed) return "behind";
+			return "diverged";
+		} catch {
+			return "unknown";
+		}
+	}
+
+	async function refreshAncestry(candidate: string): Promise<void> {
+		const refs = [webRef(remote?.stageWeb), firebaseRef(remote?.stageFirebase)].filter((ref): ref is string => ref !== undefined);
+		for (const ref of refs) {
+			const key = `${candidate}\0${ref}`;
+			if (ancestryByPair.has(key)) continue;
+			const relation = await relate(candidate, ref);
+			// "unknown" may resolve after a fetch: never cache it.
+			if (relation !== "unknown") ancestryByPair.set(key, relation);
+			while (ancestryByPair.size > MAX_ANCESTRY_ENTRIES) ancestryByPair.delete(ancestryByPair.keys().next().value!);
+		}
 	}
 
 	async function isDdataDir(dir: string): Promise<boolean> {
@@ -515,6 +567,8 @@ export function createDdataEnvSnapshot(deps: DdataEnvSnapshotDeps = {}): DdataEn
 				});
 				await remoteJob.promise;
 			}
+			const candidate = (lab ?? (focus !== undefined ? labByDir.get(focus) : undefined))?.headSha;
+			if (candidate !== undefined && remoteEnabled) await refreshAncestry(candidate);
 		} catch {
 			// Never throw: whatever was established so far is returned below.
 		}
