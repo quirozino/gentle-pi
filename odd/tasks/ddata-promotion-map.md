@@ -1,0 +1,27 @@
+# DDATA promotion map
+
+Objective: show the DDATA Lab › Stage › Producción panel from any cwd (including /srv/workspaces), with an evidence-only candidate, Stage split by part, and later a per-domain PostgreSQL map.
+Branch: `feat/ddata-promotion-map` (worktree `gentle-pi-worktrees/ddata-promotion-map`, base 779658930). Delivery: ask-on-risk. Tests: `node --experimental-strip-types --test <file>`, suite `npm run -s test:light`, `CI=true pnpm run -s typecheck`.
+
+## Specs
+
+- S1 — Always visible. User: "pero deberia mostrarse en cualquier lado o siempre, porque suelo trabajar desde workspaces tambien no?" and "yo suelo trabajar ek workspaces pero por ahi abro una carpeta la condicion puede variar cuando trabajo para publicar algo en stage o produccion". The panel renders in any cwd, not only inside a worktree of `/srv/git/ddata.git`.
+- S2 — Candidate, evidence only, in this order (accepted proposal, item 2): (a) the cwd is a DDATA worktree → its HEAD; (b) otherwise the last DDATA worktree this session worked in (a file it edited or wrote, an explicit `cd`/`git -C` into it, a tool `cwd`) → that worktree's HEAD; (c) otherwise "sin candidato" and the panel shows only what is published now in each environment, without "paso N de 3". The panel always shows which worktree or branch the candidate comes from.
+- S3 — Stage split (accepted proposal, item 3): Web, Firebase (and PostgreSQL once S4 has a source) each with its commit; each says whether it contains the candidate or diverged, by git ancestry, not only equality. Must expose the case "Firebase green but web old".
+- S4 — Per-domain backend map (accepted proposal, item 4): which domains are on PostgreSQL in Stage vs still Firestore, Production on Firebase. Replaces the "Backend" row. Needs a reliable source first; never guessed.
+- S5 — Production keeps "sin registro" until something records the deployed commit; changing that is a separate decision needing authorization.
+- Constraints (existing): evidence only; no network or exec in the render path; yellow only for warnings; Matrix-Green theme roles only.
+
+## Tasks
+
+- [x] T1 — S1, S2: overview mode without candidate; remote reads independent of cwd; session worktree focus; Origen row. Route: inline (no writer trigger). Commit: see Log L4.
+- [ ] T2 — S3: Stage web/Firebase rows with ancestry against the candidate. Route: inline.
+- [ ] T3 — S4: research the PostgreSQL per-domain source (read-only explorer launched 2026-10-13), then implement if a reliable source exists. Route: explorer, then inline.
+
+## Log
+
+- L1 (2026-10-13, user): "[Image #11] veo que en pi, cuando abro, no sale el sidebar como lo tenia, sufrio tras la actualizacion puedes revisar" / "pero las secciones por ejemplo de que paso  esta uno ambiente, backend etc lab, stage, produccion, etc" / "pero deberia mostrarse en cualquier lado o siempre, porque suelo trabajar desde workspaces tambien no?" / "yo suelo trabajar ek workspaces pero por ahi abro una carpeta la condicion puede variar cuando trabajo para publicar algo en stage o produccion, busca en engram mi forma de trabajar y traeme una propuesta" / "considera la propuesta, entiendo el nuevo ecosistema de postgresql, sumando la promocion o mapa de trabajo" / "si" (approved E1+E2 and research for E3).
+- L2: Engram evidence: 154 pi sessions in /srv/workspaces vs 19 in the next ddata worktree; Stage deploys are feature-branch heads before merge; Stage = VPS web release + Firebase staging-deploy.yml + Supabase/PostgreSQL applied separately; Stage moves domain by domain to PostgreSQL (#5398, #7292); Production is Firebase with no recorded SHA (#7100, #4297).
+- L3: Today `computePipeline` returns undefined without Lab and the snapshot skips remote reads outside a DDATA worktree (`lib/ddata-env-snapshot.ts` run()).
+- L4 (T1 done): overview pipeline when no candidate (`computePipeline`), Stage reads from any cwd, session focus from successful edit/write, tool `cwd`, bash `cd`/`git -C` (in command order) and session history at start (`lib/ddata-env-focus.ts`), Origen row `worktree · branch` under Lab. Checks: focused suites 478/478, typecheck 0 diagnostics; live probe from /srv/workspaces: overview `Stage=publicado · 7f72a0af5c70`, after an edit in ddata-dashboard-pendings `paso 1 de 3`, origin `ddata-dashboard-pendings · feature/dashboard-user-pendings`. Advisory: subshell `cd` is not scoped.
+- L5 (T3 research): no reliable per-domain PostgreSQL source exists. Stage choice is spread over VPS-only env flags (`DDATA_STAGE_ADAPTER_MODE`, `SUPABASE_STAGE_SHADOW_AUDIT_ENABLED`, `DDATA_STAGE_QUOTA_AUTHORITY`, unset on Stage per #7299), deployed edge functions (`/opt/supabase-stage/volumes/functions`, some from unmerged branches), and a hand-edited port-status doc stale since 2026-09-17. Offline repo files would be guesses. Needs the user's decision: a committed machine-readable manifest in DDATA, or an authorized read-only VPS probe.

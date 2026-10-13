@@ -1,7 +1,9 @@
 // Background refresher that collects DDATA environment evidence for
 // `computePipeline` (lib/ddata-env.ts).
 //
-// - Runs only for DDATA worktrees (git common dir == DDATA_GIT_COMMON_DIR).
+// - Lab comes from a DDATA worktree (git common dir == DDATA_GIT_COMMON_DIR):
+//   the cwd when it is one, else the worktree the session worked in (`focus`).
+//   Remote Stage reads run from any cwd, so the panel can show an overview.
 // - Remote reads (Stage web via ssh readlink, Stage Firebase via gh) run with
 //   argv arrays, never a shell string, each bounded by a timeout.
 // - Remote evidence is reused for a TTL, persisted atomically to a 0600 cache
@@ -27,6 +29,7 @@ import {
 	type DdataEnvEvidence,
 	type DdataEnvReadError,
 	type LabEvidence,
+	type LabSource,
 	type StageFirebaseRecord,
 	type StageWebRecord,
 } from "./ddata-env.ts";
@@ -100,9 +103,12 @@ export interface DdataEnvConfig {
 }
 
 export interface DdataEnvSnapshot {
-	refresh(cwd: string, options?: { force?: boolean }): Promise<DdataEnvEvidence>;
-	/** Last known evidence for `cwd` without any I/O; undefined before the first refresh. */
-	current(cwd: string): DdataEnvEvidence | undefined;
+	/** `focus`: a DDATA worktree the session worked in, used for Lab when `cwd` is not one. */
+	refresh(cwd: string, options?: { force?: boolean; focus?: string }): Promise<DdataEnvEvidence>;
+	/** Last known evidence for `cwd` (and `focus`) without any I/O; undefined before anything is known. */
+	current(cwd: string, focus?: string): DdataEnvEvidence | undefined;
+	/** Top level of the DDATA worktree holding `path` (a file or directory), else undefined; never rejects. */
+	resolveWorktree(path: string): Promise<string | undefined>;
 }
 
 type StageWebEvidence = StageWebRecord | DdataEnvReadError;
@@ -116,6 +122,8 @@ interface RemoteState {
 
 const COMMON_DIR_ARGS = ["rev-parse", "--path-format=absolute", "--git-common-dir"] as const;
 const HEAD_ARGS = ["rev-parse", "HEAD"] as const;
+const TOPLEVEL_ARGS = ["rev-parse", "--show-toplevel"] as const;
+const BRANCH_ARGS = ["symbolic-ref", "--quiet", "--short", "HEAD"] as const;
 const FULL_SHA = /^[0-9a-f]{40}$/;
 const RELEASE_NAME = /^[A-Za-z0-9._-]{1,80}$/;
 const SSH_HOST = /^[A-Za-z0-9][A-Za-z0-9.:-]{0,252}$/;
@@ -368,8 +376,8 @@ export function createDdataEnvSnapshot(deps: DdataEnvSnapshotDeps = {}): DdataEn
 	const configPath = posix.join(home, DDATA_ENV_CONFIG_RELATIVE);
 	const cachePath = posix.join(home, DDATA_ENV_CACHE_RELATIVE);
 
-	/** null = not a DDATA worktree (or no readable HEAD). */
-	const labByCwd = new Map<string, LabEvidence | null>();
+	/** null = not a DDATA worktree (or no readable HEAD). Keyed by the directory read. */
+	const labByDir = new Map<string, LabEvidence | null>();
 	let remote: RemoteState | undefined;
 	let remoteEnabled = true;
 	let cacheLoaded = false;
@@ -378,24 +386,53 @@ export function createDdataEnvSnapshot(deps: DdataEnvSnapshotDeps = {}): DdataEn
 
 	const expandHome = (path: string) => (path.startsWith("~/") ? posix.join(home, path.slice(2)) : path);
 
-	function evidenceFor(cwd: string): DdataEnvEvidence | undefined {
-		const lab = labByCwd.get(cwd);
-		if (lab === undefined) return undefined;
-		if (lab === null) return {};
-		const evidence: { -readonly [K in keyof DdataEnvEvidence]: DdataEnvEvidence[K] } = { lab };
+	function evidenceFor(cwd: string, focus?: string): DdataEnvEvidence | undefined {
+		const own = labByDir.get(cwd);
+		const lab = own ?? (focus !== undefined && focus !== cwd ? labByDir.get(focus) : undefined) ?? undefined;
+		const evidence: { -readonly [K in keyof DdataEnvEvidence]: DdataEnvEvidence[K] } = {};
+		if (lab) evidence.lab = lab;
 		if (remoteEnabled && remote?.stageWeb) evidence.stageWeb = remote.stageWeb;
 		if (remoteEnabled && remote?.stageFirebase) evidence.stageFirebase = remote.stageFirebase;
+		// Nothing read yet for this cwd and no remote record: nothing to show.
+		if (own === undefined && !lab && !evidence.stageWeb && !evidence.stageFirebase) return undefined;
 		return evidence;
 	}
 
-	async function readLab(cwd: string): Promise<LabEvidence | null> {
+	async function isDdataDir(dir: string): Promise<boolean> {
+		const common = await git(dir, COMMON_DIR_ARGS);
+		return common !== undefined && common.replace(/\/+$/, "") === DDATA_GIT_COMMON_DIR;
+	}
+
+	async function readLab(dir: string, source: LabSource): Promise<LabEvidence | null> {
 		try {
-			const common = await git(cwd, COMMON_DIR_ARGS);
-			if (common === undefined || common.replace(/\/+$/, "") !== DDATA_GIT_COMMON_DIR) return null;
-			const head = (await git(cwd, HEAD_ARGS))?.trim().toLowerCase();
-			return head !== undefined && FULL_SHA.test(head) ? { headSha: head } : null;
+			if (!(await isDdataDir(dir))) return null;
+			const head = (await git(dir, HEAD_ARGS))?.trim().toLowerCase();
+			if (head === undefined || !FULL_SHA.test(head)) return null;
+			const [worktree, branch] = await Promise.all([git(dir, TOPLEVEL_ARGS), git(dir, BRANCH_ARGS)]);
+			return {
+				headSha: head,
+				...(worktree?.trim() ? { worktree: worktree.trim() } : {}),
+				...(branch?.trim() ? { branch: branch.trim() } : {}),
+				source,
+			};
 		} catch {
 			return null;
+		}
+	}
+
+	async function resolveWorktree(path: string): Promise<string | undefined> {
+		try {
+			// A file that does not exist yet (a write) still names its worktree: walk up to a directory that exists.
+			let dir = posix.normalize(path);
+			for (let hops = 0; hops < 64 && dir !== "/" && !(await fs.exists(dir)); hops++) dir = posix.dirname(dir);
+			if (!(await isDdataDir(dir))) {
+				const parent = posix.dirname(dir);
+				if (parent === dir || !(await isDdataDir(parent))) return undefined;
+				dir = parent;
+			}
+			return (await git(dir, TOPLEVEL_ARGS))?.trim() || undefined;
+		} catch {
+			return undefined;
 		}
 	}
 
@@ -465,11 +502,11 @@ export function createDdataEnvSnapshot(deps: DdataEnvSnapshotDeps = {}): DdataEn
 		await writeCache(remote);
 	}
 
-	async function run(cwd: string, force: boolean): Promise<DdataEnvEvidence> {
+	async function run(cwd: string, force: boolean, focus: string | undefined): Promise<DdataEnvEvidence> {
 		try {
-			const lab = await readLab(cwd);
-			labByCwd.set(cwd, lab);
-			if (lab === null) return {};
+			const lab = await readLab(cwd, "cwd");
+			labByDir.set(cwd, lab);
+			if (lab === null && focus !== undefined && focus !== cwd) labByDir.set(focus, await readLab(focus, "session"));
 			const config = parseConfig(await fs.readFile(configPath).catch(() => undefined));
 			remoteEnabled = config.enabled;
 			if (config.enabled) {
@@ -481,19 +518,21 @@ export function createDdataEnvSnapshot(deps: DdataEnvSnapshotDeps = {}): DdataEn
 		} catch {
 			// Never throw: whatever was established so far is returned below.
 		}
-		return evidenceFor(cwd) ?? {};
+		return evidenceFor(cwd, focus) ?? {};
 	}
 
 	return {
 		refresh(cwd, options = {}) {
 			const force = options.force === true;
-			const job = joinOrChain(inflight.get(cwd), force, () => run(cwd, force), (done) => {
-				if (inflight.get(cwd) === done) inflight.delete(cwd);
+			const key = `${cwd}\0${options.focus ?? ""}`;
+			const job = joinOrChain(inflight.get(key), force, () => run(cwd, force, options.focus), (done) => {
+				if (inflight.get(key) === done) inflight.delete(key);
 			});
-			inflight.set(cwd, job);
+			inflight.set(key, job);
 			return job.promise;
 		},
 		current: evidenceFor,
+		resolveWorktree,
 	};
 }
 
@@ -507,6 +546,8 @@ export const DDATA_ENV_STALE_AFTER_MS = 30 * 60_000;
 export interface DdataEnvView {
 	pipeline: DdataPipeline;
 	backend: BackendRow;
+	/** Where the candidate comes from; absent without a candidate. */
+	origin?: { worktree: string; branch?: string; source: LabSource };
 }
 
 export interface DdataEnvControllerDeps {
@@ -528,7 +569,14 @@ export interface DdataEnvController {
 	 * a force request stays sticky until it runs; a new cwd refreshes at once.
 	 */
 	schedule(cwd: string, options?: { force?: boolean }): void;
-	/** Render-path view: no I/O, no exec; undefined outside a DDATA worktree or before evidence. */
+	/**
+	 * Records that the session worked on `path` (a file it edited or wrote, a
+	 * directory it ran in). When it lies in a DDATA worktree, that worktree
+	 * becomes the session's candidate source outside a DDATA cwd. Resolves true
+	 * when `path` is in a DDATA worktree; never rejects.
+	 */
+	noteWork(cwd: string, sessionId: string | undefined, path: string): Promise<boolean>;
+	/** Render-path view: no I/O, no exec; undefined before any evidence. */
 	view(cwd: string, sessionId: string | undefined): DdataEnvView | undefined;
 	/** Called after a refresh that changed what the panel would show. */
 	onChange(listener: () => void): () => void;
@@ -549,20 +597,24 @@ export function createDdataEnvController(deps: DdataEnvControllerDeps): DdataEnv
 	const listeners = new Set<() => void>();
 	const fingerprints = new Map<string, string>();
 	let lastCwd: string | undefined;
+	/** The DDATA worktree each session last worked in. */
+	const focusBySession = new Map<string, string>();
+	let focusSession: string | undefined;
+	const focusOf = (sessionId: string | undefined) => (sessionId === undefined ? undefined : focusBySession.get(sessionId));
 	let timer: { cancel(): void } | undefined;
 	let pendingForce = false;
 	/** When the current burst of scheduled refreshes began. */
 	let burstStart: number | undefined;
 	let disposed = false;
 
-	const fingerprint = (cwd: string) => JSON.stringify([deps.snapshot.current(cwd) ?? null, deps.firebase.cached(cwd) ?? null]);
+	const fingerprint = (cwd: string) => JSON.stringify([deps.snapshot.current(cwd, focusOf(focusSession)) ?? null, deps.firebase.cached(cwd) ?? null]);
 
 	async function refresh(cwd: string, options: { force?: boolean } = {}): Promise<void> {
 		if (disposed) return;
 		lastCwd = cwd;
 		try {
 			await Promise.all([
-				deps.snapshot.refresh(cwd, { force: options.force === true }),
+				deps.snapshot.refresh(cwd, { force: options.force === true, focus: focusOf(focusSession) }),
 				deps.firebase.refresh(cwd),
 			]);
 		} catch {
@@ -606,12 +658,29 @@ export function createDdataEnvController(deps: DdataEnvControllerDeps): DdataEnv
 			if (remaining <= 0) return run();
 			timer = setTimer(run, Math.min(debounceMs, remaining));
 		},
+		async noteWork(cwd, sessionId, path) {
+			if (disposed || sessionId === undefined) return false;
+			try {
+				const worktree = await deps.snapshot.resolveWorktree(path);
+				if (disposed || worktree === undefined) return false;
+				focusSession = sessionId;
+				if (focusBySession.get(sessionId) === worktree) return true;
+				focusBySession.set(sessionId, worktree);
+				await refresh(cwd);
+				return true;
+			} catch {
+				// Focus tracking never surfaces errors.
+				return false;
+			}
+		},
 		view(cwd, sessionId) {
-			const evidence = deps.snapshot.current(cwd);
+			const evidence = deps.snapshot.current(cwd, focusOf(sessionId));
 			if (!evidence) return undefined;
 			const pipeline = computePipeline(evidence, { now: deps.now(), staleAfterMs });
 			if (!pipeline) return undefined;
-			return { pipeline, backend: computeBackend(deps.tracker.kinds(sessionId), deps.firebase.cached(cwd)) };
+			const lab = pipeline.overview ? undefined : evidence.lab;
+			const origin = lab?.worktree ? { worktree: lab.worktree, ...(lab.branch ? { branch: lab.branch } : {}), source: lab.source ?? "cwd" } : undefined;
+			return { pipeline, backend: computeBackend(deps.tracker.kinds(sessionId), deps.firebase.cached(cwd)), ...(origin ? { origin } : {}) };
 		},
 		onChange(listener) {
 			listeners.add(listener);

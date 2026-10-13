@@ -36,12 +36,11 @@ test("fixed steps are Lab, Stage, Producción with indexes 1..3 and responsibili
 	);
 });
 
-test("no Lab evidence (not a DDATA worktree) returns undefined", () => {
+test("no evidence at all returns undefined; without Lab a candidateSha alone never makes a candidate", () => {
 	assert.equal(computePipeline({}, OPTS), undefined);
-	assert.equal(
-		computePipeline({ stageWeb: { releaseName: "37af7f4", observedAt: NOW } }, { ...OPTS, candidateSha: HEAD }),
-		undefined,
-	);
+	const p = computePipeline({ stageWeb: { releaseName: "37af7f4", observedAt: NOW } }, { ...OPTS, candidateSha: HEAD });
+	assert.equal(p?.overview, true);
+	assert.equal(p?.current, "lab");
 });
 
 test("Lab only: current Lab, Stage sin evidencia, Production sin registro", () => {
@@ -349,4 +348,32 @@ test("a connected source's match wins over an offline source's match", () => {
 
 test("steps carry a short name for the compact pipeline row", () => {
 	assert.deepEqual(DDATA_ENV_STEPS.map((s) => s.shortName), ["Lab", "Stage", "Prod"]);
+});
+
+test("without a candidate the pipeline is an overview of what each environment publishes", () => {
+	const p = computePipeline({
+		stageWeb: { releaseName: `${HEAD.slice(0, 12)}-captcha-disabled`, observedAt: NOW },
+		stageFirebase: { headSha: OTHER, runId: 7, observedAt: NOW },
+	}, OPTS);
+	assert.ok(p);
+	assert.equal(p.overview, true);
+	assert.equal(p.progressLabel, "sin candidato");
+	assert.equal(p.candidateShort, "");
+	assert.deepEqual(p.steps.map((s) => s.status), ["pending", "pending", "pending"]);
+	assert.equal(step(p, "lab").evidence.text, "sin candidato");
+	assert.equal(step(p, "stage").evidence.text, `publicado · ${HEAD.slice(0, 12)}-captcha-di…`);
+	assert.equal(step(p, "production").evidence.text, "sin registro");
+});
+
+test("an overview with only Firebase Stage evidence shows its published SHA, and a stale record still warns", () => {
+	const fresh = computePipeline({ stageFirebase: { headSha: OTHER, runId: 7, observedAt: NOW } }, OPTS);
+	assert.equal(step(fresh, "stage").evidence.text, `publicado · ${OTHER.slice(0, 12)}`);
+	const stale = computePipeline({ stageFirebase: { headSha: OTHER, runId: 7, observedAt: NOW - 31 * MINUTE } }, OPTS);
+	assert.deepEqual(step(stale, "stage").evidence, { text: "registro antiguo", tone: "warning" });
+});
+
+test("a Lab candidate keeps the candidate pipeline, never the overview", () => {
+	const p = computePipeline({ lab: { headSha: HEAD }, stageFirebase: { headSha: OTHER, runId: 7, observedAt: NOW } }, OPTS);
+	assert.equal(p?.overview, undefined);
+	assert.equal(p?.progressLabel, "paso 1 de 3");
 });

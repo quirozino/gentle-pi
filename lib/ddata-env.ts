@@ -6,6 +6,9 @@
 // record matches the candidate SHA. Production is never inferred from Stage or
 // from a verifier verdict; without an explicit record it reads "sin registro".
 // Stale or failed reads never count as a match and surface as warnings.
+// Without a candidate (no Lab: pi runs outside a DDATA worktree and the session
+// has not worked in one) the pipeline is an overview of what each environment
+// publishes, with no current step and no "paso N de 3".
 
 export type DdataEnvStepId = "lab" | "stage" | "production";
 
@@ -43,8 +46,16 @@ export interface DdataEnvReadError {
 	readonly error: DdataEnvErrorCode;
 }
 
+/** Where the candidate came from: the session cwd, or a DDATA worktree the session worked in. */
+export type LabSource = "cwd" | "session";
+
 export interface LabEvidence {
 	readonly headSha: string;
+	/** Absolute top level of the worktree the HEAD was read from. */
+	readonly worktree?: string;
+	/** Checked-out branch; absent on a detached HEAD. */
+	readonly branch?: string;
+	readonly source?: LabSource;
 }
 
 /**
@@ -73,7 +84,7 @@ export interface ProductionRecord {
 }
 
 export interface DdataEnvEvidence {
-	/** Absent when the session cwd is not a DDATA worktree. */
+	/** Absent when neither the cwd nor the session's work points at a DDATA worktree. */
 	readonly lab?: LabEvidence;
 	readonly stageWeb?: StageWebRecord | DdataEnvReadError;
 	readonly stageFirebase?: StageFirebaseRecord | DdataEnvReadError;
@@ -109,6 +120,11 @@ export interface DdataPipeline {
 	readonly progressLabel: string;
 	readonly candidateShort: string;
 	readonly steps: readonly DdataPipelineStep[];
+	/**
+	 * No candidate: the steps report what each environment publishes now, no
+	 * step is current and there is no "paso N de 3".
+	 */
+	readonly overview?: boolean;
 }
 
 function normalizeSha(sha: string): string {
@@ -171,6 +187,9 @@ type SourceOutcome =
 	| { kind: "other"; label: DdataEnvEvidenceLabel; offline: boolean };
 
 const OFFLINE_PREFIX = "sin conexión";
+/** Overview label: what an environment serves now, compared with nothing. */
+const PUBLISHED = "publicado";
+export const NO_CANDIDATE_TEXT = "sin candidato";
 
 /** A record read through a failing source keeps its text behind an offline warning. */
 function sourced(kind: "match" | "other", label: DdataEnvEvidenceLabel, lastError: DdataEnvErrorCode | undefined): SourceOutcome {
@@ -181,19 +200,20 @@ function sourced(kind: "match" | "other", label: DdataEnvEvidenceLabel, lastErro
 const lastErrorOf = (source: object): DdataEnvErrorCode | undefined =>
 	"lastError" in source ? (source as { lastError?: DdataEnvErrorCode }).lastError : undefined;
 
-function classifyStageWeb(source: DdataEnvEvidence["stageWeb"], candidate: string, options: ComputePipelineOptions): SourceOutcome {
+function classifyStageWeb(source: DdataEnvEvidence["stageWeb"], candidate: string | undefined, options: ComputePipelineOptions): SourceOutcome {
 	if (!source) return { kind: "missing" };
 	if (isReadError(source)) return { kind: "error" };
 	const lastError = lastErrorOf(source);
 	if (!isFresh(source.observedAt, options)) return { kind: "stale", offline: lastError !== undefined };
 	const release = displayRelease(source.releaseName);
+	if (candidate === undefined) return sourced("other", { text: `${PUBLISHED} · ${release}`, tone: "info" }, lastError);
 	if (webMatches(source.releaseName, candidate)) return sourced("match", { text: `en vivo · ${release}`, tone: "running" }, lastError);
 	return sourced("other", { text: `otra versión · ${release}`, tone: "info" }, lastError);
 }
 
 function classifyShaRecord(
 	source: StageFirebaseRecord | ProductionRecord | DdataEnvReadError | undefined,
-	candidate: string,
+	candidate: string | undefined,
 	options: ComputePipelineOptions,
 	matchVerb: string,
 ): SourceOutcome {
@@ -202,6 +222,7 @@ function classifyShaRecord(
 	const lastError = lastErrorOf(source);
 	if (!isFresh(source.observedAt, options)) return { kind: "stale", offline: lastError !== undefined };
 	const short = shortSha(source.headSha);
+	if (candidate === undefined) return sourced("other", { text: `${PUBLISHED} · ${short}`, tone: "info" }, lastError);
 	if (shaMatches(source.headSha, candidate)) return sourced("match", { text: `${matchVerb} · ${short}`, tone: "running" }, lastError);
 	return sourced("other", { text: `otra versión · ${short}`, tone: "info" }, lastError);
 }
@@ -226,9 +247,16 @@ function combine(outcomes: readonly SourceOutcome[], missingText: string): { rea
 	return { reached: false, label: { text: missingText } };
 }
 
+/**
+ * The pipeline for the evidence. Without a candidate (no Lab and no
+ * `candidateSha`) it is an overview of what each environment publishes;
+ * undefined only when there is no evidence at all.
+ */
 export function computePipeline(evidence: DdataEnvEvidence, options: ComputePipelineOptions): DdataPipeline | undefined {
-	if (!evidence.lab) return undefined;
-	const candidate = normalizeSha(options.candidateSha ?? evidence.lab.headSha);
+	// `candidateSha` refines a Lab candidate; it never creates one on its own.
+	const candidateSource = evidence.lab ? options.candidateSha ?? evidence.lab.headSha : undefined;
+	if (candidateSource === undefined) return overviewPipeline(evidence, options);
+	const candidate = normalizeSha(candidateSource);
 	const candidateShort = shortSha(candidate);
 
 	const stage = combine(
@@ -264,5 +292,29 @@ export function computePipeline(evidence: DdataEnvEvidence, options: ComputePipe
 		progressLabel: `paso ${current.index} de ${DDATA_ENV_TOTAL_STEPS}`,
 		candidateShort,
 		steps,
+	};
+}
+
+function overviewPipeline(evidence: DdataEnvEvidence, options: ComputePipelineOptions): DdataPipeline | undefined {
+	if (!evidence.stageWeb && !evidence.stageFirebase && !evidence.production) return undefined;
+	const stage = combine(
+		[classifyStageWeb(evidence.stageWeb, undefined, options), classifyShaRecord(evidence.stageFirebase, undefined, options, PUBLISHED)],
+		"sin evidencia",
+	);
+	const production = combine([classifyShaRecord(evidence.production, undefined, options, PUBLISHED)], "sin registro");
+	const labels: Record<DdataEnvStepId, DdataEnvEvidenceLabel> = {
+		lab: { text: NO_CANDIDATE_TEXT },
+		stage: stage.label,
+		production: production.label,
+	};
+	return {
+		current: "lab",
+		index: 1,
+		total: DDATA_ENV_TOTAL_STEPS,
+		name: DDATA_ENV_STEPS[0].name,
+		progressLabel: NO_CANDIDATE_TEXT,
+		candidateShort: "",
+		steps: DDATA_ENV_STEPS.map((def): DdataPipelineStep => ({ ...def, status: "pending", evidence: labels[def.id] })),
+		overview: true,
 	};
 }

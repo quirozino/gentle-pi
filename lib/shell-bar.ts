@@ -170,6 +170,7 @@ const ENV_TONE_ROLE: Record<DdataEnvTone, string> = { warning: ROLE.WARNING, fai
 const STEP_ICON: Record<DdataPipeline["steps"][number]["id"], string> = { lab: "⬢", stage: "◎", production: "★" };
 const ENTORNO_ICON = "◈";
 const BACKEND_ICON = "⛁";
+const ORIGIN_ICON = "⎇";
 const PASSED_MARK = "✓";
 /** Narrowest inner box width, so "✓ Lab" and "★ Prod" boxes line up. */
 const STEP_BOX_MIN_INNER = 8;
@@ -245,18 +246,32 @@ function detailRow(theme: ShellBarTheme, width: number, row: { icon: string; ico
 }
 
 /** Evidence text as shown: "otra versión · X" reads as "≠ X". */
-const displayEvidence = (text: string) => text.replace(/otra versión · /g, "≠ ");
+// The overview's "publicado · X" reads as plain X: the Entorno row already says "estado publicado".
+const displayEvidence = (text: string) => text.replace(/otra versión · /g, "≠ ").replace(/^publicado · /, "");
 
-/** The environment sections of the promotion group: boxes, Entorno, one row per step, Backend. */
+/** `worktree-name · branch` (the branch only when one is checked out). */
+function originText(origin: NonNullable<DdataEnvView["origin"]>): string {
+	const name = origin.worktree.replace(/\/+$/, "").split("/").at(-1) || origin.worktree;
+	return origin.branch ? `${name} · ${origin.branch}` : name;
+}
+
+/** The environment sections of the promotion group: boxes, Entorno, one row per step (Origen under Lab), Backend. */
 function ddataEnvSections(env: DdataEnvView, theme: ShellBarTheme): StatusSection[] {
 	const current = env.pipeline.steps[env.pipeline.index - 1]!;
 	const tone = (value: DdataEnvTone | undefined) => (value ? ENV_TONE_ROLE[value] : undefined);
 	return [
 		{ fitted: (width) => renderDdataStepBoxes(env.pipeline, theme, width) ?? [renderDdataPipelineLine(env.pipeline, theme, width)] },
-		{ fitted: (width) => [detailRow(theme, width, { icon: ENTORNO_ICON, iconRole: ENV_ROLE.CURRENT, key: "Entorno", value: `${env.pipeline.progressLabel} · ${current.responsibility}` })] },
-		...env.pipeline.steps.map((step): StatusSection => ({
-			fitted: (width) => [detailRow(theme, width, { icon: STEP_ICON[step.id], iconRole: stepRole(step), key: step.name, value: displayEvidence(step.evidence.text), valueRole: tone(step.evidence.tone) })],
-		})),
+		{
+			fitted: (width) => [env.pipeline.overview
+				// No candidate: nothing is "current"; the steps say what each environment publishes.
+				? detailRow(theme, width, { icon: ENTORNO_ICON, iconRole: ENV_ROLE.PENDING, key: "Entorno", value: "estado publicado" })
+				: detailRow(theme, width, { icon: ENTORNO_ICON, iconRole: ENV_ROLE.CURRENT, key: "Entorno", value: `${env.pipeline.progressLabel} · ${current.responsibility}` })],
+		},
+		...env.pipeline.steps.flatMap((step): StatusSection[] => [
+			{ fitted: (width) => [detailRow(theme, width, { icon: STEP_ICON[step.id], iconRole: stepRole(step), key: step.name, value: displayEvidence(step.evidence.text), valueRole: tone(step.evidence.tone) })] },
+			// Where the candidate comes from, right under Lab: the worktree, then its branch.
+			...(step.id === "lab" && env.origin ? [{ fitted: (width: number) => [detailRow(theme, width, { icon: ORIGIN_ICON, iconRole: ROLE.LABEL, key: "Origen", value: originText(env.origin!) })] }] : []),
+		]),
 		{ fitted: (width) => [detailRow(theme, width, { icon: BACKEND_ICON, iconRole: tone(env.backend.tone) ?? ROLE.LABEL, key: "Backend", value: env.backend.text, valueRole: tone(env.backend.tone) })] },
 	];
 }

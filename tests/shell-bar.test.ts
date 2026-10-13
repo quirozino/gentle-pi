@@ -1700,3 +1700,35 @@ test("environment glyphs are text symbols, never emoji (emoji render two columns
 		assert.deepEqual(emoji, [], `no emoji glyphs in the environment group: ${emoji.join(" ")}`);
 	}
 });
+
+test("without a candidate the panel is an overview: no current step, published states, no Origen row", (t) => {
+	useCardStyle(t, CARD_STYLE.NEON);
+	const overview = computePipeline({ stageWeb: { releaseName: "37af7f4-captcha-disabled", observedAt: ENV_NOW } }, { now: ENV_NOW, staleAfterMs: 30 * 60_000 })!;
+	const lines = groupLines(renderShellSidebarBar(model({ ddataEnv: { pipeline: overview, backend: { text: "desconocido" } } }), recordingMatrixTheme, 46));
+	assert.deepEqual(lines.slice(4), [
+		" ╭────────╮   ╭─────────╮   ╭────────╮",
+		" │ ⬢ Lab  │┄┄┄│ ◎ Stage │┄┄┄│ ★ Prod │",
+		" ╰────────╯   ╰─────────╯   ╰────────╯",
+		DOTS(38),
+		" ◈ Entorno            estado publicado",
+		DOTS(38),
+		" ⬢ Lab                   sin candidato",
+		DOTS(38),
+		" ◎ Stage      37af7f4-captcha-disabled",
+		DOTS(38),
+		" ★ Producción             sin registro",
+		DOTS(38),
+		" ⛁ Backend                 desconocido",
+	]);
+});
+
+test("a candidate from the session's worktree shows an Origen row with worktree and branch under Lab", (t) => {
+	useCardStyle(t, CARD_STYLE.NEON);
+	const data = model({ ddataEnv: { pipeline: envPipeline(OTHER_RELEASE), backend: { text: "Stage (por defecto)" }, origin: { worktree: "/srv/workspaces/ddata-x", branch: "fix/y", source: "session" } } });
+	const lines = groupLines(renderShellSidebarBar(data, recordingMatrixTheme, 46));
+	const lab = lines.indexOf(" ⬢ Lab             HEAD · 731c35826fe2");
+	assert.ok(lab > 0);
+	assert.equal(lines[lab + 1], DOTS(38));
+	assert.equal(lines[lab + 2], " ⎇ Origen              ddata-x · fix/y");
+	for (const width of [46, 30, 16]) assert.ok(renderShellSidebarBar(data, recordingMatrixTheme, width).every((row) => visibleWidth(row) <= width));
+});

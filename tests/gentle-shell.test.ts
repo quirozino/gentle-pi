@@ -69,7 +69,7 @@ function isolatedEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
 }
 // Every instance gets an inert DDATA environment controller unless the test
 // owns one, so no test ever spawns git, ssh or gh through the refresher.
-const inertDdataEnv = () => (): DdataEnvController => ({ refresh: async () => {}, schedule: () => {}, view: () => undefined, onChange: () => () => {}, dispose: () => {} });
+const inertDdataEnv = () => (): DdataEnvController => ({ refresh: async () => {}, schedule: () => {}, noteWork: async () => false, view: () => undefined, onChange: () => () => {}, dispose: () => {} });
 const gentleShell: typeof installGentleShell = (pi, env, deps) => installGentleShell(pi, isolatedEnv(env), { resolveWorktree, gitRunner: (cwd) => async (args) => pi.exec("git", ["-C", cwd, ...args], { timeout: 5000 }), rootExists: () => true, ddataEnv: inertDdataEnv(), ...deps });
 
 const plainTheme = {
@@ -6896,7 +6896,7 @@ test("an older overlapping refresh cannot mark a provider failed after a newer o
 // --- DDATA environment pipeline wiring ----------------------------------------
 
 function recordingDdataEnv(view?: DdataEnvView) {
-	const calls: Array<{ op: "refresh" | "schedule"; cwd: string; force?: boolean; controller: number }> = [];
+	const calls: Array<{ op: "refresh" | "schedule" | "noteWork"; cwd: string; force?: boolean; path?: string; controller: number }> = [];
 	const listeners: Array<() => void> = [];
 	const disposed: number[] = [];
 	let created = 0;
@@ -6905,13 +6905,15 @@ function recordingDdataEnv(view?: DdataEnvView) {
 		return {
 			refresh: async (cwd, options = {}) => void calls.push({ op: "refresh", cwd, force: options.force === true, controller: id }),
 			schedule: (cwd, options = {}) => void calls.push({ op: "schedule", cwd, force: options.force === true, controller: id }),
+			noteWork: async (cwd, _sessionId, path) => (calls.push({ op: "noteWork", cwd, path, controller: id }), false),
 			view: () => view,
 			onChange: (listener) => (listeners.push(listener), () => {}),
 			dispose: () => void disposed.push(id),
 		};
 	};
-	const ops = () => calls.map(({ op, cwd, force }) => ({ op, cwd, force }));
-	return { factory, calls, ops, listeners, disposed, created: () => created };
+	const ops = () => calls.filter((call) => call.op !== "noteWork").map(({ op, cwd, force }) => ({ op, cwd, force }));
+	const notes = () => calls.filter((call) => call.op === "noteWork").map((call) => call.path);
+	return { factory, calls, ops, notes, listeners, disposed, created: () => created };
 }
 const toolResult = (toolCallId: string, toolName = "bash", isError = false) => ({ type: "tool_result", toolName, toolCallId, input: {}, content: [], isError });
 
@@ -7209,3 +7211,18 @@ for (const kind of ["unset", "empty", "bundled"] as const) {
 		assert.equal(read(), "other (repo)", "the pinned profile exists only in that config home's store");
 	});
 }
+
+test("successful work in a path is reported to the DDATA panel as the session's focus; failed work is not", async () => {
+	const env = recordingDdataEnv();
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {}, { ddataEnv: env.factory });
+	const { ctx } = fakeContext();
+	await fire(handlers, "session_start", ctx);
+	const edit = (id: string, path: string, isError = false) => ({ type: "tool_result", toolName: "edit", toolCallId: id, input: { path }, content: [], isError });
+	await fireToolResult(handlers, edit("e1", "/srv/workspaces/ddata-x/a.ts"), ctx);
+	await fireToolResult(handlers, edit("e2", "/srv/workspaces/ddata-y/b.ts", true), ctx);
+	await fireToolResult(handlers, { type: "tool_result", toolName: "bash", toolCallId: "b1", input: { command: "cd /srv/workspaces/ddata-z && git -C sub status" }, content: [], isError: false }, ctx);
+	await fireToolResult(handlers, { type: "tool_result", toolName: "read", toolCallId: "r1", input: { path: "/srv/workspaces/ddata-r/c.ts" }, content: [], isError: false }, ctx);
+	assert.deepEqual(env.notes(), ["/srv/workspaces/ddata-x/a.ts", "/srv/workspaces/ddata-z/sub"]);
+	await fire(handlers, "session_shutdown", ctx);
+});

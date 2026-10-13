@@ -42,6 +42,7 @@ import { bareToolName, installPromotionCompletionCapture, promotionStatusRegistr
 import { inferOddPhase } from "../lib/odd-phase-inference.ts";
 import { createDdataEnvController, createDdataEnvSnapshot, nodeGitAsync, type DdataEnvController, type DdataEnvView } from "../lib/ddata-env-snapshot.ts";
 import { createFirebaseDefaultsReader, promotionActionTracker } from "../lib/ddata-env-backend.ts";
+import { historyWorkPaths, workPathsOf } from "../lib/ddata-env-focus.ts";
 import { isInteractiveMode } from "../lib/rpc-host.ts";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
 import { readConfiguredTheme, reportThemeFallback } from "../lib/theme-guard.ts";
@@ -593,6 +594,8 @@ interface PromptEditorDeps {
 // Gauge animation frame shared by the prompt pulse and the optional idle ticker.
 const gaugeTick = { value: 0 };
 /** Slow idle rate for `gaugeAnimation: "always"`; the working pulse is faster. */
+/** Distinct history paths probed at session start for the DDATA panel's candidate. */
+const DDATA_FOCUS_HISTORY_PROBES = 20;
 const IDLE_GAUGE_ANIMATION_MS = 400;
 
 function gaugeAnimationEnabled(): boolean {
@@ -2267,7 +2270,22 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			if (ddataEnv === controller) ddataEnv = undefined;
 			stopDdataEnv = () => {};
 		};
-		void controller.refresh(ctx.sessionManager.getCwd()).catch(() => undefined);
+		const cwd = ctx.sessionManager.getCwd();
+		void controller.refresh(cwd).catch(() => undefined);
+		// A resumed session keeps its candidate: the newest DDATA worktree its
+		// successful tool calls worked in (bounded, off the startup path).
+		void (async () => {
+			try {
+				const seen = new Set<string>();
+				for (const path of historyWorkPaths(ctx.sessionManager.getBranch(), cwd, os.homedir())) {
+					if (seen.has(path) || seen.size >= DDATA_FOCUS_HISTORY_PROBES) continue;
+					seen.add(path);
+					if (await controller.noteWork(cwd, sessionId, path)) return;
+				}
+			} catch {
+				// History problems only cost the session-derived candidate.
+			}
+		})();
 	};
 	const unsubscribeReview = pi.events.on(REVIEW_SIDEBAR_EVENT, (value) => {
 		const event = value as { sessionId?: unknown; snapshot?: unknown } | undefined;
@@ -3287,6 +3305,12 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			const result = event as { toolName?: unknown; toolCallId?: unknown } | undefined;
 			const toolCallId = typeof result?.toolCallId === "string" ? result.toolCallId : undefined;
 			const deploy = promotionActionTracker.callKinds(ctx.sessionManager.getSessionId(), toolCallId).size > 0;
+			// Successful work inside a DDATA worktree makes it this session's candidate.
+			if ((event as { isError?: unknown }).isError !== true && typeof result?.toolName === "string") {
+				const paths = workPathsOf(result.toolName, (event as { input?: unknown }).input, ctx.sessionManager.getCwd(), os.homedir());
+				const latest = paths.at(-1);
+				if (latest !== undefined) void ddataEnv.noteWork(ctx.sessionManager.getCwd(), ctx.sessionManager.getSessionId(), latest);
+			}
 			if (result?.toolName !== "bash" && !deploy) return;
 			ddataEnv.schedule(ctx.sessionManager.getCwd(), { force: deploy });
 		} catch {

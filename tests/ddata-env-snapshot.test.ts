@@ -106,18 +106,21 @@ function harness(options: {
 	return { calls, gitCalls, fs, clock, snapshot };
 }
 
-test("non-DDATA cwd runs no exec and yields no Lab evidence", async () => {
+test("non-DDATA cwd yields no Lab evidence but still reads Stage, so the panel can show an overview", async () => {
 	const h = harness();
+	assert.equal(h.snapshot.current(OTHER_CWD), undefined);
 	const evidence = await h.snapshot.refresh(OTHER_CWD);
-	assert.deepEqual(evidence, {});
-	assert.equal(h.calls.length, 0);
-	assert.deepEqual(h.snapshot.current(OTHER_CWD), {});
+	assert.equal(evidence.lab, undefined);
+	assert.deepEqual(evidence.stageWeb, { releaseName: "37af7f4-captcha-disabled", observedAt: h.clock.t });
+	assert.deepEqual(evidence.stageFirebase, { headSha: FB_SHA, runId: 123, observedAt: h.clock.t });
+	assert.deepEqual(h.calls.map((c) => c.file).sort(), ["gh", "ssh"]);
+	assert.deepEqual(h.snapshot.current(OTHER_CWD), evidence);
 });
 
 test("DDATA cwd reads HEAD, Stage web and Stage Firebase with argv arrays and timeouts", async () => {
 	const h = harness();
 	const evidence = await h.snapshot.refresh(DDATA_CWD);
-	assert.deepEqual(evidence.lab, { headSha: HEAD });
+	assert.deepEqual(evidence.lab, { headSha: HEAD, source: "cwd" });
 	assert.deepEqual(evidence.stageWeb, { releaseName: "37af7f4-captcha-disabled", observedAt: h.clock.t });
 	assert.deepEqual(evidence.stageFirebase, { headSha: FB_SHA, runId: 123, observedAt: h.clock.t });
 	const ssh = h.calls.find((c) => c.file === "ssh");
@@ -275,7 +278,7 @@ test("current() performs no I/O and returns the last evidence", async () => {
 	assert.equal(h.fs.ops.length, opsBefore);
 	assert.equal(h.calls.length, callsBefore);
 	assert.equal(h.gitCalls.length, gitBefore);
-	assert.deepEqual(evidence?.lab, { headSha: HEAD });
+	assert.deepEqual(evidence?.lab, { headSha: HEAD, source: "cwd" });
 	assert.equal((evidence?.stageWeb as { releaseName: string }).releaseName, "37af7f4-captcha-disabled");
 });
 
@@ -283,7 +286,7 @@ test("enabled: false disables remote reads but keeps Lab evidence", async () => 
 	const h = harness({ files: { [CONFIG]: JSON.stringify({ enabled: false }) } });
 	const evidence = await h.snapshot.refresh(DDATA_CWD, { force: true });
 	assert.equal(h.calls.length, 0);
-	assert.deepEqual(evidence, { lab: { headSha: HEAD } });
+	assert.deepEqual(evidence, { lab: { headSha: HEAD, source: "cwd" } });
 });
 
 test("config overrides host, user, key and repo; invalid values are refused", async () => {
@@ -319,11 +322,10 @@ test("git failure or invalid HEAD never throws", async () => {
 		homedir: HOME,
 		now: () => 0,
 	});
-	assert.deepEqual(await throwing.refresh(DDATA_CWD), {});
+	assert.equal((await throwing.refresh(DDATA_CWD)).lab, undefined);
 	const h = harness({ head: "not-a-sha" });
 	const evidence = await h.snapshot.refresh(DDATA_CWD);
 	assert.equal(evidence.lab, undefined);
-	assert.equal(h.calls.length, 0);
 });
 
 test("force during a non-forced in-flight refresh runs a fresh remote read afterwards", async () => {
@@ -449,6 +451,7 @@ function fakeController(options: { evidence?: DdataEnvEvidence; defaults?: reado
 			return evidence;
 		},
 		current: () => evidence,
+		resolveWorktree: async () => undefined,
 	};
 	let defaults: readonly string[] | undefined;
 	const firebaseReads: string[] = [];
@@ -538,13 +541,14 @@ test("onChange fires only when the evidence changes, and refresh never rejects",
 	await f.controller.refresh(DDATA_CWD);
 	assert.equal(changes, 2);
 	const broken = createDdataEnvController({
-		snapshot: { refresh: async () => { throw new Error("x"); }, current: () => undefined },
+		snapshot: { refresh: async () => { throw new Error("x"); }, current: () => undefined, resolveWorktree: async () => { throw new Error("z"); } },
 		firebase: { refresh: async () => { throw new Error("y"); }, cached: () => undefined },
 		tracker: new PromotionActionTracker(),
 		now: () => 0,
 	});
 	broken.onChange(() => { throw new Error("listener"); });
 	await assert.doesNotReject(broken.refresh(DDATA_CWD));
+	await assert.doesNotReject(broken.noteWork(DDATA_CWD, "s", `${DDATA_CWD}/a.ts`));
 });
 
 test("continuous scheduling still refreshes within the max wait", async () => {
@@ -577,4 +581,78 @@ test("a disposed controller refreshes nothing and notifies nobody", async () => 
 	await f.controller.refresh(DDATA_CWD);
 	assert.equal(f.refreshes.length, 0);
 	assert.equal(changes, 0);
+});
+
+test("outside a DDATA worktree the session's focus worktree supplies Lab, with its worktree and branch", async () => {
+	const h = harness();
+	const git = async (cwd: string, args: readonly string[]) => {
+		const line = args.join(" ");
+		if (cwd !== DDATA_CWD) return line.includes("--git-common-dir") ? "/srv/git/other.git" : undefined;
+		if (line.includes("--git-common-dir")) return DDATA_GIT_COMMON_DIR;
+		if (line === "rev-parse HEAD") return HEAD;
+		if (line === "rev-parse --show-toplevel") return DDATA_CWD;
+		if (line === "symbolic-ref --quiet --short HEAD") return "feature/x";
+		return undefined;
+	};
+	const snapshot = createDdataEnvSnapshot({ exec: async (file) => (file === "gh" ? ghOk() : ok("releases/37af7f4\n")), fs: h.fs, git, homedir: HOME, now: () => h.clock.t });
+	const evidence = await snapshot.refresh(OTHER_CWD, { focus: DDATA_CWD });
+	assert.deepEqual(evidence.lab, { headSha: HEAD, worktree: DDATA_CWD, branch: "feature/x", source: "session" });
+	assert.deepEqual(snapshot.current(OTHER_CWD, DDATA_CWD)?.lab, evidence.lab);
+	assert.equal(snapshot.current(OTHER_CWD)?.lab, undefined, "without the focus the cwd has no Lab");
+	// A DDATA cwd always wins over the focus.
+	const inside = await snapshot.refresh(DDATA_CWD, { focus: "/srv/workspaces/ddata-y" });
+	assert.equal(inside.lab?.source, "cwd");
+});
+
+test("resolveWorktree maps a file (even a new one) to its DDATA worktree and refuses anything else", async () => {
+	const fs = fakeFs({ [DDATA_CWD]: "" });
+	const git = async (cwd: string, args: readonly string[]) => {
+		const line = args.join(" ");
+		if (cwd !== DDATA_CWD) return line.includes("--git-common-dir") ? "/srv/git/other.git" : undefined;
+		if (line.includes("--git-common-dir")) return DDATA_GIT_COMMON_DIR;
+		if (line === "rev-parse --show-toplevel") return DDATA_CWD;
+		return undefined;
+	};
+	const snapshot = createDdataEnvSnapshot({ exec: async () => ok(""), fs, git, homedir: HOME, now: () => 0 });
+	assert.equal(await snapshot.resolveWorktree(`${DDATA_CWD}/new/dir/file.ts`), DDATA_CWD);
+	assert.equal(await snapshot.resolveWorktree(`${OTHER_CWD}/file.ts`), undefined);
+	const throwing = createDdataEnvSnapshot({ exec: async () => ok(""), fs, git: async () => { throw new Error("no git"); }, homedir: HOME, now: () => 0 });
+	assert.equal(await throwing.resolveWorktree(`${DDATA_CWD}/a.ts`), undefined);
+});
+
+test("noteWork makes the session's DDATA worktree the candidate source, shown as the origin", async () => {
+	const refreshes: Array<{ cwd: string; focus?: string }> = [];
+	const snapshot: DdataEnvSnapshot = {
+		async refresh(cwd, opts = {}) {
+			refreshes.push({ cwd, focus: opts.focus });
+			return {};
+		},
+		current: (_cwd, focus) => ({
+			stageFirebase: { headSha: FB_SHA, runId: 1, observedAt: 1_800_000_000_000 },
+			...(focus === DDATA_CWD ? { lab: { headSha: HEAD, worktree: DDATA_CWD, branch: "feature/x", source: "session" as const } } : {}),
+		}),
+		resolveWorktree: async (path) => (path.startsWith(`${DDATA_CWD}/`) ? DDATA_CWD : undefined),
+	};
+	const controller = createDdataEnvController({
+		snapshot,
+		firebase: { refresh: async () => [], cached: () => [] },
+		tracker: new PromotionActionTracker(),
+		now: () => 1_800_000_000_000,
+	});
+	const changes: number[] = [];
+	controller.onChange(() => changes.push(1));
+	await controller.refresh(OTHER_CWD);
+	assert.equal(controller.view(OTHER_CWD, "s")?.pipeline.overview, true, "no work yet: overview");
+	assert.equal(controller.view(OTHER_CWD, "s")?.origin, undefined);
+	await controller.noteWork(OTHER_CWD, "s", `${OTHER_CWD}/notes.md`);
+	assert.equal(refreshes.length, 1, "work outside DDATA changes nothing");
+	await controller.noteWork(OTHER_CWD, "s", `${DDATA_CWD}/src/app.ts`);
+	assert.deepEqual(refreshes.at(-1), { cwd: OTHER_CWD, focus: DDATA_CWD });
+	const view = controller.view(OTHER_CWD, "s");
+	assert.equal(view?.pipeline.overview, undefined);
+	assert.equal(view?.pipeline.progressLabel, "paso 1 de 3");
+	assert.deepEqual(view?.origin, { worktree: DDATA_CWD, branch: "feature/x", source: "session" });
+	assert.equal(controller.view(OTHER_CWD, "other-session")?.pipeline.overview, true, "focus is per session");
+	await controller.noteWork(OTHER_CWD, "s", `${DDATA_CWD}/src/other.ts`);
+	assert.equal(refreshes.length, 2, "the same worktree again does not refresh");
 });
