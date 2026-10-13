@@ -2526,7 +2526,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					return { handled: true, render: true };
 				},
 			});
-			const uninstall = installSidebar(tui, theme, () => visualSettings.statusPlacement, () => visualSettings.headerPlacement, () => visualSettings.density, { bannerTick: () => (gaugeAnimationEnabled() ? gaugeTick.value : undefined), scrollbarTick: () => (gaugeAnimationEnabled() ? gaugeTick.value : undefined), windowFrame: () => windowFrameEnabled, windowBackground: () => windowBackground });
+			const uninstall = installSidebar(tui, theme, () => visualSettings.statusPlacement, () => visualSettings.headerPlacement, () => visualSettings.density, { bannerTick: () => (gaugeAnimationEnabled() ? gaugeTick.value : undefined), scrollbarAnimate: () => gaugeAnimationEnabled() && animationPolicy === "quality", windowFrame: () => windowFrameEnabled, windowBackground: () => windowBackground });
 			// Independent of the rail: chat selections in a narrow terminal (no sidebar) also skip card frames.
 			// Framed, the window frame's padding column is trimmed with its edge.
 			const untrim = installSelectionFrameTrim(tui, { windowFramePad: () => (sidebarState(tui).framed?.() ? WINDOW_FRAME_PAD_X : 0) });

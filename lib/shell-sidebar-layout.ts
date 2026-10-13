@@ -84,8 +84,8 @@ function railDigest(rail: SidebarRail): string | undefined {
 export interface SidebarOptions {
 	/** Animation frame for the banner; absent leaves it still. */
 	bannerTick?: () => number | undefined;
-	/** Animation tick for the transcript scrollbar's thumb sweep; undefined holds it. */
-	scrollbarTick?: () => number | undefined;
+	/** Whether the transcript scrollbar's thumb sweep moves (the shell's animation policy). */
+	scrollbarAnimate?: () => boolean;
 	/** Draw the full-window frame around the fullscreen layout (shell.json `windowFrame`). */
 	windowFrame?: () => boolean;
 	/** SGR painted on every default-background cell of the fullscreen screen (shell.json `windowBackground`); undefined is off. */
@@ -403,7 +403,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			const ungutter = installTranscriptRightGutter(transcriptRoot);
 			if (ungutter) cleanups.push(ungutter);
 			// Matrix: double-rule scrollbar with a taller, sweeping thumb (transcript-scrollbar.ts).
-			cleanups.push(installTranscriptScrollbar(transcriptScrollState(transcriptRoot), { theme: () => theme, tick: () => options.scrollbarTick?.() }));
+			cleanups.push(installTranscriptScrollbar(transcriptScrollState(transcriptRoot), { theme: () => theme, animate: () => options.scrollbarAnimate?.() ?? false, requestRender: () => tui.requestRender() }));
 			// Fullscreen gives this stretched stack an explicit viewport height.
 			// Its intrinsic-height probe is unused; real painting traverses NODE.
 			// Delegating that probe to root.render would render the transcript twice.

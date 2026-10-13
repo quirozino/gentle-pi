@@ -12,6 +12,12 @@
 // laid out from the previous paint's track length and pi thumb, and re-anchored
 // on the current paint's first thumb cell, so only rows above the thumb can lag
 // one frame while scrolling. Other themes keep pi's look.
+//
+// The sweep moves in eighths of a row: a one-row bright band whose edges are
+// drawn with the lower-eighth blocks (▁▂▃▄▅▆▇) over the thumb green as cell
+// background, advanced by its own clock while animations are on, so it reads
+// as a continuous slide rather than row jumps. Without a theme that exposes
+// role ANSI (getFgAnsi) the band moves whole rows.
 import type { ShellBarTheme } from "./shell-bar.ts";
 
 export const SCROLLBAR_THEMES: ReadonlySet<string> = new Set(["Matrix-Green"]);
@@ -45,11 +51,50 @@ export function thumbSpan(piTop: number, piHeight: number, trackLength: number, 
 	return { top: Math.max(0, Math.min(Math.max(centered, lowest), piTop, track - height)), height };
 }
 
+/** One eighth-of-a-row step of the sweep. */
+export const SWEEP_STEP_MS = 60;
+/** Lower blocks by eighths filled from the bottom; index 8 is a full block. */
+const LOWER_EIGHTHS = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"] as const;
+
+type AnsiTheme = ShellBarTheme & { getFgAnsi?(role: string): string };
+
 export interface TranscriptScrollbarOptions {
 	theme: () => ShellBarTheme | undefined;
-	/** Animation tick; undefined holds the sweep (animations off). */
-	tick: () => number | undefined;
+	/** Whether the sweep moves (the shell's animation policy). */
+	animate: () => boolean;
+	/** Redraw request for the next sweep step. */
+	requestRender?: () => void;
+	now?: () => number;
+	setInterval?: (callback: () => void, ms: number) => { cancel(): void };
 	queueMicrotask?: (callback: () => void) => void;
+}
+
+/** A role's foreground ANSI turned into the same colour as background; undefined when unknown. */
+function backgroundOf(theme: AnsiTheme, role: string): string | undefined {
+	const fg = theme.getFgAnsi?.(role);
+	if (typeof fg !== "string") return undefined;
+	const bg = fg.replace(/\x1b\[38;/g, "\x1b[48;").replace(/\x1b\[3([0-7])m/g, "\x1b[4$1m").replace(/\x1b\[9([0-7])m/g, "\x1b[10$1m");
+	return bg !== fg ? bg : undefined;
+}
+
+/**
+ * One thumb cell at `index` (0 = top) of a `height`-row thumb with the band's
+ * top at `bandEighths` eighths of a row from the thumb top.
+ */
+export function sweepCell(theme: ShellBarTheme, index: number, bandEighths: number): string {
+	const cellTop = index * 8;
+	const covered = Math.max(0, Math.min(cellTop + 8, bandEighths + 8) - Math.max(cellTop, bandEighths));
+	if (covered === 0) return theme.fg(SCROLLBAR_ROLES.THUMB, THUMB_GLYPH);
+	if (covered === 8) return theme.fg(SCROLLBAR_ROLES.SWEEP, THUMB_GLYPH);
+	const background = backgroundOf(theme as AnsiTheme, SCROLLBAR_ROLES.THUMB);
+	const sweepBackground = backgroundOf(theme as AnsiTheme, SCROLLBAR_ROLES.SWEEP);
+	// The band enters this cell from above (its bottom edge is inside) or leaves it below (its top edge is inside).
+	const bandBelow = bandEighths > cellTop;
+	if (!background || !sweepBackground) return theme.fg(covered >= 4 ? SCROLLBAR_ROLES.SWEEP : SCROLLBAR_ROLES.THUMB, THUMB_GLYPH);
+	// Lower blocks fill from the bottom: bright bottom part over a green cell, or green bottom part over a bright cell.
+	return bandBelow
+		? `${background}${theme.fg(SCROLLBAR_ROLES.SWEEP, LOWER_EIGHTHS[covered])}\x1b[49m`
+		: `${sweepBackground}${theme.fg(SCROLLBAR_ROLES.THUMB, LOWER_EIGHTHS[8 - covered])}\x1b[49m`;
 }
 
 /**
@@ -62,6 +107,23 @@ export function installTranscriptScrollbar(state: unknown, options: TranscriptSc
 	const stockTrack = host.scrollbarTrackStyle;
 	const stockThumb = host.scrollbarThumbStyle;
 	const defer = options.queueMicrotask ?? queueMicrotask;
+	const now = options.now ?? Date.now;
+	const every = options.setInterval ?? ((callback: () => void, ms: number) => {
+		const handle = setInterval(callback, ms);
+		handle.unref?.();
+		return { cancel: () => clearInterval(handle) };
+	});
+	let clock: { cancel(): void } | undefined;
+	const stopClock = () => {
+		clock?.cancel();
+		clock = undefined;
+	};
+	// Runs only while Matrix paints with animations on; a paint without them stops it.
+	const ensureClock = (on: boolean) => {
+		if (!on) return stopClock();
+		if (clock || !options.requestRender) return;
+		clock = every(() => options.requestRender?.(), SWEEP_STEP_MS);
+	};
 	/** What the previous paint saw: its row count and pi's thumb. */
 	let last: { track: number; piTop: number; piHeight: number } | undefined;
 	let painting = false;
@@ -85,7 +147,10 @@ export function installTranscriptScrollbar(state: unknown, options: TranscriptSc
 
 	const cell = (piThumb: boolean, glyph: string, stock: Style): string => {
 		const theme = options.theme();
-		if (!theme || !SCROLLBAR_THEMES.has(theme.name ?? "")) return stock(glyph);
+		if (!theme || !SCROLLBAR_THEMES.has(theme.name ?? "")) {
+			stopClock();
+			return stock(glyph);
+		}
 		try {
 			begin();
 			const at = row++;
@@ -101,9 +166,13 @@ export function installTranscriptScrollbar(state: unknown, options: TranscriptSc
 			if (!inThumb) return theme.fg(SCROLLBAR_ROLES.TRACK, TRACK_GLYPH);
 			const top = span ? Math.min(span.top, piTop ?? span.top) : at;
 			const height = span ? span.height : 1;
-			const tick = options.tick();
-			const band = tick === undefined ? undefined : top + (((tick % height) + height) % height);
-			return theme.fg(at === band ? SCROLLBAR_ROLES.SWEEP : SCROLLBAR_ROLES.THUMB, THUMB_GLYPH);
+			const animate = options.animate();
+			ensureClock(animate);
+			if (!animate) return theme.fg(SCROLLBAR_ROLES.THUMB, THUMB_GLYPH);
+			// The band enters above the thumb and leaves below it: a cycle of height + 1 rows, in eighths.
+			const cycle = (height + 1) * 8;
+			const bandEighths = (Math.floor(now() / SWEEP_STEP_MS) % cycle) - 8;
+			return sweepCell(theme, at - top, bandEighths);
 		} catch {
 			return stock(glyph);
 		}
@@ -114,6 +183,7 @@ export function installTranscriptScrollbar(state: unknown, options: TranscriptSc
 	host.scrollbarTrackStyle = track;
 	host.scrollbarThumbStyle = thumb;
 	return () => {
+		stopClock();
 		if (host.scrollbarTrackStyle === track) host.scrollbarTrackStyle = stockTrack;
 		if (host.scrollbarThumbStyle === thumb) host.scrollbarThumbStyle = stockThumb;
 	};

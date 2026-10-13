@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { installTranscriptScrollbar, MIN_THUMB_ROWS, thumbSpan, type ScrollbarCallbacks } from "../lib/transcript-scrollbar.ts";
+import { installTranscriptScrollbar, MIN_THUMB_ROWS, SWEEP_STEP_MS, sweepCell, thumbSpan, type ScrollbarCallbacks } from "../lib/transcript-scrollbar.ts";
 
-const matrix = { name: "Matrix-Green", fg: (role: string, text: string) => `<${role}>${text}`, bold: (text: string) => text };
+const ANSI: Record<string, string> = { border: "\x1b[38;2;1;2;3m", text: "\x1b[38;2;9;9;9m" };
+const matrix = { name: "Matrix-Green", fg: (role: string, text: string) => `<${role}>${text}`, bold: (text: string) => text, getFgAnsi: (role: string) => ANSI[role] ?? "" };
 const other = { ...matrix, name: "dark" };
 
 /** pi-tui getScrollbarGeometry, as track offsets. */
@@ -12,17 +13,30 @@ function piThumb(contentHeight: number, track: number, scrollTop: number) {
 	return { top: maxScrollTop === 0 ? 0 : Math.round((scrollTop / maxScrollTop) * (track - height)), height };
 }
 
-function setup(theme: unknown = matrix, tick: () => number | undefined = () => undefined) {
+function setup(theme: unknown = matrix, animate = false, clock = { t: 0 }) {
 	const view: ScrollbarCallbacks = { scrollbarTrackStyle: (t) => `T${t}`, scrollbarThumbStyle: (t) => `H${t}` };
 	const pending: Array<() => void> = [];
-	const dispose = installTranscriptScrollbar(view, { theme: () => theme as never, tick, queueMicrotask: (cb) => pending.push(cb) });
+	const timers: Array<{ ms: number; cancelled: boolean }> = [];
+	const renders = { count: 0 };
+	const dispose = installTranscriptScrollbar(view, {
+		theme: () => theme as never,
+		animate: () => animate,
+		now: () => clock.t,
+		requestRender: () => void (renders.count += 1),
+		setInterval: (_cb, ms) => {
+			const timer = { ms, cancelled: false };
+			timers.push(timer);
+			return { cancel: () => void (timer.cancelled = true) };
+		},
+		queueMicrotask: (cb) => pending.push(cb),
+	});
 	/** pi-tui layout.js paintScrollbar: one callback per row, top to bottom. */
 	const frame = (thumb: { top: number; height: number }, track: number) => {
 		const cells = Array.from({ length: track }, (_, row) => (row >= thumb.top && row < thumb.top + thumb.height ? view.scrollbarThumbStyle("█") : view.scrollbarTrackStyle("│")));
 		for (const cb of pending.splice(0)) cb();
 		return cells;
 	};
-	return { view, dispose, frame };
+	return { view, dispose, frame, timers, renders };
 }
 
 const thumbCount = (cells: string[]) => cells.filter((cell) => cell.endsWith("█")).length;
@@ -48,7 +62,7 @@ test("Matrix draws a double rule from top to bottom and a four-row thumb where p
 });
 
 test("regression: following the end, only the four bottom rows are thumb, never the whole track", () => {
-	const { frame } = setup(matrix, () => 0);
+	const { frame } = setup(matrix, true);
 	const thumb = piThumb(5000, 30, 4970);
 	for (let i = 0; i < 3; i++) {
 		const cells = frame(thumb, 30);
@@ -58,18 +72,36 @@ test("regression: following the end, only the four bottom rows are thumb, never 
 	assert.equal(thumbCount(frame(thumb, 30)), MIN_THUMB_ROWS);
 });
 
-test("the sweep lights one thumb row per tick, top to bottom, and only inside the thumb", () => {
-	let tick = 0;
-	const { frame } = setup(matrix, () => tick);
+test("sweepCell slides a one-row band in eighths: full rows bright, edges as eighth blocks over the green", () => {
+	assert.equal(sweepCell(matrix, 0, 0), "<text>█", "the band exactly on the row");
+	assert.equal(sweepCell(matrix, 1, 0), "<border>█", "a row the band does not touch");
+	assert.equal(sweepCell(matrix, 0, 3), "\x1b[48;2;1;2;3m<text>▅\x1b[49m", "band top 3/8 down: its bright part fills the lower 5/8 over green");
+	assert.equal(sweepCell(matrix, 1, 3), "\x1b[48;2;9;9;9m<border>▅\x1b[49m", "the next row: bright top 3/8 over green bottom 5/8");
+	assert.equal(sweepCell(matrix, 0, -5), "\x1b[48;2;9;9;9m<border>▅\x1b[49m", "entering from above");
+	const plain = { ...matrix, getFgAnsi: undefined };
+	assert.match(sweepCell(plain, 0, 3), /^<(text|border)>█$/, "without role ANSI the band moves whole rows");
+});
+
+test("the sweep advances one eighth per step on its own clock, only while animations are on", () => {
+	const clock = { t: 0 };
+	const { frame, timers } = setup(matrix, true, clock);
 	const thumb = piThumb(1000, 12, 0);
 	frame(thumb, 12);
-	const lit: number[] = [];
-	for (tick = 0; tick < 6; tick++) {
+	const snapshots = new Set<string>();
+	for (let step = 0; step < 16; step++) {
+		clock.t = step * SWEEP_STEP_MS;
 		const cells = frame(thumb, 12);
-		assert.equal(cells.filter((cell) => cell.startsWith("<text>")).length, 1, `one band at tick ${tick}`);
-		lit.push(cells.findIndex((cell) => cell.startsWith("<text>")));
+		assert.ok(cells.slice(MIN_THUMB_ROWS).every((cell) => cell === "<border>║"), "the band never leaves the thumb");
+		snapshots.add(cells.slice(0, MIN_THUMB_ROWS).join("|"));
 	}
-	assert.deepEqual(lit, [0, 1, 2, 3, 0, 1]);
+	assert.equal(snapshots.size, 16, "every eighth step draws a different thumb");
+	assert.equal(timers.length, 1, "one clock");
+	assert.equal(timers[0]!.ms, SWEEP_STEP_MS);
+	const still = setup(matrix, false);
+	still.frame(thumb, 12);
+	const cells = still.frame(thumb, 12);
+	assert.ok(cells.slice(0, MIN_THUMB_ROWS).every((cell) => cell === "<border>█"), "animations off: a still green thumb");
+	assert.equal(still.timers.length, 0, "and no clock");
 });
 
 test("a scroll moves the thumb: rows from pi's thumb down follow at once", () => {
@@ -89,8 +121,8 @@ test("other themes keep pi's scrollbar, and dispose restores pi's callbacks", ()
 	dispose();
 	assert.notEqual(view.scrollbarTrackStyle, stockTrack, "the installed wrapper was the one in place");
 	assert.equal(view.scrollbarTrackStyle("│"), "T│");
-	assert.doesNotThrow(() => installTranscriptScrollbar(undefined, { theme: () => undefined, tick: () => undefined })());
-	assert.doesNotThrow(() => installTranscriptScrollbar({ scrollbarTrackStyle: 1 }, { theme: () => undefined, tick: () => undefined })());
+	assert.doesNotThrow(() => installTranscriptScrollbar(undefined, { theme: () => undefined, animate: () => false })());
+	assert.doesNotThrow(() => installTranscriptScrollbar({ scrollbarTrackStyle: 1 }, { theme: () => undefined, animate: () => false })());
 });
 
 test("against pi-tui's real layout painter: a double rule and a four-row thumb with one swept cell", async () => {
@@ -99,7 +131,7 @@ test("against pi-tui's real layout painter: a double rule and a four-row thumb w
 	const content = { render: () => Array.from({ length: 200 }, (_, i) => `line ${i}`), invalidate() {} };
 	const view = new ScrollView(content, { scrollbar: "always" });
 	const pending: Array<() => void> = [];
-	installTranscriptScrollbar(view, { theme: () => matrix as never, tick: () => 1, queueMicrotask: (cb) => pending.push(cb) });
+	installTranscriptScrollbar(view, { theme: () => matrix as never, animate: () => true, now: () => 0, setInterval: () => ({ cancel() {} }), queueMicrotask: (cb) => pending.push(cb) });
 	const column = () => {
 		const frame = renderLayoutFrame(view, 20, 10, () => {});
 		for (const cb of pending.splice(0)) cb();
@@ -112,5 +144,5 @@ test("against pi-tui's real layout painter: a double rule and a four-row thumb w
 	assert.equal(cells.filter((cell) => cell === "║").length, 10 - MIN_THUMB_ROWS);
 	const raw = renderLayoutFrame(view, 20, 10, () => {}).lines.join("\n");
 	for (const cb of pending.splice(0)) cb();
-	assert.equal((raw.match(/<text>█/g) ?? []).length, 1, "exactly one swept thumb cell");
+	assert.equal((raw.match(/<text>/g) ?? []).length, 0, "at time 0 the band is still above the thumb");
 });
