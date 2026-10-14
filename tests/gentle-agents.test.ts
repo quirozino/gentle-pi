@@ -6494,6 +6494,59 @@ test("/gentle:jobs opens this session's jobs overlay, stops the selected job, an
 	}
 });
 
+test("herdr:busy rises once while background subagents or jobs run and falls once when the last one ends", async () => {
+	const { pi, tools, fire } = fakePi();
+	const harness = deps();
+	const jobs = fakeJobShell();
+	gentleAgents(pi, {}, { ...harness.deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	const { ctx } = fakeContext();
+	const busy: unknown[] = [];
+	const unsubscribe = pi.events.on("herdr:busy", (value) => { busy.push(value); });
+	try {
+		await fire("session_start", ctx);
+		assert.deepEqual(busy, [], "an idle session reports nothing");
+		await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Long job", mode: "background" }, undefined, undefined, ctx);
+		await tick();
+		assert.deepEqual(busy, [{ active: true }], "a background subagent raises busy");
+		await tools.get("bash_background")!.execute("b1", { command: "gh run watch 42 --exit-status", label: "CI" }, undefined, undefined, ctx);
+		assert.deepEqual(busy, [{ active: true }], "a second unit of work does not raise busy again");
+		harness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "All done." }] }] });
+		harness.children[0].emit({ type: "agent_settled" });
+		await tick();
+		assert.deepEqual(busy, [{ active: true }], "busy holds while a job still runs");
+		await tools.get("bash_background")!.execute("b2", { command: "sleep 600", label: "wait" }, undefined, undefined, ctx);
+		await fire("session_shutdown", ctx);
+		assert.deepEqual(busy, [{ active: true }, { active: false }], "shutdown settles busy exactly once");
+	} finally {
+		unsubscribe();
+		jobs.cleanup();
+	}
+});
+
+test("herdr:busy falls when the last background job is stopped", async () => {
+	const { pi, tools, commands, fire } = fakePi();
+	const jobs = fakeJobShell();
+	gentleAgents(pi, {}, { ...deps().deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	const { ctx, overlays } = fakeContext();
+	const busy: unknown[] = [];
+	const unsubscribe = pi.events.on("herdr:busy", (value) => { busy.push(value); });
+	try {
+		await fire("session_start", ctx);
+		await tools.get("bash_background")!.execute("b1", { command: "gh run watch 42 --exit-status", label: "CI" }, undefined, undefined, ctx);
+		assert.deepEqual(busy, [{ active: true }]);
+		const opened = commands.get("gentle:jobs")!.handler("", ctx);
+		await tick();
+		overlays.at(-1)!.handleInput("s");
+		assert.deepEqual(busy, [{ active: true }, { active: false }]);
+		overlays.at(-1)!.handleInput("q");
+		await opened;
+	} finally {
+		unsubscribe();
+		await fire("session_shutdown", ctx);
+		jobs.cleanup();
+	}
+});
+
 test("a job exit notice whose forwarding throws while the parent is idle is retried after the bounded grace", async () => {
 	const { pi, tools, fire, sent, userMessages } = fakePi();
 	const harness = deps();

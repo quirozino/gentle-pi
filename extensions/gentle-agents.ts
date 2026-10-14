@@ -20,6 +20,7 @@ import { JOB_GLYPH, JOB_NOTICE_TYPE, jobDetails, jobNoticeText, monitorEventsTex
 import { createMonitorController, mergeMonitorBatches, type MonitorNotice } from "../lib/background-monitor.ts";
 import { JobsView } from "../lib/jobs-view.ts";
 import { JOBS_SIDEBAR_EVENT, JOBS_STATUS_KEY } from "../lib/jobs-sidebar-state.ts";
+import { HERDR_BUSY_EVENT } from "../lib/herdr-busy.ts";
 import { Text, type TUI } from "@earendil-works/pi-tui";
 import { ANIMATION_POLICY, resolveAnimationPolicy } from "../lib/animation-policy.ts";
 import { invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
@@ -544,6 +545,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			}
 			const tasks = store.list(activeSessionId()).filter((task) => ownedTaskIds.has(task.id) && !isFinished(task.status) && !restoredTaskIds.has(task.id));
 			presence?.update(tasks.map((task) => ({ task, thread: store.thread(task.id) })));
+			refreshBusy();
 			const transport = activeSessionTransport;
 			if (transport?.sessionManager === sessions && transport.sessionId === activeSessionId() && transport.listener.record) {
 				// Read the existing durable registry, without roots()'s repeated Git validation.
@@ -869,16 +871,33 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		if (event.toolName !== "bash") return undefined;
 		const command = (event.input as { command?: unknown }).command;
 		if (typeof command !== "string" || !isStandaloneSleep(command)) return undefined;
-		const sessionId = activeSessionId();
-		// Same active-task predicate as publishActivity.
-		const tasks = store.list(sessionId).filter((task) => ownedTaskIds.has(task.id) && !isFinished(task.status) && !restoredTaskIds.has(task.id)).length;
-		const running = jobs.list(sessionId ?? "").filter((job) => job.status === "running").length;
+		const { tasks, running } = backgroundWork();
 		if (tasks + running === 0) return undefined;
 		return {
 			block: true,
 			reason: `Standalone sleep is blocked while background work is active (${tasks} task(s), ${running} job(s)). End the turn now; each completion arrives automatically as a session message and starts a new turn.`,
 		};
 	});
+	// Same active-task predicate as publishActivity.
+	const backgroundWork = () => {
+		const sessionId = activeSessionId();
+		const tasks = store.list(sessionId).filter((task) => ownedTaskIds.has(task.id) && !isFinished(task.status) && !restoredTaskIds.has(task.id)).length;
+		const running = jobs.list(sessionId ?? "").filter((job) => job.status === "running").length;
+		return { tasks, running };
+	};
+	// Edge-triggered: one active:true when background work starts, one
+	// active:false when the last unit ends or the session shuts down.
+	let backgroundBusy = false;
+	const setBusy = (next: boolean) => {
+		if (next === backgroundBusy) return;
+		backgroundBusy = next;
+		try { pi.events.emit(HERDR_BUSY_EVENT, { active: next }); } catch { /* Display only. */ }
+	};
+	const refreshBusy = () => {
+		if (sessions === undefined) return;
+		const { tasks, running } = backgroundWork();
+		setBusy(tasks + running > 0);
+	};
 	let activeAgentRuns = 0;
 	// ExtensionAPI has no idle probe; ctx.isIdle() is the only one. It is live
 	// and also reports compaction, which activeAgentRuns cannot see. The
@@ -1214,6 +1233,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		const sessionId = activeSessionId();
 		const running = jobs.list(sessionId ?? "").filter((job) => job.status === "running")
 			.sort((a, b) => b.startedAt - a.startedAt);
+		refreshBusy();
 		try { parentCtx?.ui.setStatus(JOBS_STATUS_KEY, running.length === 0 ? undefined : `${JOB_GLYPH} ${running.length} job${running.length === 1 ? "" : "s"}`); } catch { /* Status is cosmetic. */ }
 		if (sessionId) {
 			try { pi.events.emit(JOBS_SIDEBAR_EVENT, { sessionId, snapshot: { jobs: running.map(({ id, label, startedAt }) => ({ id, label, startedAt })) } }); } catch { /* Display only. */ }
@@ -2512,6 +2532,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		const jobsStopped = jobs.stopAll();
 		jobNotices.length = 0;
 		refreshJobStatus();
+		setBusy(false);
 		activeAgentRuns = 0;
 		resetParentDelivery(undefined);
 		presence?.dispose();
