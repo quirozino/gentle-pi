@@ -87,6 +87,13 @@ export function transcriptScrollState(root: LayoutNode | undefined): unknown {
 export const RAILS_RESERVED_COLUMNS = 4;
 const RESERVED_COLUMNS = [1, RAILS_RESERVED_COLUMNS] as const;
 
+// pi marks assistant messages with OSC 133 semantic-prompt sequences at the very
+// start of a line, and pi-tui strips them only there (layout.js). The inset blank
+// goes after them: in front, the marks reach the terminal mid-row, and herdr
+// (libghostty-vt) breaks the row there, leaving a gray band across the shell.
+const LEADING_OSC133 = /^(?:\x1b\]133;[ABC](?:\x07|\x1b\\))*/;
+const insetLine = (line: string): string => line.replace(LEADING_OSC133, "$& ");
+
 export function installTranscriptRightGutter(root: LayoutNode | undefined): (() => void) | undefined {
 	const scroll = layoutNode(root?.entries?.[0]?.component);
 	if (scroll?.type !== "scroll") return undefined;
@@ -105,7 +112,7 @@ export function installTranscriptRightGutter(root: LayoutNode | undefined): (() 
 		// Under the Matrix rails the content is inset one column on each side: on
 		// the left like the dock and header, on the right as a gap before the rails.
 		if (width > 2 && state.getContentWidth(width + RAILS_RESERVED_COLUMNS) === width) {
-			return withTranscriptRightGutter(true, () => withTranscriptLeftInset(true, () => stock.call(this, width - 2).map((line) => ` ${line}`)));
+			return withTranscriptRightGutter(true, () => withTranscriptLeftInset(true, () => stock.call(this, width - 2).map(insetLine)));
 		}
 		return withTranscriptRightGutter(reserved, () => stock.call(this, width));
 	};

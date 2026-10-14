@@ -78,6 +78,20 @@ test("under the rails the gutter insets the content one column on the left, flag
 	uninstall!();
 });
 
+test("under the rails the left inset goes after leading OSC 133 marks so pi-tui still strips them", () => {
+	const view = new ScrollView({ render: () => [], invalidate() {} }, { scrollbar: "always" });
+	installTranscriptRails(fakeHost(view), view, { theme: () => matrix, cells: [] });
+	const zone = "\x1b]133;A\x07";
+	const end = "\x1b]133;B\x07\x1b]133;C\x1b\\";
+	const document = { render: () => [zone, "text", `${end}last`], invalidate() {} };
+	const node = { type: "scroll", component: document, state: view };
+	const root = { entries: [{ component: { [Symbol.for("@earendil-works/pi-tui/layout-node")]: () => node } }] };
+	const uninstall = installTranscriptRightGutter(root as never);
+	assert.ok(uninstall);
+	assert.deepEqual(document.render(36), [`${zone} `, " text", `${end} last`], "marks stay at column 0, the blank follows them");
+	uninstall!();
+});
+
 test("end to end on pi's renderer: every transcript row ends in │ │ and the thumb rows in │█│", async () => {
 	const { installSidebar } = await import("../lib/shell-sidebar-layout.ts");
 	const terminal = {
