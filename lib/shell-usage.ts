@@ -132,6 +132,8 @@ const MINIMAX_WINDOWS: ReadonlyArray<[key: string, seconds: number]> = [
 // id names it in the bar, and the reset text says what the window is in the
 // panel. Only a sub-window on top of it (a rolling `4h`) needs a name.
 const NAN_PERIOD_LABEL = "";
+/** Windows a Usage row ranks by, in preference order: the week, then the monthly allowance. */
+const RANKING_WINDOW_LABELS = ["week", NAN_PERIOD_LABEL, "month"] as const;
 // The dashboard's own published fallbacks for a model that reports rolling
 // numbers without naming its budget.
 const NAN_DEFAULT_WINDOW_TOKENS = 400_000_000;
@@ -934,7 +936,7 @@ function paintMeter(percent: number, cells: number, theme: UsageTheme, tick?: nu
 export interface ModelUsageRow {
 	/** Model id without its provider prefix, as the sidebar shows it. */
 	name: string;
-	/** Worst consumed window for this model, or undefined when nothing reported it. */
+	/** Consumed share of the week (else the monthly allowance) for this model, or undefined when nothing reported it. */
 	percent?: number;
 }
 
@@ -965,11 +967,16 @@ export function modelUsageRows(
 	activeModelId: string | undefined,
 	activeProvider: string | undefined,
 ): ModelUsageRow[] {
-	// Half a percent is the threshold the shell already uses before a row is worth
-	// drawing; the worst window is the one that decides whether a model still has
-	// room, so that is what the row shows.
+	// The row shows, and the sidebar ranks by, the longest consumption window:
+	// the week where the provider reports one, else the monthly allowance (nan's
+	// billing period, kimi's month). A provider with neither keeps the highest
+	// window worth drawing (half a percent, the shell's threshold).
 	const spent = (usedPercent: number) => usedPercent >= 0.5;
-	const worstPercent = (limit: UsageLimit): number | undefined => {
+	const periodPercent = (limit: UsageLimit): number | undefined => {
+		for (const label of RANKING_WINDOW_LABELS) {
+			const window = limit.windows.find((candidate) => candidate.label === label);
+			if (window) return window.usedPercent;
+		}
 		const windows = limit.windows.filter((window) => spent(window.usedPercent));
 		if (windows.length === 0) return limit.windows[0]?.usedPercent;
 		return Math.max(...windows.map((window) => window.usedPercent));
@@ -977,7 +984,8 @@ export function modelUsageRows(
 
 	const rows: ModelUsageRow[] = [];
 	const claimed = new Map<string, Set<number>>();
-	for (const model of models) {
+	// A model routed to several agents is one row.
+	for (const model of new Set(models)) {
 		const provider = providerOf(model) ?? activeProvider;
 		const usage = provider === undefined ? undefined : usageByProvider?.get(provider);
 		const limits = usage?.limits ?? [];
@@ -1002,7 +1010,7 @@ export function modelUsageRows(
 			continue;
 		}
 		taken.add(index);
-		rows.push({ name: bareModelId(model), percent: worstPercent(limits[index] as UsageLimit) });
+		rows.push({ name: bareModelId(model), percent: periodPercent(limits[index] as UsageLimit) });
 	}
 	return rows;
 }

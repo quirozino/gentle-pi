@@ -734,8 +734,10 @@ test("modelUsageRows resolves every antigravity model in a mixed profile to its 
 	for (const row of rows) assert.notEqual(row.percent, undefined, `${row.name} should resolve a percent, not Unknown`);
 
 	const [flash, gptOss, claudeSonnet] = rows;
-	const geminiPercent = usage.limits.find((limit) => limit.name === "gemini")?.windows[0]?.usedPercent;
-	const claudeGptPercent = usage.limits.find((limit) => limit.name === "claude-gpt")?.windows[0]?.usedPercent;
+	// Rows show each group's weekly window.
+	const weekOf = (name: string) => usage.limits.find((limit) => limit.name === name)?.windows.find((window) => window.label === "week")?.usedPercent;
+	const geminiPercent = weekOf("gemini");
+	const claudeGptPercent = weekOf("claude-gpt");
 	assert.equal(flash.percent, geminiPercent);
 	// gpt and claude models both land on the claude-gpt group's number, not gemini's.
 	assert.equal(gptOss.percent, claudeGptPercent);
@@ -975,7 +977,7 @@ test("a group that stops describing its members still matches through its slug",
 			data: {
 				groups: [
 					{ name: "Gemini Models", buckets: [{ window: "5h", remaining_fraction: 1 }, { window: "weekly", remaining_fraction: 1 }] },
-					{ name: "Claude and GPT models", buckets: [{ window: "5h", remaining_fraction: 0.5 }, { window: "weekly", remaining_fraction: 1 }] },
+					{ name: "Claude and GPT models", buckets: [{ window: "5h", remaining_fraction: 1 }, { window: "weekly", remaining_fraction: 0.5 }] },
 				],
 			},
 		},

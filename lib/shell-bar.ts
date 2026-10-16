@@ -649,7 +649,7 @@ function sidebarCardRows(model: ShellBarModel, theme: ShellBarTheme, width: numb
 	const usageLines = model.usage && !(headerShows.usage && !allowanceGroupsSupported(model.usage.limits))
 		? sidebarUsageLines(model.usage, model.modelId, theme, innerWidth - inset, model.tick)
 		: [];
-	// One row per model, worst window, animated bar. A model with no reported
+	// One row per model, its weekly (else monthly) window, animated bar. A model with no reported
 	// window says so instead of vanishing; a model the provider reports but the
 	// profile does not route to is labelled, so an unexpected model is visible.
 	// Ranked on every render, so the order follows usage as it grows: the highest

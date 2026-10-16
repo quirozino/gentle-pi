@@ -1753,3 +1753,41 @@ test("a Firebase deploy containing the candidate never hides an old web release"
 	assert.match(text, /◎ Stage Firebase incluye · 9b1e2d3c4a5f/);
 	assert.ok(paintedIn(rows, "syntaxType", "atrasado · 9b1e2d3"), "behind is informational, never a warning");
 });
+
+// Ranking window: the week where the provider reports one, nan's monthly
+// billing period otherwise; a provider with neither keeps its highest window.
+test("modelUsageRows shows the weekly window, nan's monthly period, and the highest window only as a fallback", () => {
+	const limit = (name: string, windows: Array<[string, number]>) => ({
+		name,
+		limitReached: false,
+		windows: windows.map(([label, usedPercent]) => ({ label, usedPercent, windowSeconds: 0, resetAt: null })),
+	});
+	const byProvider = new Map([
+		["claude-bridge", { provider: "claude-bridge", plan: "max", fetchedAt: 0, limits: [limit("claude", [["5h", 80], ["week", 12]])] }],
+		["nan", { provider: "nan", plan: "pro", fetchedAt: 0, limits: [limit("nan/glm5.3-flash", [["", 30], ["4h", 90]])] }],
+		["kimi", { provider: "kimi", plan: "x", fetchedAt: 0, limits: [limit("kimi", [["5h", 70], ["month", 5]])] }],
+		["openai-codex", { provider: "openai-codex", plan: "pro", fetchedAt: 0, limits: [limit("codex", [["5h", 3], ["1h", 40]])] }],
+	]);
+	assert.deepEqual(modelUsageRows(["claude-bridge/claude-opus-5-5", "nan/glm5.3-flash", "kimi/k3", "openai-codex/gpt-6.1-sol"], byProvider, undefined, undefined), [
+		{ name: "claude-opus-5-5", percent: 12 },
+		{ name: "glm5.3-flash", percent: 30 },
+		{ name: "k3", percent: 5 },
+		{ name: "gpt-6.1-sol", percent: 40 },
+	]);
+});
+
+test("the sidebar ranks Usage by that window, highest first, and a repeated model shows once", () => {
+	const limit = (name: string, windows: Array<[string, number]>) => ({
+		name,
+		limitReached: false,
+		windows: windows.map(([label, usedPercent]) => ({ label, usedPercent, windowSeconds: 0, resetAt: null })),
+	});
+	const usageByProvider = new Map([
+		["claude-bridge", { provider: "claude-bridge", plan: "max", fetchedAt: 0, limits: [limit("claude", [["5h", 95], ["week", 10]])] }],
+		["nan", { provider: "nan", plan: "pro", fetchedAt: 0, limits: [limit("nan/glm5.3-flash", [["", 40], ["4h", 1]])] }],
+	]);
+	const profileModels = ["claude-bridge/claude-opus-5-5", "nan/glm5.3-flash", "nan/glm5.3-flash"];
+	const card = renderShellSidebarCard(model({ profileModels, usageByProvider, usageExpanded: true }), plainTheme, 60);
+	const names = card.rows.map(stripAnsi).flatMap((row) => /(glm5\.3-flash|claude-opus-5-5)/.exec(row)?.[1] ?? []);
+	assert.deepEqual(names, ["glm5.3-flash", "claude-opus-5-5"], "nan's 40% month above Claude's 10% week despite its 95% 5h window; the repeat shows once");
+});
