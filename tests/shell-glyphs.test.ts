@@ -214,6 +214,6 @@ test("a tick turns the gauge into a moving strip, and no tick keeps it static", 
 	const staticEight = renderGauge(50, 8);
 	assert.equal(staticEight, "▰▰▰▰▱▱▱▱");
 	// with a tick the same gauge shows fewer cells early in the cycle
-	assert.notEqual(renderGauge(50, 8, 0), staticEight);
-	assert.equal(renderGauge(50, 8, 0).length, 8, "the strip keeps its width while animating");
+	assert.notEqual(renderGauge(50, 8, undefined, 0), staticEight);
+	assert.equal(renderGauge(50, 8, undefined, 0).length, 8, "the strip keeps its width while animating");
 });

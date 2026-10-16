@@ -130,7 +130,7 @@ test("float cards, rail panels, the top bar and the prompt row paint only throug
 		for (const state of ["warning", "error", "success"]) assert.ok(!fgRoles.has(state), `${tone}: the phase never paints the ${state} role`);
 	}
 
-	const header = renderShellHeaderChrome(buildShellHeaderModel(model()), theme, 120, "alt+u", undefined, 3);
+	const header = renderShellHeaderChrome(buildShellHeaderModel(model()), theme, 120, "alt+u", undefined, undefined, 3);
 	assert.equal(header.headerRow, 1, "the float top bar is in effect");
 	assertRolesOnly(header.rows, "top bar");
 

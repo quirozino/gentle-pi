@@ -59,7 +59,7 @@ it lets the window close.
 Current requirements come from `package.json` and
 [`gentle-ai-installer.mjs`](../scripts/gentle-ai-installer.mjs): Node ≥22.19.0,
 Pi ≥1.2.0, pnpm acquisition 11.1.1, Gentle Shell package 4.0.0 and package-local
-Gentle AI 4.1.1. Windows native source builds require Go ≥1.25.10 when the
+Gentle AI 4.2.0. Windows native source builds require Go ≥1.25.10 when the
 required usable native binary is missing. A reusable binary does not require Go.
 When a build needs Go and the user's Go is missing, older or unchecked, the installer uses
 its own [pinned Go](#pinned-go) instead of blocking.
@@ -1029,6 +1029,13 @@ again, or add `$PNPM_HOME/bin` to PATH manually. For `acquire-go`, a detail
 starting with `Conflicting Go destination: ` selects
 `guidance.goDestinationConflict`: a folder from an earlier, interrupted run is in
 the way and is never replaced; remove that folder and run the installer again.
+For `install-version` and `install-global`, a detail with `spawn UNKNOWN` selects
+`guidance.codeIntegrityBlocked`: libuv reports a Windows code integrity refusal
+(Smart App Control, CodeIntegrity event 3077) of the `gentle-ai.exe` that
+gentle-pi's postinstall builds as `spawn UNKNOWN`. Windows has no per-program
+exception, so the guidance offers WSL or turning Smart App Control off (on
+Windows 11 it cannot be turned back on without reinstalling Windows) instead of
+network and registry advice.
 `scripts/installer-runner.mjs` exports the frozen
 arrays `blockedReasons` and `failedSteps`; a test requires guidance for exactly
 those entries, and the runner tests check that every reason and step their

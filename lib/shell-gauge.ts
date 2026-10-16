@@ -20,16 +20,44 @@ const GAUGE_EMPTY_ROLE = "border";
 const WARNING_THRESHOLD = 80;
 const ERROR_THRESHOLD = 95;
 
-export function renderGauge(percent: number | null, cells: number = GAUGE_CELLS, tick?: number): string {
+// Gauge-specific theme roles (issue #2222). Every field is optional and falls
+// back to the shared role the gauge painted with before gauge roles existed,
+// so themes without a gauge block render byte-identically to today.
+export interface GaugePaint {
+	/** Filled cells below the warning threshold; falls back to `accent`. */
+	ok?: string;
+	/** Filled cells from 80%; falls back to `warning`. */
+	warning?: string;
+	/** Filled cells from 95%; falls back to `error`. */
+	error?: string;
+	/** Empty cells; falls back to `border`. */
+	empty?: string;
+	/** Filled-cell glyph; falls back to the shell glyph resolver. */
+	filled?: string;
+	/** Empty-cell glyph; falls back to the shell glyph resolver. */
+	emptyGlyph?: string;
+}
+
+export interface GaugeGlyphs {
+	filled: string;
+	empty: string;
+}
+
+// Glyphs fall back to the shell glyph resolver so a terminal whose font lacks the
+// block characters can substitute printable ones without patching the package.
+export function gaugeGlyphs(glyphs?: Partial<GaugeGlyphs>): GaugeGlyphs {
+	return { filled: glyphs?.filled ?? SHELL_GLYPHS.gauge.filled, empty: glyphs?.empty ?? SHELL_GLYPHS.gauge.empty };
+}
+
+export function renderGauge(percent: number | null, cells: number = GAUGE_CELLS, glyphs?: Partial<GaugeGlyphs>, tick?: number): string {
 	const clamped = Math.max(0, Math.min(100, percent ?? 0));
 	const target = Math.round((clamped / 100) * cells);
 	// With a tick the strip grows one cell per step and holds at the value before
 	// looping, which is the movement the catalogue design asked for. Without one it
 	// is static, so every existing caller keeps its exact output.
 	const filled = tick === undefined ? target : animatedFill(target, cells, tick);
-	// Glyphs come from the shell glyph resolver so a terminal whose font lacks the
-	// block characters can substitute printable ones without patching the package.
-	return SHELL_GLYPHS.gauge.filled.repeat(filled) + SHELL_GLYPHS.gauge.empty.repeat(cells - filled);
+	const { filled: filledGlyph, empty: emptyGlyph } = gaugeGlyphs(glyphs);
+	return filledGlyph.repeat(filled) + emptyGlyph.repeat(cells - filled);
 }
 
 /**
@@ -60,15 +88,23 @@ export function gaugeTone(percent: number | null): GaugeTone {
 	return GAUGE_TONE.ACCENT;
 }
 
-export function paintGauge(percent: number | null, theme: GaugeTheme, cells: number = GAUGE_CELLS, tick?: number): string {
-	const gauge = renderGauge(percent, cells, tick);
-	const emptyGlyph = SHELL_GLYPHS.gauge.empty;
-	const trailingEmpty = new RegExp(`${escapeForRegExp(emptyGlyph)}+$`);
-	const filled = gauge.replace(trailingEmpty, "");
-	return theme.fg(gaugeTone(percent), filled) + theme.fg(GAUGE_EMPTY_ROLE, gauge.slice(filled.length));
+export function paintGauge(percent: number | null, theme: GaugeTheme, cells: number = GAUGE_CELLS, paint?: GaugePaint, tick?: number): string {
+	const glyphs = gaugeGlyphs(paint && { filled: paint.filled, empty: paint.emptyGlyph });
+	const gauge = renderGauge(percent, cells, glyphs, tick);
+	const filled = stripTrailing(gauge, glyphs.empty);
+	// Token names go through theme.fg; raw ANSI prefixes (resolved from direct
+	// colors by gauge-theme.ts) paint directly, so the gauges alone recolor.
+	const isAnsi = (role: string | undefined): role is string => typeof role === "string" && role.startsWith("\x1b[");
+	const paintFg = (role: string | undefined, fallback: string, text: string): string => (isAnsi(role) ? `${role}${text}\x1b[39m` : theme.fg(role ?? fallback, text));
+	const tone = gaugeTone(percent);
+	const filledRole = tone === GAUGE_TONE.ACCENT ? paint?.ok : tone === GAUGE_TONE.WARNING ? paint?.warning : tone === GAUGE_TONE.ERROR ? paint?.error : undefined;
+	return paintFg(filledRole, tone, filled) + paintFg(paint?.empty, GAUGE_EMPTY_ROLE, gauge.slice(filled.length));
 }
 
-/** The empty glyph is configurable, so it must be quoted before use in a pattern. */
-function escapeForRegExp(value: string): string {
-	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+// Strips the maximal run of trailing empty glyphs without building a RegExp
+// from theme-authored strings, which could contain regex metacharacters.
+function stripTrailing(gauge: string, empty: string): string {
+	let end = gauge.length;
+	while (end >= empty.length && end > 0 && gauge.endsWith(empty, end)) end -= empty.length;
+	return gauge.slice(0, end);
 }

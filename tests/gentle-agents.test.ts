@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import { createRequire, syncBuiltinESMExports } from "node:module";
@@ -28,11 +28,13 @@ import { applyTaskEvent, emptyThread, MISSING_TOOLS_NOTE_PREFIX, TASK_EVENT, TAS
 import { NativePointerScope } from "../lib/native-pointer-region.ts";
 import { PresenceCursor, PresencePublisher, listPresence, readActivity, readDiscovery } from "../lib/orchestrator-presence.ts";
 import { OrchestratorScopeCache } from "../lib/orchestrator-scope.ts";
+import { TODO_PROGRESS_EVENT } from "../lib/shell-todo.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import { fakeChild, type FakeChild } from "./agents-fake-child.ts";
-import { AgentRunner, REQUESTED_TOOLS_ENV } from "../lib/agents-runner.ts";
+import { AgentRunner, REQUESTED_TOOLS_ENV, type TaskRequest } from "../lib/agents-runner.ts";
 import { bindSessionRepositoryPreparation } from "../lib/bounded-writer-admission.ts";
 import { bindSessionProfile, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
+import { taskHeader } from "../lib/agents-view.ts";
 import { readFrozenInheritedProfile, resetFrozenInheritedProfilesForTesting } from "../lib/session-profile-freeze.ts";
 import { CHILD_METRICS_EVENT } from "../lib/runtime-metrics-children.ts";
 import { installPromotionCompletionCapture, PROMOTION_REPORT_MARKER, promotionStatusRegistry, verifierRunStart, verifierRunTaskId } from "../lib/promotion-report.ts";
@@ -2271,7 +2273,10 @@ test("default Node spawn adapter distinguishes IPC-only and permission-capable c
 			assert.equal(captured[index]?.command, "/fixture/pi");
 			assert.deepEqual(captured[index]?.args, args);
 			assert.equal(captured[index]?.options.cwd, permissionChannel ? canonicalGitCwd : nonGitCwd);
-			assert.deepEqual(captured[index]?.options.env, { PATH: "/bin", FIXTURE: fixture, GENTLE_PI_CONFIG_HOME: process.env.GENTLE_PI_CONFIG_HOME, GENTLE_PI_AGENTS_CHILD: "1", GENTLE_PI_AGENTS_OWNED_IPC: ownedIpc, ...(permissionChannel ? { GENTLE_PI_AGENTS_PARENT_PERMISSION_FD: "3" } : {}), [REQUESTED_TOOLS_ENV]: "read,grep,subagent_parent_message" });
+			const scratch = captured[index]?.options.env.TMPDIR;
+			assert.match(scratch ?? "", /[\\/]ga[A-Za-z0-9]{6}$/, "each child receives its own TMPDIR");
+			const scratchEnv = process.platform === "win32" ? { TMPDIR: scratch, TMP: scratch, TEMP: scratch } : { TMPDIR: scratch };
+			assert.deepEqual(captured[index]?.options.env, { PATH: "/bin", FIXTURE: fixture, GENTLE_PI_CONFIG_HOME: process.env.GENTLE_PI_CONFIG_HOME, GENTLE_PI_AGENTS_CHILD: "1", GENTLE_PI_AGENTS_OWNED_IPC: ownedIpc, ...(permissionChannel ? { GENTLE_PI_AGENTS_PARENT_PERMISSION_FD: "3" } : {}), [REQUESTED_TOOLS_ENV]: "read,grep,subagent_parent_message", ...scratchEnv });
 			assert.equal(captured[index]?.options.shell, undefined, "the adapter does not invoke a shell");
 			assert.equal(captured[index]?.options.windowsHide, true, "the adapter always hides a Windows console");
 			assert.equal(captured[index]?.options.detached, process.platform !== "win32", "the adapter forwards the runner's platform selection");
@@ -3381,6 +3386,167 @@ test("follow mode re-resolves the defaults on every launch without a notice; Ent
 	bindSessionProfile("s1", "frontier", { explore: { model: "openai/alpha", thinking: "minimal" } });
 	assert.equal(await session.launch(), "openai/alpha:minimal", "the explicit binding stops following");
 	assert.deepEqual(session.driftNotices(), []);
+});
+
+// gentle-shell#2180: the launch seam records which profile layer supplied the
+// model, next to the model itself, so every task card shows the winning layer
+// and stale disk edits below a frozen session become visible.
+interface LaunchCapture {
+	request: TaskRequest;
+	record: TaskRecord;
+}
+
+function captureLaunches(t: TestContext): LaunchCapture[] {
+	const captures: LaunchCapture[] = [];
+	const original = AgentRunner.prototype.run;
+	t.mock.method(AgentRunner.prototype, "run", function (this: AgentRunner, request: TaskRequest) {
+		const record = original.call(this, request);
+		captures.push({ request, record });
+		return record;
+	});
+	return captures;
+}
+
+// A non-Git variant of launchSession: the resolver returns nothing, so the
+// declaration is the only pin layer (as non-Git writer admission reads it).
+async function launchNonGitSession(base: ReturnType<typeof pinFixture>, env: Record<string, string> = {}) {
+	const harness = deps();
+	harness.deps.resolveWorktree = () => undefined;
+	harness.deps.env = { PATH: "/bin", GENTLE_PI_CONFIG_HOME: base.configHome, ...env };
+	const { pi, tools, fire } = fakePi();
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	// Outside Git the declaration is read at the session's own cwd, so the
+	// fixture binds a dedicated session directory instead of leaking the
+	// declaration into the shared fixture cwd other tests launch from.
+	const sessionCwd = join(base.root, "session");
+	mkdirSync(join(sessionCwd, ".pi", "gentle-ai"), { recursive: true });
+	copyFileSync(base.declarationPath, join(sessionCwd, ".pi", "gentle-ai", "profile.json"));
+	ctx.sessionManager.getCwd = () => sessionCwd;
+	await fire("session_start", ctx);
+	return {
+		launch: async () => {
+			await tools.get("subagent_run")!.execute("source", { agent: "explore", task: "Map", mode: "background" }, undefined, undefined, ctx);
+			await tick();
+		},
+		shutdown: async () => {
+			await fire("session_shutdown", ctx);
+			await tick();
+		},
+	};
+}
+
+test("a bound session launch records the binding as the model source on the task record", async t => {
+	t.after(() => resetSessionProfileBindingsForTesting());
+	const captures = captureLaunches(t);
+	const base = pinFixture("source-binding");
+	base.writeStore({ pinned: { explore: { model: "openai/alpha", thinking: "minimal" } } });
+	base.writePin("pinned");
+	bindSessionProfile("s1", "bound", { explore: { model: "openai/beta" } });
+	const session = await launchSession(base);
+	t.after(session.shutdown);
+	await session.launch();
+	assert.equal(captures[0]!.request.modelSource, "binding", "the explicit Enter binding wins per the chain precedence");
+	assert.equal(captures[0]!.record.modelSource, "binding", "the record copies the request's layer token");
+});
+
+test("a frozen global-active launch records frozen:global as the model source", async t => {
+	const captures = captureLaunches(t);
+	const base = pinFixture("source-freeze-global");
+	base.writeStore(DRIFT_PROFILES, "frontier");
+	const session = await launchSession(base);
+	t.after(session.shutdown);
+	await session.launch();
+	assert.equal(captures[0]!.request.modelSource, "frozen:global");
+});
+
+test("a frozen local-pin launch records frozen:local as the model source", async t => {
+	const captures = captureLaunches(t);
+	const base = pinFixture("source-freeze-local");
+	base.writeStore(DRIFT_PROFILES);
+	base.writePin("frontier");
+	const session = await launchSession(base);
+	t.after(session.shutdown);
+	await session.launch();
+	assert.equal(captures[0]!.request.modelSource, "frozen:local");
+});
+
+test("a session frozen on a non-Git declaration records frozen:repo as the model source", async t => {
+	const captures = captureLaunches(t);
+	const base = pinFixture("source-freeze-declaration");
+	base.writeStore({ declared: { explore: { model: "openai/alpha", thinking: "minimal" } } });
+	base.writeDeclaration("declared");
+	const session = await launchNonGitSession(base);
+	t.after(session.shutdown);
+	await session.launch();
+	assert.equal(captures[0]!.request.modelSource, "frozen:repo");
+});
+
+test("an agent outside every profile records its frontmatter as the model source", async t => {
+	const captures = captureLaunches(t);
+	const base = pinFixture("source-definition");
+	// The pinned profile replaces routing wholesale and does not name explore,
+	// so explore's model comes from its own frontmatter.
+	base.writeStore({ helper: { model: "openai/beta" } });
+	base.writePin("helper");
+	const session = await launchSession(base);
+	t.after(session.shutdown);
+	await session.launch();
+	assert.equal(captures[0]!.request.modelSource, "definition");
+});
+
+test("a follow launch through the globally active profile records profile as the model source", async t => {
+	const captures = captureLaunches(t);
+	const base = pinFixture("source-follow-global");
+	base.writeStore(DRIFT_PROFILES, "frontier");
+	const session = await launchSession(base, { GENTLE_PI_PROFILE_FOLLOW: "1" });
+	t.after(session.shutdown);
+	await session.launch();
+	assert.equal(captures[0]!.request.modelSource, "profile");
+});
+
+test("a follow launch through the local pin records pin:local as the model source", async t => {
+	const captures = captureLaunches(t);
+	const base = pinFixture("source-follow-pin");
+	base.writeStore(DRIFT_PROFILES);
+	base.writePin("frontier");
+	const session = await launchSession(base, { GENTLE_PI_PROFILE_FOLLOW: "1" });
+	t.after(session.shutdown);
+	await session.launch();
+	assert.equal(captures[0]!.request.modelSource, "pin:local");
+});
+
+test("a follow launch through a committed repository declaration records pin:repo as the model source", async t => {
+	const captures = captureLaunches(t);
+	const base = pinFixture("source-follow-declaration");
+	base.writeStore({ declared: { explore: { model: "openai/alpha", thinking: "minimal" } } });
+	base.writeDeclaration("declared");
+	const session = await launchSession(base, { GENTLE_PI_PROFILE_FOLLOW: "1" });
+	t.after(session.shutdown);
+	await session.launch();
+	assert.equal(captures[0]!.request.modelSource, "pin:repo");
+});
+
+test("a follow launch through a non-Git repository declaration records declaration as the model source", async t => {
+	const captures = captureLaunches(t);
+	const base = pinFixture("source-follow-nongit");
+	base.writeStore({ declared: { explore: { model: "openai/alpha", thinking: "minimal" } } });
+	base.writeDeclaration("declared");
+	const session = await launchNonGitSession(base, { GENTLE_PI_PROFILE_FOLLOW: "1" });
+	t.after(session.shutdown);
+	await session.launch();
+	assert.equal(captures[0]!.request.modelSource, "declaration");
+});
+
+test("the agents task card shows the winning layer next to the model, and renders unchanged without one (#2180)", () => {
+	const record = {
+		id: "task", agent: "explore", mode: "task", prompt: "Map the repo", label: "Map", cwd: "/repo", parentSessionId: "s1",
+		status: TASK_STATUS.RUNNING, createdAt: 60_000, startedAt: 60_000, endedAt: null, model: "nan/glm5.3",
+		thinking: undefined, sessionPath: null, error: null, result: null, lastStep: "", lastActivityAt: 60_000,
+		turns: 0, toolCalls: 0, tokens: 0, cost: 0,
+	} as TaskRecord;
+	assert.equal(taskHeader({ ...record, modelSource: "binding" }, 61_000), "explore · running · nan/glm5.3 · binding · 1s");
+	assert.equal(taskHeader(record, 61_000), "explore · running · nan/glm5.3 · 1s", "absent modelSource renders exactly as today");
 });
 
 test("agentsEnabled and agentsCollapseKey read their flags and stay off inside a child", () => {
@@ -4625,6 +4791,39 @@ test("registered orchestrator_list joins peer metadata without child launches or
 		assert.equal(runtime.spawned.length, 0);
 		assert.equal(h.sent.length, 0);
 		assert.equal(h.userMessages.length, 0);
+		await h.fire("session_shutdown", ctx);
+	} finally { publisher.dispose(); }
+});
+
+test("orchestrator_list labels a live peer that predates discovery publication (#2305)", async () => {
+	const h = fakePi();
+	const runtime = deps();
+	const profile = realpathSync(mkdtempSync(join(root, "discovery-legacy-")));
+	const peer = { version: 1 as const, sessionId: "peer", endpoint: "/fixture/peer.sock", createdAt: 1 };
+	// A peer running pre-publication code heartbeats its schema-1 header only.
+	const publisher = PresencePublisher.start({ profile, sessionId: "peer", label: "gentle-shell", activity: [] });
+	try {
+		let ready = false;
+		const registry = { list: async () => [], listActivations: async () => [peer] };
+		runtime.deps.agentHome = profile;
+		runtime.deps.sessionTransport = {
+			createRegistry: async () => registry,
+			createListener: () => ({ registry, start: async () => { ready = true; }, close: async () => {} }),
+			createClient: () => ({ close() {}, sendNotification: async () => { throw new Error("no messages expected"); } }),
+		};
+		gentleAgents(h.pi, {}, runtime.deps);
+		const { ctx } = fakeContext();
+		await h.fire("session_start", ctx);
+		await eventually(() => ready, "discovery transport ready");
+		const result = await h.tools.get("orchestrator_list")!.execute("list", {}, undefined, undefined, ctx);
+		assert.equal(result.content[0].text, "Advertised sessions (reachability is unknown):\n"
+			+ "- peer · gentle-shell · context: legacy (this session predates discovery publication; restart it to publish its workspace and repository)"
+			+ " · repository: not published · metadata: legacy\n  recorded catalog: unknown");
+		// Consultation stays fail-closed: a legacy label is display-only.
+		const consult = await h.tools.get("orchestrator_consult")!.execute("consult", { recipient_session_id: "peer" }, undefined, undefined, ctx);
+		assert.equal(JSON.parse(consult.content[0].text).status, "unavailable");
+		assert.equal(runtime.spawned.length, 0);
+		assert.equal(h.sent.length, 0);
 		await h.fire("session_shutdown", ctx);
 	} finally { publisher.dispose(); }
 });
@@ -6807,4 +7006,84 @@ test("subagent_run refuses a Judgment Day judge launched on a generic agent", as
 	assert.match(blocked!.reason!, /jd-judge-a/);
 	assert.equal(await call({ agent: "jd-judge-a", mode: "background", label: "juez A judgment day", task }), undefined);
 	assert.equal(await call({ agent: "gentle-ai-verify", mode: "background", label: "verify T1", task: "Check S1." }), undefined);
+});
+
+// Harness roadmap T6: todo progress reaches peers without a model turn spent on
+// orchestrator_session_id, and never replaces the owner's curated fields.
+test("todo progress publishes merged into the owner's curated state, only for this session", async () => {
+	const h = fakePi(), runtime = deps(), { ctx } = fakeContext();
+	const profile = realpathSync(mkdtempSync(join(root, "todo-progress-")));
+	runtime.deps.agentHome = profile;
+	const peer = { version: 1 as const, sessionId: "s1", endpoint: "/fixture/todo-progress.sock", createdAt: 1 };
+	const registry = { list: async () => [], listActivations: async () => [peer] };
+	runtime.deps.sessionTransport = {
+		createRegistry: async () => registry,
+		createListener: () => ({ registry, record: peer, start: async () => {}, close: async () => {} }),
+		createClient: () => ({ close() {}, sendNotification: async () => { throw new Error("unexpected message"); } }),
+	};
+	Object.assign(h.pi, { setSessionName() {} });
+	Object.assign(ctx.sessionManager, { getSessionName: () => "", getBranch: () => h.entries });
+	gentleAgents(h.pi, {}, runtime.deps);
+	await h.fire("session_start", ctx);
+	const published = () => readDiscovery(profile, listPresence(profile).entries[0])?.state?.state;
+	h.pi.events.emit(TODO_PROGRESS_EVENT, { sessionId: "s1", done: 0, total: 2, current: "Write parser" });
+	// PR #2290 review: a todo title is private work text; peers see counts only.
+	assert.deepEqual(published(), { progress: "0/2 done" }, "progress publishes before any curated state, without the todo title");
+	assert.doesNotMatch(JSON.stringify(readDiscovery(profile, listPresence(profile).entries[0])), /Write parser/, "the todo title never reaches peers");
+	await h.tools.get("orchestrator_session_id")!.execute("own", { subject: "Ledger", state: { objective: "Ship the ledger", decisions: "inline" } }, undefined, undefined, ctx);
+	h.pi.events.emit(TODO_PROGRESS_EVENT, { sessionId: "s1", done: 1, total: 2, current: null });
+	assert.deepEqual(published(), { objective: "Ship the ledger", decisions: "inline", progress: "1/2 done" });
+	assert.equal(readDiscovery(profile, listPresence(profile).entries[0])?.aliases?.currentAlias, "Ledger", "the subject survives");
+	h.pi.events.emit(TODO_PROGRESS_EVENT, { sessionId: "other", done: 2, total: 2, current: null });
+	assert.equal(published()?.progress, "1/2 done", "another session's todo is ignored");
+	// R1 review advisory: a cleared list published "0/0 done" as if it were progress.
+	h.pi.events.emit(TODO_PROGRESS_EVENT, { sessionId: "s1", done: 0, total: 0, current: null });
+	assert.deepEqual(published(), { objective: "Ship the ledger", decisions: "inline" }, "a cleared list removes the progress line and keeps curated fields");
+	// R1 review advisory: a withdrawn state must stay withdrawn until the owner publishes again.
+	await h.tools.get("orchestrator_session_id")!.execute("withdraw", { state: null }, undefined, undefined, ctx);
+	assert.equal(published(), null);
+	h.pi.events.emit(TODO_PROGRESS_EVENT, { sessionId: "s1", done: 1, total: 3, current: "Docs" });
+	assert.equal(published(), null, "automatic progress does not republish a withdrawn state");
+	await h.tools.get("orchestrator_session_id")!.execute("own", { state: { objective: "Ship v2" } }, undefined, undefined, ctx);
+	h.pi.events.emit(TODO_PROGRESS_EVENT, { sessionId: "s1", done: 2, total: 3, current: null });
+	assert.deepEqual(published(), { objective: "Ship v2", progress: "2/3 done" }, "progress resumes once the owner publishes again");
+});
+
+// PR #2290 review: an owner publication without `progress` replaced the automatic
+// progress line, so peers lost it until the next todo write.
+test("an owner publication without progress keeps the automatic progress; explicit progress and null still win", async () => {
+	const h = fakePi(), runtime = deps(), { ctx } = fakeContext();
+	const profile = realpathSync(mkdtempSync(join(root, "todo-progress-merge-")));
+	runtime.deps.agentHome = profile;
+	const peer = { version: 1 as const, sessionId: "s1", endpoint: "/fixture/todo-progress-merge.sock", createdAt: 1 };
+	const registry = { list: async () => [], listActivations: async () => [peer] };
+	runtime.deps.sessionTransport = {
+		createRegistry: async () => registry,
+		createListener: () => ({ registry, record: peer, start: async () => {}, close: async () => {} }),
+		createClient: () => ({ close() {}, sendNotification: async () => { throw new Error("unexpected message"); } }),
+	};
+	Object.assign(h.pi, { setSessionName() {} });
+	Object.assign(ctx.sessionManager, { getSessionName: () => "", getBranch: () => h.entries });
+	gentleAgents(h.pi, {}, runtime.deps);
+	await h.fire("session_start", ctx);
+	const published = () => readDiscovery(profile, listPresence(profile).entries[0])?.state?.state;
+	const own = (state: unknown) => h.tools.get("orchestrator_session_id")!.execute("own", { state }, undefined, undefined, ctx);
+	h.pi.events.emit(TODO_PROGRESS_EVENT, { sessionId: "s1", done: 1, total: 3, current: "Parser" });
+	await own({ objective: "Ship the ledger" });
+	assert.deepEqual(published(), { objective: "Ship the ledger", progress: "1/3 done" }, "omitted progress keeps the automatic line");
+	await own({ objective: "Ship the ledger", progress: "Reviewing the parser" });
+	assert.deepEqual(published(), { objective: "Ship the ledger", progress: "Reviewing the parser" }, "explicit owner progress wins");
+	await own({ objective: "Ship the ledger" });
+	assert.deepEqual(published(), { objective: "Ship the ledger" }, "owner progress is replaced like any curated field");
+	h.pi.events.emit(TODO_PROGRESS_EVENT, { sessionId: "s1", done: 2, total: 3, current: null });
+	await own(null);
+	assert.equal(published(), null, "null withdraws everything");
+	h.pi.events.emit(TODO_PROGRESS_EVENT, { sessionId: "s1", done: 3, total: 3, current: null });
+	assert.equal(published(), null, "the withdrawal holds against automatic progress");
+	await own({ objective: "Ship v2" });
+	assert.deepEqual(published(), { objective: "Ship v2" }, "a withdrawn progress line is not merged back");
+	h.pi.events.emit(TODO_PROGRESS_EVENT, { sessionId: "s1", done: 1, total: 4, current: null });
+	const full = "x".repeat(2048);
+	await own({ objective: full });
+	assert.deepEqual(published(), { objective: full }, "a merge over the state budget publishes the owner's state as given");
 });

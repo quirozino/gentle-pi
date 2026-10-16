@@ -20,6 +20,7 @@ import { buildShellHeaderModel, createUsageCollapse, renderShellBar, renderShell
 import { directoryLevels, findRepoRoot } from "../lib/directory-tree.ts";
 import { CHANGE_STATUS, DIFF_MAX_BYTES, DIFF_MAX_LINES, DIFF_TOO_LARGE, WorktreeChangesTracker, renderChangesWidget, type ChangedFile, type ChangesModel, type FileRevision, type GitRunner, type LineCounter, type WorktreeChanges } from "../lib/shell-changes.ts";
 import { WorktreeChangesView } from "../lib/shell-changes-view.ts";
+import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
 import { SessionWorktreeRegistry, resolveSessionWorktree, worktreeGitEnvironment, type WorktreeResolver, type WorktreeIdentity } from "../lib/session-worktree-registry.ts";
 import { CARD_STYLE, CARD_TONE, cardStyle, renderCard, setCardStyle, type Card, type CardTheme } from "../lib/shell-card.ts";
 import { resolveCardStyle, writeCardStyle } from "../lib/card-style-policy.ts";
@@ -29,6 +30,8 @@ import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
 import { discoverYoloUiAdapter, YOLO_DISPLAY, type YoloDisplay, type YoloUiAdapter } from "../lib/yolo-session-policy.ts";
 import { VisualCustomizeView, type CustomizeCategory, type CustomizeRow, type ProfileActions } from "../lib/visual-customize-view.ts";
 import { deleteVisualProfile, getVisualProfile, listVisualProfiles, resetVisualProfiles, saveVisualProfile } from "../lib/visual-profiles.ts";
+import { gaugePaintFor } from "../lib/gauge-theme.ts";
+import type { GaugePaint } from "../lib/shell-gauge.ts";
 import { bannerPreviewSample, sourcePalettePreview } from "../lib/theme-customization.ts";
 import { DEFAULT_VISUAL_SETTINGS, DENSITY, HEADER_PLACEMENT, STATUS_PLACEMENT, VISUAL_SECTION_KEYS, resolveVisualSettings, writeVisualSettings } from "../lib/visual-customization-policy.ts";
 import { BANNER_COLORS, DEFAULT_BANNER_CONFIG, readBannerConfig, readBannerConfigForEdit, writeBannerConfig } from "./startup-banner.ts";
@@ -46,7 +49,6 @@ import { historyWorkPaths, workPathsOf } from "../lib/ddata-env-focus.ts";
 import { isInteractiveMode } from "../lib/rpc-host.ts";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
 import { readConfiguredTheme, reportThemeFallback } from "../lib/theme-guard.ts";
-import { bundledGentlePiConfigHome } from "../lib/gentle-shell-bundled.ts";
 import { isNanAdaptiveReasoningModel } from "../lib/nan-provider.ts";
 import { resolveAnimationPolicy, writeAnimationPolicy, type AnimationPolicy } from "../lib/animation-policy.ts";
 import { resolveVimPolicy, writeVimPolicy, type VimPolicy } from "../lib/vim-policy.ts";
@@ -313,7 +315,7 @@ export type ActiveProfileReader = (() => string | undefined) & {
 // Unbound reads retain the global file-identity cache, including atomic replacements.
 // Bound reads are snapshots: no filesystem or Git work is done during a frame.
 export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env): ActiveProfileReader {
-	const path = profilesFilePath(bundledGentlePiConfigHome(env) ?? env.GENTLE_PI_CONFIG_HOME ?? join(os.homedir(), ".pi", "gentle-ai"));
+	const path = profilesFilePath(gentlePiConfigHome(env));
 	let fingerprint: string | undefined;
 	let name: string | undefined;
 	let bound = false;
@@ -348,7 +350,7 @@ export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env):
 		const next = cwd === undefined ? global() : sessionProfileLabel(resolveSessionProfile({
 			sessionId,
 			cwd,
-			configHome: bundledGentlePiConfigHome(env) ?? env.GENTLE_PI_CONFIG_HOME ?? join(os.homedir(), ".pi", "gentle-ai"),
+			configHome: gentlePiConfigHome(env),
 			resolveWorktree: () => identity,
 			env,
 		}));
@@ -533,6 +535,16 @@ export function buildShellBarModel(
 	};
 }
 
+// Gauge-specific theme roles (issue #2222): resolved from the installed theme
+// source and memoized by gauge-theme.ts, so the render hot path only stats the
+// theme file. Undefined — and therefore today's shared roles — whenever the theme
+// source is unavailable.
+function gaugePaint(ctx: ExtensionContext): GaugePaint | undefined {
+	const themeName = ctx.ui.theme.name;
+	const source = ctx.ui.theme.sourcePath ?? ctx.ui.getAllThemes?.().find((item) => item?.name === themeName)?.path;
+	return gaugePaintFor(typeof source === "string" ? source : undefined);
+}
+
 export function createShellBarComponent(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
@@ -555,7 +567,7 @@ export function createShellBarComponent(
 		// twice. GENTLE_PI_SHELL_BAR=1|true|on restores it.
 		render(width: number) {
 			if (!shellBarEnabled(env)) return [];
-			return renderShellBar(buildShellBarModel(pi, ctx, footerData, { dirty: dirty(), usage: usage() }), theme, width, presentation?.());
+			return renderShellBar(buildShellBarModel(pi, ctx, footerData, { dirty: dirty(), usage: usage() }), theme, width, presentation?.(), gaugePaint(ctx));
 		},
 		invalidate() {},
 		dispose() {
@@ -1455,8 +1467,6 @@ const CHANGES_SHORTCUT_DEFAULT = "alt+g";
 const CHANGES_POLL_DEFAULT_MS = 2000;
 const GIT_TIMEOUT_MS = 5000;
 const COMMANDS_COMMAND_NAME = "gentle:commands";
-const OVERLAY_HEIGHT_RATIO = 0.8;
-const OVERLAY_MIN_ROWS = 8;
 
 export function shellGitRunner(cwd: string, env: NodeJS.ProcessEnv = process.env, run: typeof execFile = execFile, maxBuffer = Infinity): GitRunner {
 	// Pi exec cannot replace the inherited environment. Use argv directly and
@@ -1561,6 +1571,8 @@ interface OverlayDeps {
 }
 
 // The overlay polls each root's Git state while it is open; diffs load lazily.
+// Like Gentle Agents it takes the whole terminal, and the native fullscreen
+// wrapper keeps mouse dispatch on the view while it owns the keyboard.
 async function showChangesOverlay(ctx: ExtensionContext, deps: OverlayDeps): Promise<void> {
 	let host: ExternalEditorHost | undefined;
 	let view: WorktreeChangesView | undefined;
@@ -1578,16 +1590,18 @@ async function showChangesOverlay(ctx: ExtensionContext, deps: OverlayDeps): Pro
 				host = tui;
 				view = new WorktreeChangesView(deps.worktrees(), {
 					theme,
-					rows: () => Math.max(OVERLAY_MIN_ROWS, Math.floor(tui.terminal.rows * OVERLAY_HEIGHT_RATIO)),
+					rows: () => Math.max(0, tui.terminal.rows),
 					loadDiff: deps.loadDiff,
 					onOpen: (root, file) => close({ root, file }),
 					onRefresh: () => void refresh().catch(() => {}),
 					onClose: () => close(null),
 					requestRender: () => tui.requestRender(),
 				});
-				return view;
+				const interaction = createNativeFullscreenInteraction({ keyboardTarget: view, requestRender: () => tui.requestRender() });
+				interaction.addChild(view);
+				return interaction;
 			},
-			{ overlay: true, overlayOptions: { width: "92%", anchor: "center" } },
+			{ overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: 0, anchor: "center" } },
 		);
 		if (!chosen || !host) return;
 		if (!openInExternalEditor(host, chosen.file.path, process.env, spawnSync, chosen.root)) ctx.ui.notify("No editor configured. Set $VISUAL or $EDITOR.", "warning");
@@ -2185,6 +2199,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					onClose: () => withOverlayRepaint(tui, done)(null),
 					requestRender: () => tui.requestRender(),
 					scope: () => ({ providers: usageScope, failed: new Set(usageFailures) }),
+					gauge: () => gaugePaint(ctx),
 				});
 				// Open promptly: the panel draws whatever the store already holds
 				// while the forced refresh runs underneath it, and repaints when
@@ -2451,7 +2466,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			const statusOwner = () => narrowStatusOwner({ mode: (tui as TUI & { mode?: string }).mode, columns: tui.terminal ? sidebarState(tui).layoutColumns?.() ?? tui.terminal.columns : 0, statusPlacement: visualSettings.statusPlacement, headerPlacement: visualSettings.headerPlacement });
 			const statusCardVisible = () => Boolean(tui.terminal && (sidebarState(tui).layoutColumns?.() ?? tui.terminal.columns) >= SIDEBAR_BREAKPOINT && sidebarState(tui).ownsHost?.() && visualSettings.statusPlacement !== "hidden");
 			const belowFloat = (width: number, statuses: boolean) => (tui as TUI & { mode?: string }).mode === "fullscreen"
-				? renderShellBelowInputFloat({ ...footerModel(), ...(statuses ? {} : { statuses: [] }), ...(statusCardVisible() ? { jobs: undefined } : {}) }, theme, width, usageShortcutKey, visualSettings, tracker.model)
+				? renderShellBelowInputFloat({ ...footerModel(), ...(statuses ? {} : { statuses: [] }), ...(statusCardVisible() ? { jobs: undefined } : {}) }, theme, width, usageShortcutKey, visualSettings, tracker.model, gaugePaint(ctx))
 				: undefined;
 			// Match sidebarPart's live paint ownership, including an unavailable rail.
 			const footerSuppressed = () => {
@@ -2462,7 +2477,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			groupedChangesOwner = (width) => belowFloat(width, !footerSuppressed()) !== undefined;
 			const bottomBar = {
 				...bottom,
-				render: (width: number) => belowFloat(width, true)?.rows ?? (statusOwner() === STATUS_OWNER.BOTTOM ? renderShellBottomOnlyBar(footerModel(), theme, width, usageShortcutKey, visualSettings) : bottom.render(width)),
+				render: (width: number) => belowFloat(width, true)?.rows ?? (statusOwner() === STATUS_OWNER.BOTTOM ? renderShellBottomOnlyBar(footerModel(), theme, width, usageShortcutKey, visualSettings, undefined, gaugePaint(ctx)) : bottom.render(width)),
 				handleMouse(event: Parameters<NonNullable<SidebarRail["handleMouse"]>>[0]) {
 					if (footerSuppressed() || event.type !== "click" || event.button !== "left") return undefined;
 					const chrome = belowFloat(event.width, true);
@@ -2523,7 +2538,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			// The header row carries everything that ticks every frame (model,
 			// effort, context, cost, usage) plus session identity and the jobs count
 			// when Status is absent. Opaque statuses and working state stay excluded.
-			const headerBar = (width: number) => renderShellHeaderChrome(buildShellHeaderModel(footerModel(), !statusCardVisible() && (statusOwner() === STATUS_OWNER.HEADER || visualSettings.statusPlacement === "hidden")), theme, width, usageShortcutKey, visualSettings, gaugeAnimationEnabled() ? gaugeTick.value : undefined);
+			const headerBar = (width: number) => renderShellHeaderChrome(buildShellHeaderModel(footerModel(), !statusCardVisible() && (statusOwner() === STATUS_OWNER.HEADER || visualSettings.statusPlacement === "hidden")), theme, width, usageShortcutKey, visualSettings, gaugePaint(ctx), gaugeAnimationEnabled() ? gaugeTick.value : undefined);
 			const disposeHeader = sidebarHeader(tui, {
 				digest: () => JSON.stringify([footerModel(), tracker.model, visualSettings, cardStyle()]),
 				render: (width) => headerBar(width).rows,

@@ -1,5 +1,6 @@
 import { Key, matchesKey, truncateToWidth, visibleWidth, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { renderUsagePanel, type ActiveProvider, type UsagePanelScope, type UsageSourceRegistry, type UsageStore, type UsageTheme } from "./shell-usage.ts";
+import type { GaugePaint } from "./shell-gauge.ts";
 import { paintHoverable } from "./shell-hover.ts";
 import { SHELL_GLYPHS } from "./shell-glyphs.ts";
 
@@ -17,6 +18,9 @@ export interface UsageViewDeps {
 	// provider the store holds; with it, exactly the targeted providers, in
 	// scope order, explaining the ones without data.
 	scope?(): UsagePanelScope | undefined;
+	// Optional: gauge-specific theme roles resolved from the installed theme
+	// source; without it the panel paints with the shared roles.
+	gauge?(): GaugePaint | undefined;
 	onRefresh(): Promise<void>;
 	onClose(): void;
 	requestRender(): void;
@@ -107,7 +111,7 @@ export class UsageView {
 		const inner = width - 2;
 		const title = this.refreshing ? REFRESHING : TITLE;
 		const top = theme.fg(FRAME_ROLE, `${SHELL_GLYPHS.frame.topLeft}${SHELL_GLYPHS.frame.horizontal} `) + theme.fg(TITLE_ROLE, title) + theme.fg(FRAME_ROLE, ` ${rule(inner - visibleWidth(title) - 3)}${SHELL_GLYPHS.frame.topRight}`);
-		const body = renderUsagePanel(this.store.all(), theme, inner - 2, this.deps.now(), this.deps.active(), this.deps.registry?.(), this.deps.scope?.()).map(
+		const body = renderUsagePanel(this.store.all(), theme, inner - 2, this.deps.now(), this.deps.active(), this.deps.registry?.(), this.deps.scope?.(), this.deps.gauge?.()).map(
 			(line) => `${theme.fg(FRAME_ROLE, SHELL_GLYPHS.frame.vertical)} ${fit(line, inner - 2)} ${theme.fg(FRAME_ROLE, SHELL_GLYPHS.frame.vertical)}`,
 		);
 		const hints = KEYS.map(([key, label]) => ({ key, label, text: `${key} ${label}`, action: (key === "r" ? "refresh" : "close") as HintAction }));

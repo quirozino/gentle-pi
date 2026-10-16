@@ -1,5 +1,5 @@
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import { GAUGE_CELLS, gaugeTone, paintGauge, renderGauge, type GaugeTone } from "./shell-gauge.ts";
+import { GAUGE_CELLS, gaugeTone, paintGauge, renderGauge, type GaugePaint, type GaugeTone } from "./shell-gauge.ts";
 import { allowanceGroupsSupported, groupUsageLimits, modelUsageRows, renderUsageBar, selectUsageLimit, type ProviderUsage, type UsageWindow } from "./shell-usage.ts";
 import { sanitizeTerminalText, stripAnsi } from "./terminal-theme.ts";
 import { CARD_TONE, cardBottom, cardLine, floatRows, panelHeaderRow, panelInnerWidth, renderCard } from "./shell-card.ts";
@@ -396,21 +396,21 @@ function executionSegment(modelId: string, effort: string | undefined, theme: Sh
 		: theme.fg(ROLE.MODEL, modelId);
 }
 
-function contextSegment(contextPercent: number | null, theme: ShellBarTheme, tick?: number): string {
+function contextSegment(contextPercent: number | null, theme: ShellBarTheme, paint?: GaugePaint, tick?: number): string {
 	const percentText = contextPercent === null ? "?%" : `${Math.round(contextPercent)}%`;
-	return `${theme.fg(ROLE.LABEL, "ctx")} ${paintGauge(contextPercent, theme, undefined, tick)} ${theme.fg(ROLE.VALUE, percentText)}`;
+	return `${theme.fg(ROLE.LABEL, "ctx")} ${paintGauge(contextPercent, theme, GAUGE_CELLS, paint, tick)} ${theme.fg(ROLE.VALUE, percentText)}`;
 }
 
 function costSegment(costTotal: number, subscription: boolean, theme: ShellBarTheme): string {
 	return theme.fg(ROLE.VALUE, formatCost(costTotal, subscription));
 }
 
-function buildSegments(model: ShellBarModel, theme: ShellBarTheme, presentation?: Presentation): string[] {
+function buildSegments(model: ShellBarModel, theme: ShellBarTheme, presentation?: Presentation, paint?: GaugePaint): string[] {
 	const location = locationSegment(model, theme);
 	const modelSegment = executionSegment(model.modelId, model.effort, theme);
-	const context = contextSegment(model.contextPercent, theme);
+	const context = contextSegment(model.contextPercent, theme, paint);
 	const cost = costSegment(model.costTotal, model.subscription, theme);
-	const usage = model.usage ? renderUsageBar(model.usage, theme, model.modelId) : undefined;
+	const usage = model.usage ? renderUsageBar(model.usage, theme, model.modelId, paint) : undefined;
 	const statuses = model.statuses.map((status) => theme.fg(ROLE.STATUS, sanitizeStatus(status)));
 	return [
 		...(presentation?.density === "minimal" ? [] : [theme.fg(ROLE.BRAND, SHELL_BAR_BRAND)]),
@@ -477,7 +477,7 @@ function sidebarUsageLines(usage: ProviderUsage, modelId: string, theme: ShellBa
 		// is a window to judge.
 		const windows = selectUsageLimit(usage, modelId)?.windows ?? [];
 		if (windows.length > 0 && windows.every((window) => consumedNothing(window.usedPercent))) return [];
-		const line = renderUsageBar(usage, theme, modelId, tick);
+		const line = renderUsageBar(usage, theme, modelId, undefined, tick);
 		return line ? [line] : [];
 	}
 	const rows = groupUsageLimits(usage.limits)
@@ -492,7 +492,7 @@ function sidebarUsageLines(usage: ProviderUsage, modelId: string, theme: ShellBa
 	return rows.map((row) => {
 		const name = row.name.length > nameWidth ? clipText(row.name, nameWidth) : row.name.padEnd(nameWidth);
 		const percent = `${Math.round(row.window.usedPercent)}%`.padStart(4);
-		return `${theme.fg(ROLE.LABEL, name)} ${paintGauge(row.window.usedPercent, theme, SIDEBAR_USAGE_METER_CELLS, tick)} ${theme.fg(ROLE.VALUE, percent)}`;
+		return `${theme.fg(ROLE.LABEL, name)} ${paintGauge(row.window.usedPercent, theme, SIDEBAR_USAGE_METER_CELLS, undefined, tick)} ${theme.fg(ROLE.VALUE, percent)}`;
 	});
 }
 
@@ -683,7 +683,7 @@ function sidebarCardRows(model: ShellBarModel, theme: ShellBarTheme, width: numb
 					return `${name} ${theme.fg("dim", reading)}`;
 				}
 				const percent = `${Math.round(row.percent)}%`.padStart(4);
-				return `${name} ${paintGauge(row.percent, theme, SIDEBAR_USAGE_METER_CELLS, model.tick)} ${value(percent)}`;
+				return `${name} ${paintGauge(row.percent, theme, SIDEBAR_USAGE_METER_CELLS, undefined, model.tick)} ${value(percent)}`;
 			});
 	// Capture and row-shaping stay theme-independent; only the group's
 	// visibility reads the live theme's name (Matrix-Green-only, see
@@ -995,11 +995,11 @@ function headerLeftStages(model: ShellHeaderModel, theme: ShellBarTheme, showMod
 const USAGE_LABEL_ROLE = ROLE.LABEL;
 const USAGE_HINT_ROLE = "dim";
 
-function usageWindowText(window: UsageWindow, theme: ShellBarTheme, withGauge: boolean, tick?: number): string {
+function usageWindowText(window: UsageWindow, theme: ShellBarTheme, withGauge: boolean, paint?: GaugePaint, tick?: number): string {
 	const percent = `${Math.round(window.usedPercent)}%`;
 	const parts = [
 		...(window.label.length > 0 ? [theme.fg(ROLE.LABEL, window.label)] : []),
-		...(withGauge ? [paintGauge(window.usedPercent, theme, undefined, tick)] : []),
+		...(withGauge ? [paintGauge(window.usedPercent, theme, GAUGE_CELLS, paint, tick)] : []),
 		theme.fg(ROLE.VALUE, percent),
 	];
 	return parts.join(" ");
@@ -1010,10 +1010,10 @@ function usageWindowText(window: UsageWindow, theme: ShellBarTheme, withGauge: b
 // text only. A provider with no usage data at all has no windows to shape,
 // so all three collapse to the bare "usage" label plus the shortcut hint.
 type UsageStage = "full" | "text" | "primary";
-function usageSegmentText(windows: UsageWindow[], theme: ShellBarTheme, stage: UsageStage, hint: string | undefined, tick?: number): string {
+function usageSegmentText(windows: UsageWindow[], theme: ShellBarTheme, stage: UsageStage, hint: string | undefined, paint?: GaugePaint, tick?: number): string {
 	const label = theme.fg(USAGE_LABEL_ROLE, "usage");
 	const shown = stage === "primary" ? windows.slice(0, 1) : windows;
-	const body = shown.map((window) => usageWindowText(window, theme, stage === "full", tick)).join(` ${theme.fg(ROLE.LABEL, "·")} `);
+	const body = shown.map((window) => usageWindowText(window, theme, stage === "full", paint, tick)).join(` ${theme.fg(ROLE.LABEL, "·")} `);
 	const head = body.length > 0 ? `${label} ${body}` : label;
 	return hint ? `${head} ${theme.fg(ROLE.LABEL, "·")} ${theme.fg(USAGE_HINT_ROLE, hint)}` : head;
 }
@@ -1038,16 +1038,16 @@ function fitHeaderContent(text: string, width: number): string {
 	return clipped + " ".repeat(Math.max(0, width - visibleWidth(clipped)));
 }
 
-export function renderShellHeaderBar(model: ShellHeaderModel, theme: ShellBarTheme, width: number, usageHint?: string, presentation?: Presentation, tick?: number): ShellHeaderResult {
+export function renderShellHeaderBar(model: ShellHeaderModel, theme: ShellBarTheme, width: number, usageHint?: string, presentation?: Presentation, paint?: GaugePaint, tick?: number): ShellHeaderResult {
 	const targetWidth = Math.max(0, Math.floor(width));
 	let content: ShellHeaderResult | undefined;
 	let contentWidth = targetWidth;
 	const row = floatHeaderRow(theme, targetWidth, (inner) => {
 		contentWidth = inner;
-		content = headerContent(model, theme, inner, usageHint, presentation, tick);
+		content = headerContent(model, theme, inner, usageHint, presentation, paint, tick);
 		return content.text;
 	});
-	if (row === undefined || !content) return headerContent(model, theme, width, usageHint, presentation, tick);
+	if (row === undefined || !content) return headerContent(model, theme, width, usageHint, presentation, paint, tick);
 	const { usageSpan } = content;
 	// The inset splits evenly around the content, so its left share is where
 	// the content's columns start.
@@ -1056,8 +1056,8 @@ export function renderShellHeaderBar(model: ShellHeaderModel, theme: ShellBarThe
 }
 
 /** Shared geometry for the rail header and the below-editor header widget. */
-export function renderShellHeaderChrome(model: ShellHeaderModel, theme: ShellBarTheme, width: number, usageHint?: string, presentation?: HeaderPresentation, tick?: number): ShellHeaderChrome {
-	const { text, usageSpan } = renderShellHeaderBar(model, theme, width, usageHint, presentation, tick);
+export function renderShellHeaderChrome(model: ShellHeaderModel, theme: ShellBarTheme, width: number, usageHint?: string, presentation?: HeaderPresentation, paint?: GaugePaint, tick?: number): ShellHeaderChrome {
+	const { text, usageSpan } = renderShellHeaderBar(model, theme, width, usageHint, presentation, paint, tick);
 	const targetWidth = Math.max(0, Math.floor(width));
 	const painted = floatHeaderPaint(theme, targetWidth, () => "");
 	const rule = renderShellHeaderRule(theme, targetWidth);
@@ -1077,12 +1077,12 @@ export function shellHeaderUsageHit(chrome: ShellHeaderChrome, x: number, y: num
 	return y === chrome.headerRow && usageSpan !== undefined && x >= usageSpan.start && x < usageSpan.end;
 }
 
-function headerContent(model: ShellHeaderModel, theme: ShellBarTheme, width: number, usageHint?: string, presentation?: Presentation, tick?: number): ShellHeaderResult {
+function headerContent(model: ShellHeaderModel, theme: ShellBarTheme, width: number, usageHint?: string, presentation?: Presentation, paint?: GaugePaint, tick?: number): ShellHeaderResult {
 	const targetWidth = Math.max(0, Math.floor(width));
 	const jobs = model.jobs ? theme.fg(ROLE.STATUS, shellJobsCount(model.jobs)) : undefined;
 	const ctxCost = joinSegments([
 		...(jobs ? [jobs] : []),
-		...(presentation?.visibility.usageCost === false ? [] : [contextSegment(model.contextPercent, theme, tick), costSegment(model.costTotal, model.subscription, theme)]),
+		...(presentation?.visibility.usageCost === false ? [] : [contextSegment(model.contextPercent, theme, paint, tick), costSegment(model.costTotal, model.subscription, theme)]),
 	], theme);
 	const windows = model.usage ? (selectUsageLimit(model.usage, model.modelId)?.windows ?? []) : [];
 	const leftStages = headerLeftStages(model, theme, presentation?.visibility.modelDetails !== false, tick)
@@ -1103,7 +1103,7 @@ function headerContent(model: ShellHeaderModel, theme: ShellBarTheme, width: num
 		{ leftIndex: leftStages.length - 1, usageStage: undefined },
 	];
 	for (const { leftIndex, usageStage } of attempts) {
-		const usageText = usageStage ? usageSegmentText(windows, theme, usageStage, usageHint, tick) : undefined;
+		const usageText = usageStage ? usageSegmentText(windows, theme, usageStage, usageHint, paint, tick) : undefined;
 		const right = usageText ? joinSegments([ctxCost, usageText], theme) : ctxCost;
 		const left = joinSegments(leftStages[leftIndex]!, theme);
 		if (visibleWidth(left) + (right ? RIGHT_PADDING : 0) + visibleWidth(right) > targetWidth) continue;
@@ -1123,11 +1123,11 @@ function headerContent(model: ShellHeaderModel, theme: ShellBarTheme, width: num
 
 // A single owner supplies real captured filenames, not ShellBarModel's totals.
 // Undefined keeps every legacy surface alive for style/width/theme transitions.
-export function renderShellBelowInputFloat(model: ShellBarModel, theme: ShellBarTheme, width: number, usageHint?: string, presentation?: HeaderPresentation, changes?: ChangesModel): ShellHeaderChrome | undefined {
+export function renderShellBelowInputFloat(model: ShellBarModel, theme: ShellBarTheme, width: number, usageHint?: string, presentation?: HeaderPresentation, changes?: ChangesModel, paint?: GaugePaint): ShellHeaderChrome | undefined {
 	if (presentation?.headerPlacement !== "below-input") return undefined;
 	const targetWidth = Math.max(0, Math.floor(width));
 	if (floatHeaderPaint(theme, targetWidth, () => "") === undefined) return undefined;
-	const chrome = renderShellHeaderChrome(buildShellHeaderModel(model, presentation.statusPlacement === "hidden"), theme, targetWidth, usageHint, presentation, model.tick);
+	const chrome = renderShellHeaderChrome(buildShellHeaderModel(model, presentation.statusPlacement === "hidden"), theme, targetWidth, usageHint, presentation, paint, model.tick);
 	const changesRow = changes?.files.length && presentation.visibility.changes !== false
 		? floatHeaderRow(theme, targetWidth, (inner) => renderChangesWidget(changes, theme, inner)[0] ?? "")
 		: undefined;
@@ -1157,12 +1157,12 @@ export function renderShellBelowInputFloat(model: ShellBarModel, theme: ShellBar
 // header row's own cascade, so context, cost and usage outlive the location
 // on small screens, and keeps extension statuses on a second line instead of
 // dropping them the way the header deliberately does.
-export function renderShellBottomOnlyBar(model: ShellBarModel, theme: ShellBarTheme, width: number, usageHint?: string, presentation?: HeaderPresentation, changes?: ChangesModel): string[] {
-	const grouped = renderShellBelowInputFloat(model, theme, width, usageHint, presentation, changes);
+export function renderShellBottomOnlyBar(model: ShellBarModel, theme: ShellBarTheme, width: number, usageHint?: string, presentation?: HeaderPresentation, changes?: ChangesModel, paint?: GaugePaint): string[] {
+	const grouped = renderShellBelowInputFloat(model, theme, width, usageHint, presentation, changes, paint);
 	if (grouped) return grouped.rows;
 	const headerModel = buildShellHeaderModel(model, true);
 	// Neon, missing backgrounds and sub-minimum widths keep the old row count.
-	const rows = [headerContent(headerModel, theme, width, usageHint, presentation, model.tick).text];
+	const rows = [headerContent(headerModel, theme, width, usageHint, presentation, paint, model.tick).text];
 	const statuses = model.statuses.map(sanitizeStatus).filter((status) => status.length > 0).map((status) => theme.fg(ROLE.STATUS, status));
 	return statuses.length ? [...rows, truncateToWidth(joinSegments(statuses, theme), Math.max(0, Math.floor(width)), "…")] : rows;
 }
@@ -1209,8 +1209,8 @@ export function renderShellHeaderRule(theme: ShellBarTheme, width: number): stri
 	return theme.fg(HEADER_RULE_ROLE, HEADER_RULE_CHAR.repeat(targetWidth));
 }
 
-export function renderShellBar(model: ShellBarModel, theme: ShellBarTheme, width: number, presentation?: Presentation): string[] {
-	let segments = buildSegments(model, theme, presentation);
+export function renderShellBar(model: ShellBarModel, theme: ShellBarTheme, width: number, presentation?: Presentation, paint?: GaugePaint): string[] {
+	let segments = buildSegments(model, theme, presentation, paint);
 	const right = model.sessionName ? theme.fg(ROLE.SESSION, model.sessionName) : undefined;
 
 	let left = joinSegments(segments, theme);
