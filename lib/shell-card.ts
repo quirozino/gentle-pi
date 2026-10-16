@@ -1,5 +1,6 @@
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { SHELL_GLYPHS } from "./shell-glyphs.ts";
+import { paintPulse, SWEEP_LENGTH } from "./sweep-pulse.ts";
 import { transcriptLeftInset, transcriptRightGutter } from "./transcript-gutter.ts";
 
 // Gentle Shell cards: the shape every Gentle notice takes in the transcript
@@ -111,8 +112,14 @@ export function visibleSweep(tone: CardTone, sweep: CardSweep | undefined): Card
 	return { ...sweep, role: SWEEP_CONTRAST_ROLE };
 }
 
+/** A snake cell: its pulse role and how many cells it trails the head (0 is the head). */
+export interface PulseCell {
+	role: string;
+	depth: number;
+}
+
 /** Recolours one frame cell by absolute column; undefined keeps the tone's frame role. */
-export type CellRole = (column: number) => string | undefined;
+export type CellRole = (column: number) => PulseCell | undefined;
 
 export const CARD_GLYPH = SHELL_GLYPHS.card;
 // Frame and title paint with the same role for every tone except INFO, whose
@@ -139,7 +146,6 @@ const BODY_ROLE = "text";
 const SEPARATOR = "·";
 const FRAME_COLUMNS = 4;
 // Head plus two cells behind it.
-const SWEEP_LENGTH = 3;
 
 // The characters that draw a card around its content. The float style keeps
 // every row the same width: the left edge becomes an accent bar and the rules
@@ -232,14 +238,16 @@ function frame(theme: CardTheme, tone: CardTone, text: string): string {
 // a role stay one theme.fg call, which keeps the plain frame byte-identical.
 function frameRun(theme: CardTheme, tone: CardTone, text: string, startColumn: number, cellRole?: CellRole): string {
 	if (!cellRole) return frame(theme, tone, text);
-	const runs: { role: string; text: string }[] = [];
+	// A pulse cell takes the theme's snake colour at its depth (sweep-pulse.ts).
+	const runs: { role: string; depth?: number; text: string }[] = [];
 	Array.from(text).forEach((glyph, offset) => {
-		const role = cellRole(startColumn + offset) ?? FRAME_ROLE[tone];
+		const own = cellRole(startColumn + offset);
+		const role = own?.role ?? FRAME_ROLE[tone];
 		const last = runs[runs.length - 1];
-		if (last && last.role === role) last.text += glyph;
-		else runs.push({ role, text: glyph });
+		if (last && last.role === role && last.depth === own?.depth) last.text += glyph;
+		else runs.push({ role, depth: own?.depth, text: glyph });
 	});
-	return runs.map((run) => theme.fg(run.role, run.text)).join("");
+	return runs.map((run) => (run.depth !== undefined ? paintPulse(theme, run.role, run.text, run.depth) : theme.fg(run.role, run.text))).join("");
 }
 
 // Clockwise perimeter index of a frame cell in a width x height card.
@@ -260,7 +268,7 @@ export function sweepRoles(sweep: NonNullable<CardRenderOptions["sweep"]>, width
 		// run covers there (a padding space) is not on the perimeter.
 		if (row > 0 && row < height - 1 && column !== 0 && column !== width - 1) return undefined;
 		const behind = (((head - perimeterIndex(row, column, width, height)) % perimeter) + perimeter) % perimeter;
-		return behind < SWEEP_LENGTH ? sweep.role : undefined;
+		return behind < SWEEP_LENGTH ? { role: sweep.role, depth: behind } : undefined;
 	};
 }
 
@@ -675,7 +683,7 @@ function floatSweepRoles(sweep: NonNullable<CardRenderOptions["sweep"]>, height:
 	return (row) => (column) => {
 		if (column !== 0) return undefined;
 		const behind = (((head - row) % height) + height) % height;
-		return behind < SWEEP_LENGTH ? sweep.role : undefined;
+		return behind < SWEEP_LENGTH ? { role: sweep.role, depth: behind } : undefined;
 	};
 }
 

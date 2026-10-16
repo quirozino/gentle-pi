@@ -172,6 +172,8 @@ import { installSessionChangeCapture } from "../lib/session-change-capture.ts";
 import { SelectionEngine } from "../lib/selection-engine.ts";
 import { withOverlayRepaint } from "../lib/overlay-repaint.ts";
 import { buildNotificationRows } from "../lib/notification-customize.ts";
+import { cardSweepAt } from "../lib/card-sweep.ts";
+import { paintPulse } from "../lib/sweep-pulse.ts";
 
 // Gentle Shell: the visual layer gentle-pi puts on top of pi. It installs the
 // status bar, the petal prompt, the working-tree changes widget and overlay,
@@ -589,6 +591,8 @@ interface PromptEditorDeps {
 	 * generic "working…" label. Never applied to IDLE or QUEUED.
 	 */
 	workingLabel?: () => string | undefined;
+	/** Paints one sweep pulse run `depth` cells behind the head (sweep-pulse.ts); defaults to `fg`. */
+	pulse?: (role: string, text: string, depth: number) => string;
 }
 
 // Gauge animation frame shared by the prompt pulse and the optional idle ticker.
@@ -1303,6 +1307,10 @@ export class GentlePromptEditor extends CustomEditor {
 			state,
 			tick: this.tick,
 			borderColor: promptBorder,
+			// The running cards' frame sweep, under the same `quality` gate; the
+			// working pulse already repaints the prompt often enough to move it.
+			sweep: this.promptState === PROMPT_STATE.WORKING && this.animationPolicy === "quality" ? cardSweepAt(this.deps.now()) : undefined,
+			pulse: this.deps.pulse,
 			decorateBottomRule: this.vimPolicy === "on"
 				? undefined
 				: (row, ruleWidth) => this.selectionEngine.decorateBottomRule(row, ruleWidth, promptBorder(SHELL_GLYPHS.frame.bottomRight)),
@@ -1385,6 +1393,7 @@ function installPrompt(
 			notifyCompatibility: (message) => ctx.ui.notify(message, "warning"),
 			tuiVersion: promptDeps.vimRuntimeVersion,
 			workingLabel: () => oddPhaseRegistry.label(ctx.sessionManager.getSessionId()),
+			pulse: (role, text, depth) => paintPulse(ctx.ui.theme, role, text, depth),
 		});
 		// Pi's own docs require an explicit requestRender() after a state change
 		// (docs/tui.md: "Call tui.requestRender() after state changes"); no host

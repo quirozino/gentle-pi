@@ -4,6 +4,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { TASK_STATUS, type TaskRecord, type TaskStatus } from "../lib/agents-protocol.ts";
 import { AGENTS_GLYPH, agentsGlyph, formatElapsed, renderAgentsCard, hasWorkingTask, SWEEP_WAITING_STEP_MS, widgetExpiryMs, widgetRows, widgetTasks } from "../lib/agents-widget.ts";
 import { SHELL_GLYPHS } from "../lib/shell-glyphs.ts";
+import { SWEEP_STEP_MS } from "../lib/sweep-pulse.ts";
 import { CARD_STYLE, cardStyle, setCardStyle, type CardStyle } from "../lib/shell-card.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 
@@ -426,9 +427,10 @@ test("sweep is opt-in: absent option renders identically to sweep false", () => 
 	assert.deepEqual(renderAgentsCard(running, roleTheme, 60, 2000, { collapsed: false, tick: 3, sweep: false }), base);
 });
 
-test("sweep advances with the tick", () => {
-	const at = (tick: number) => renderAgentsCard([task({})], roleTheme, 60, 2000, { collapsed: false, tick, sweep: true });
-	assert.notDeepEqual(at(5), at(6));
+test("sweep advances one snake step with the clock", () => {
+	const at = (now: number) => renderAgentsCard([task({})], roleTheme, 60, now, { collapsed: false, tick: 5, sweep: true });
+	assert.notDeepEqual(at(2000), at(2000 + SWEEP_STEP_MS));
+	assert.deepEqual(at(2000), at(2000 + SWEEP_STEP_MS - 1), "same step, same position");
 });
 
 test("hasWorkingTask is true only for a running task that is not idle", () => {
@@ -442,7 +444,7 @@ test("hasWorkingTask is true only for a running task that is not idle", () => {
 	assert.equal(hasWorkingTask([task({ lastActivityAt: 1000 }), task({ id: "b", lastActivityAt: now })], now, idleAfterMs), true, "one working task is enough");
 });
 
-test("the waiting sweep steps with the clock, not the tick; the working sweep follows the tick", () => {
+test("the waiting sweep steps with the clock, not the tick; the working sweep follows the clock at the snake step", () => {
 	const idle = [task({ lastActivityAt: 1000 })];
 	const working = [task({ lastActivityAt: 400_000 })];
 	const opts = { collapsed: false, sweep: true, idleAfterMs: 120_000 };
@@ -452,7 +454,8 @@ test("the waiting sweep steps with the clock, not the tick; the working sweep fo
 	assert.deepEqual(waitingAt(base, 1), waitingAt(base, 7), "tick alone never moves the waiting pulse");
 	assert.deepEqual(waitingAt(base, 1), waitingAt(base + SWEEP_WAITING_STEP_MS - 1, 1), "same second, same position");
 	assert.notDeepEqual(waitingAt(base, 1), waitingAt(base + SWEEP_WAITING_STEP_MS, 1), "crossing a 1 s boundary advances it");
-	assert.notDeepEqual(workingAt(base, 5), workingAt(base, 6), "the working pulse follows the tick");
+	assert.deepEqual(workingAt(base, 5), workingAt(base, 6), "tick alone never moves the working pulse");
+	assert.notDeepEqual(workingAt(base, 5), workingAt(base + SWEEP_STEP_MS, 5), "the working pulse advances one cell per 50 ms step");
 });
 
 test("renderAgentsCard in the float style spends its padding and separator rows from maxRows, so a capped card is exactly as tall as neon", (t) => {

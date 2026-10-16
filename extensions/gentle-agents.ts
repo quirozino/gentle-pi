@@ -60,6 +60,7 @@ import { createRpcActivityPublisher, type RpcActivityPublisher } from "../lib/ag
 import { isInteractiveRpcHost } from "../lib/rpc-host.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
 import { AGENTS_GLYPH, hasWorkingTask, renderAgentsCard, shownTasks, SWEEP_WAITING_STEP_MS, widgetExpiryMs, widgetRows } from "../lib/agents-widget.ts";
+import { SWEEP_STEP_MS } from "../lib/sweep-pulse.ts";
 import { SHELL_GLYPHS } from "../lib/shell-glyphs.ts";
 import { CARD_TONE, renderCard } from "../lib/shell-card.ts";
 import { openInExternalEditor } from "./gentle-shell.ts";
@@ -808,8 +809,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			// own waiting pace. Both decisions read the rows the card shows.
 			const sweeping = sweepEnabled();
 			const working = sweeping && hasWorkingTask(shownTasks(tasks.map(replyView), deps.now(), { activeOnly: true }), deps.now(), AGENTS_IDLE_AFTER_MS);
-			const fast = SHELL_GLYPHS.agentsFrames.length > 1 || working;
-			const interval = fast ? AGENTS_WINK_MS : sweeping ? SWEEP_WAITING_STEP_MS : CLOCK_TICK_MS;
+			// A working sweep moves as a snake, one cell per SWEEP_STEP_MS.
+			const interval = working ? SWEEP_STEP_MS : SHELL_GLYPHS.agentsFrames.length > 1 ? AGENTS_WINK_MS : sweeping ? SWEEP_WAITING_STEP_MS : CLOCK_TICK_MS;
 			cancelClock = deps.schedule(() => {
 				requestRender();
 				tickClock();

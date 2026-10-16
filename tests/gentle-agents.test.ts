@@ -18,6 +18,7 @@ import { sidebarState } from "../lib/shell-sidebar.ts";
 import { CHILD_PACKAGE_INJECTION_ENV, encodeChildPackageInjection } from "../lib/child-package-injection.ts";
 import gentleAgents, { agentRuntimePaths, agentsCollapseKey, agentsEnabled, agentsStopKey, agentsViewKey, agentResultPreview, answerThroughUi, childContextExtensionPaths, completionText, createDefaultSessionTransport, legacySubagentsInstalled, PARENT_WAKE_GRACE_MS, type AgentsDeps, type SessionTransportFactory } from "../extensions/gentle-agents.ts";
 import { SWEEP_WAITING_STEP_MS } from "../lib/agents-widget.ts";
+import { SWEEP_STEP_MS } from "../lib/sweep-pulse.ts";
 import { shellGlyphs } from "../lib/shell-glyphs.ts";
 import { ActiveSessionClient, ActiveSessionListener, SessionPresenceRegistry } from "../lib/agents-session-transport.ts";
 import { WindowsActiveSessionClient, WindowsActiveSessionListener } from "../lib/windows-session-transport.ts";
@@ -5949,19 +5950,20 @@ async function withSingleFrameGlyphs<T>(run: () => Promise<T>): Promise<T> {
 	}
 }
 
-test("the quality sweep ticks at the wink rate only while an agent actively works and at the waiting step while it only idles", async () => {
+test("the quality sweep ticks at the snake step only while an agent actively works and at the waiting step while it only idles", async () => {
 	await withSingleFrameGlyphs(async () => {
+		assert.equal(SWEEP_STEP_MS, 50);
 		const working = await clockIntervals("quality", false);
-		assert.ok(working.includes(160), "an actively working agent ticks at the wink rate");
+		assert.ok(working.includes(SWEEP_STEP_MS), "an actively working agent ticks at the 50 ms snake step");
 		const idle = await clockIntervals("quality", true);
-		assert.ok(idle.includes(SWEEP_WAITING_STEP_MS) && !idle.includes(160), "an idle-only card steps at the waiting pace");
+		assert.ok(idle.includes(SWEEP_WAITING_STEP_MS) && !idle.includes(SWEEP_STEP_MS) && !idle.includes(160), "an idle-only card steps at the waiting pace");
 	});
 });
 
 test("the performance policy never schedules the wink rate from the sweep", async () => {
 	await withSingleFrameGlyphs(async () => {
 		const working = await clockIntervals("performance", false);
-		assert.ok(working.includes(1000) && !working.includes(160), "a working agent still ticks once a second");
+		assert.ok(working.includes(1000) && !working.includes(160) && !working.includes(SWEEP_STEP_MS), "a working agent still ticks once a second");
 	});
 });
 test("issue #1162: an answered subagent query is dropped and never replays after task completion", async () => {

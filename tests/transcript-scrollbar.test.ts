@@ -72,14 +72,26 @@ test("regression: following the end, only the four bottom rows are thumb, never 
 	assert.equal(thumbCount(frame(thumb, 30)), MIN_THUMB_ROWS);
 });
 
-test("sweepCell slides a one-row band in eighths: full rows bright, edges as eighth blocks over the green", () => {
-	assert.equal(sweepCell(matrix, 0, 0), "<text>█", "the band exactly on the row");
-	assert.equal(sweepCell(matrix, 1, 0), "<border>█", "a row the band does not touch");
-	assert.equal(sweepCell(matrix, 0, 3), "\x1b[48;2;1;2;3m<text>▅\x1b[49m", "band top 3/8 down: its bright part fills the lower 5/8 over green");
-	assert.equal(sweepCell(matrix, 1, 3), "\x1b[48;2;9;9;9m<border>▅\x1b[49m", "the next row: bright top 3/8 over green bottom 5/8");
-	assert.equal(sweepCell(matrix, 0, -5), "\x1b[48;2;9;9;9m<border>▅\x1b[49m", "entering from above");
-	const plain = { ...matrix, getFgAnsi: undefined };
+test("sweepCell slides a one-row band in eighths: full rows bright, edges as eighth blocks over the green (a theme without a pulse colour)", () => {
+	assert.equal(sweepCell(other, 0, 0), "<text>█", "the band exactly on the row");
+	assert.equal(sweepCell(other, 1, 0), "<border>█", "a row the band does not touch");
+	assert.equal(sweepCell(other, 0, 3), "\x1b[48;2;1;2;3m<text>▅\x1b[49m", "band top 3/8 down: its bright part fills the lower 5/8 over green");
+	assert.equal(sweepCell(other, 1, 3), "\x1b[48;2;9;9;9m<border>▅\x1b[49m", "the next row: bright top 3/8 over green bottom 5/8");
+	assert.equal(sweepCell(other, 0, -5), "\x1b[48;2;9;9;9m<border>▅\x1b[49m", "entering from above");
+	const plain = { ...other, getFgAnsi: undefined };
 	assert.match(sweepCell(plain, 0, 3), /^<(text|border)>█$/, "without role ANSI the band moves whole rows");
+});
+
+const PINK = "\x1b[38;2;255;84;163m";
+const PINK_BG = "\x1b[48;2;255;84;163m";
+
+test("Matrix-Green slides the band in its pink pulse colour (vars.sweep), the thumb staying in its role", () => {
+	assert.equal(sweepCell(matrix, 0, 0), `${PINK}█\x1b[39m`, "the band exactly on the row");
+	assert.equal(sweepCell(matrix, 1, 0), "<border>█", "a row the band does not touch");
+	assert.equal(sweepCell(matrix, 0, 3), `\x1b[48;2;1;2;3m${PINK}▅\x1b[39m\x1b[49m`, "band top 3/8 down: the pink part fills the lower 5/8 over green");
+	assert.equal(sweepCell(matrix, 1, 3), `${PINK_BG}<border>▅\x1b[49m`, "the next row: pink top 3/8 over green bottom 5/8");
+	const plain = { ...matrix, getFgAnsi: undefined };
+	assert.match(sweepCell(plain, 0, 3), /^(\x1b\[38;2;255;84;163m█\x1b\[39m|<border>█)$/, "without role ANSI the band still moves whole rows in pink");
 });
 
 test("the sweep advances one eighth per step on its own clock, only while animations are on", () => {

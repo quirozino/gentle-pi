@@ -19,6 +19,7 @@ const { decorateCodemodeTool } = await import("../lib/codemode-renderer.ts");
 const { cardSweepAt, CARD_SWEEP_TICK_MS, liveCardSweep, scheduleCardSweep, STREAM_IDLE_MS } = await import("../lib/card-sweep.ts");
 const { trimFrameRange } = await import("../lib/selection-frame-trim.ts");
 const { stripAnsi } = await import("../lib/terminal-theme.ts");
+const { SWEEP_STEP_MS } = await import("../lib/sweep-pulse.ts");
 
 initTheme("dark");
 setCardStyle(CARD_STYLE.FLOAT);
@@ -112,8 +113,11 @@ function codeRows(width: number, ctx = rowContext({ args: { code: "await tools.r
 	return codemode.renderCall!(ctx.args as never, theme as never, ctx as never).render(width);
 }
 
-function agentsRows(width: number, tick: number, tasks = [task()]): string[] {
-	return renderAgentsCard(tasks, theme, width, 5000, { collapsed: false, activeOnly: true, tick, sweep: true, idleAfterMs: 60_000 });
+// The working Agents pulse follows the clock, one cell per SWEEP_STEP_MS:
+// `step` snake steps after the 5 s base clock.
+const AGENTS_NOW = 5000;
+function agentsRows(width: number, step: number, tasks = [task()]): string[] {
+	return renderAgentsCard(tasks, theme, width, AGENTS_NOW + step * SWEEP_STEP_MS, { collapsed: false, activeOnly: true, tick: 0, sweep: true, idleAfterMs: 60_000 });
 }
 
 /** Perimeter side of a "row:column" cell in a card of `height` rows inside the float margins. */
@@ -161,8 +165,10 @@ test("frames paint through theme roles only and keep the tone's role", () => {
 	const edit = editTool.renderCall!(ctx.args as never, taggedTheme as never, ctx as never).render(160);
 	assert.ok(edit[0]!.includes("<accent>╔"), "a running tool frame takes the running tone (green accent), never warning");
 	assert.ok(edit[2]!.includes("<accent>║</accent>"), "side rows too");
-	const sweeping = renderAgentsCard([task()], taggedTheme, 160, 5000, { collapsed: false, activeOnly: true, tick: 0, sweep: true, idleAfterMs: 60_000 });
 	const quiet = renderAgentsCard([task()], taggedTheme, 160, 5000, { collapsed: false, activeOnly: true, idleAfterMs: 60_000 });
+	// A clock time whose snake position is a whole number of laps puts the head on the top-left corner.
+	const lap = (2 * (160 - 2) + 2 * quiet.length - 4) * SWEEP_STEP_MS;
+	const sweeping = renderAgentsCard([task()], taggedTheme, 160, Math.ceil(5000 / lap) * lap, { collapsed: false, activeOnly: true, tick: 0, sweep: true, idleAfterMs: 60_000 });
 	assert.ok(quiet[0]!.includes("<accent>╔"), "a running Agents frame takes the running tone (accent)");
 	assert.match(sweeping[0]!, new RegExp(`<${PULSE}>╔`), "the pulse head starts on the top-left corner in the contrast role on the accent frame");
 	for (const rows of [edit, sweeping, quiet]) {
@@ -178,12 +184,12 @@ test("frames paint through theme roles only and keep the tone's role", () => {
 test("a running card's pulse visits all four sides of the frame", () => {
 	const width = 50;
 	const role = PULSE;
-	// Agents: the panel; the tick drives the position.
-	assert.deepEqual(lapSides((position) => agentsRows(width, position / 10), width, role), new Set(["top", "right", "bottom", "left"]));
+	// Agents: the panel; the clock drives the position, one cell per step.
+	assert.deepEqual(lapSides((position) => agentsRows(width, position), width, role), new Set(["top", "right", "bottom", "left"]));
 	// Tool and Code cards: the clock drives the position; render at chosen sweeps.
 	const atPosition = (render: (ctx: ReturnType<typeof rowContext>) => string[]) => (position: number) => {
 		const now = Date.now;
-		Date.now = () => (position / 10) * CARD_SWEEP_TICK_MS;
+		Date.now = () => position * CARD_SWEEP_TICK_MS;
 		try { return render(rowContext({ args: { code: "1", path: "/a" } })); } finally { Date.now = now; }
 	};
 	const edit = atPosition((ctx) => editTool.renderCall!(ctx.args as never, theme as never, ctx as never).render(width));
@@ -194,11 +200,11 @@ test("a running card's pulse visits all four sides of the frame", () => {
 	}
 });
 
-test("the pulse advances with the tick and recolours only frame cells", () => {
+test("the pulse advances with the clock and recolours only frame cells", () => {
 	const still = renderAgentsCard([task()], theme, 60, 5000, { collapsed: false, activeOnly: true, tick: 0, idleAfterMs: 60_000 });
 	const first = agentsRows(60, 0);
 	const next = agentsRows(60, 1);
-	assert.equal(roleCells(first, PULSE).length, 3, "head plus a two-cell trail");
+	assert.equal(roleCells(first, PULSE).length, 8, "head plus a seven-cell trail");
 	assert.notDeepEqual(roleCells(first, PULSE), roleCells(next, PULSE), "the pulse moves");
 	const base = roleMap(still);
 	for (const [key, cell] of roleMap(first)) {
@@ -285,7 +291,7 @@ test("a streaming bash card sweeps one perimeter across its call and partial res
 	const ctx = rowContext({ args: { command: "sleep 9" }, state });
 	const render = (position: number) => {
 		const now = Date.now;
-		Date.now = () => (position / 10) * CARD_SWEEP_TICK_MS;
+		Date.now = () => position * CARD_SWEEP_TICK_MS;
 		try {
 			const call = bashTool.renderCall!(ctx.args as never, theme as never, ctx as never);
 			const partial = bashTool.renderResult!({ content: [{ type: "text", text: "one\ntwo" }], details: {} } as never, { expanded: false, isPartial: true }, theme as never, ctx as never);
@@ -332,7 +338,7 @@ test("neon keeps the outlined card and its perimeter sweep", () => {
 		const rows = agentsRows(50, 0);
 		assert.match(plain(rows[0]!), /^╔═ .*╗$/u, "neon carries the title in the top rule");
 		assert.ok(rows.every((row) => !row.includes(BG_OPEN)), "no background in neon");
-		assert.deepEqual(lapSides((position) => agentsRows(50, position / 10).map((row) => ` ${row} `), 52, PULSE), new Set(["top", "right", "bottom", "left"]));
+		assert.deepEqual(lapSides((position) => agentsRows(50, position).map((row) => ` ${row} `), 52, PULSE), new Set(["top", "right", "bottom", "left"]));
 		const edit = editRows(50).map(plain);
 		assert.match(edit[0]!, /^╔═ \S+ edit/u);
 		assert.match(edit.at(-1)!, /^╚═+╝$/u);

@@ -19,12 +19,13 @@
 // as a continuous slide rather than row jumps. Without a theme that exposes
 // role ANSI (getFgAnsi) the band moves whole rows.
 import type { ShellBarTheme } from "./shell-bar.ts";
+import { paintPulse, sweepPulseAnsi } from "./sweep-pulse.ts";
 
 export const SCROLLBAR_THEMES: ReadonlySet<string> = new Set(["Matrix-Green"]);
 export const MIN_THUMB_ROWS = 4;
 export const TRACK_GLYPH = "║";
 export const THUMB_GLYPH = "█";
-/** Theme roles: rule and thumb in the Matrix frame green, the sweeping band in its brightest text. */
+/** Theme roles: rule and thumb in the Matrix frame green, the sweeping band in its brightest text unless the theme has a pulse colour (sweep-pulse.ts). */
 export const SCROLLBAR_ROLES = { TRACK: "border", THUMB: "border", SWEEP: "text" } as const;
 
 type Style = (text: string) => string;
@@ -75,9 +76,8 @@ export interface TranscriptScrollbarOptions {
 	cells?: Array<{ thumb: boolean; text: string }>;
 }
 
-/** A role's foreground ANSI turned into the same colour as background; undefined when unknown. */
-function backgroundOf(theme: AnsiTheme, role: string): string | undefined {
-	const fg = theme.getFgAnsi?.(role);
+/** A foreground escape turned into the same colour as background; undefined when it has none. */
+function asBackground(fg: string | undefined): string | undefined {
 	if (typeof fg !== "string") return undefined;
 	const bg = fg.replace(/\x1b\[38;/g, "\x1b[48;").replace(/\x1b\[3([0-7])m/g, "\x1b[4$1m").replace(/\x1b\[9([0-7])m/g, "\x1b[10$1m");
 	return bg !== fg ? bg : undefined;
@@ -90,16 +90,18 @@ function backgroundOf(theme: AnsiTheme, role: string): string | undefined {
 export function sweepCell(theme: ShellBarTheme, index: number, bandEighths: number): string {
 	const cellTop = index * 8;
 	const covered = Math.max(0, Math.min(cellTop + 8, bandEighths + 8) - Math.max(cellTop, bandEighths));
+	const band = (text: string) => paintPulse(theme, SCROLLBAR_ROLES.SWEEP, text);
 	if (covered === 0) return theme.fg(SCROLLBAR_ROLES.THUMB, THUMB_GLYPH);
-	if (covered === 8) return theme.fg(SCROLLBAR_ROLES.SWEEP, THUMB_GLYPH);
-	const background = backgroundOf(theme as AnsiTheme, SCROLLBAR_ROLES.THUMB);
-	const sweepBackground = backgroundOf(theme as AnsiTheme, SCROLLBAR_ROLES.SWEEP);
+	if (covered === 8) return band(THUMB_GLYPH);
+	const ansi = theme as AnsiTheme;
+	const background = asBackground(ansi.getFgAnsi?.(SCROLLBAR_ROLES.THUMB));
+	const sweepBackground = asBackground(sweepPulseAnsi(theme, SCROLLBAR_ROLES.SWEEP) ?? ansi.getFgAnsi?.(SCROLLBAR_ROLES.SWEEP));
 	// The band enters this cell from above (its bottom edge is inside) or leaves it below (its top edge is inside).
 	const bandBelow = bandEighths > cellTop;
-	if (!background || !sweepBackground) return theme.fg(covered >= 4 ? SCROLLBAR_ROLES.SWEEP : SCROLLBAR_ROLES.THUMB, THUMB_GLYPH);
+	if (!background || !sweepBackground) return covered >= 4 ? band(THUMB_GLYPH) : theme.fg(SCROLLBAR_ROLES.THUMB, THUMB_GLYPH);
 	// Lower blocks fill from the bottom: bright bottom part over a green cell, or green bottom part over a bright cell.
 	return bandBelow
-		? `${background}${theme.fg(SCROLLBAR_ROLES.SWEEP, LOWER_EIGHTHS[covered])}\x1b[49m`
+		? `${background}${band(LOWER_EIGHTHS[covered])}\x1b[49m`
 		: `${sweepBackground}${theme.fg(SCROLLBAR_ROLES.THUMB, LOWER_EIGHTHS[8 - covered])}\x1b[49m`;
 }
 

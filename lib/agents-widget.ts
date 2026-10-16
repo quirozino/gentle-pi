@@ -3,6 +3,7 @@ import { isFinished, TASK_STATUS, type TaskRecord, type TaskStatus } from "./age
 import { formatCost, formatTokens } from "./shell-bar.ts";
 import { CARD_TONE, panelExtraRows, panelInnerWidth, renderCard, type CardTheme, type CardTone } from "./shell-card.ts";
 import { SHELL_GLYPHS } from "./shell-glyphs.ts";
+import { SWEEP_ROLE, SWEEP_STEP_MS } from "./sweep-pulse.ts";
 
 // Gentle Agents widget: the card above the editor. Reads task records only
 // (status, prompt, counters, timestamps), so drawing it costs nothing per
@@ -11,15 +12,16 @@ import { SHELL_GLYPHS } from "./shell-glyphs.ts";
 
 export const AGENTS_GLYPH = SHELL_GLYPHS.agents;
 
-// Perimeter cells the pulse advances per tick; at the 160 ms wink rate a
-// typical card (about 200 perimeter cells) laps in roughly 3 s.
+// Perimeter cells the waiting pulse advances per step. A working pulse moves
+// as a snake instead: one cell per SWEEP_STEP_MS, from the clock.
 export const SWEEP_CELLS_PER_TICK = 10;
 // While agents only wait, idle or queue the pulse crawls: one step per second
 // derived from the clock, so the slow re-render cadence never makes it jump.
 export const SWEEP_WAITING_STEP_MS = 1000;
 // Waiting, idle or queued work pulses in `muted` at the slower pace: still
-// green-family work in progress, never the warning yellow.
-export const SWEEP_ROLE = { WORKING: "accent", WAITING: "muted" } as const;
+// green-family work in progress, never the warning yellow. Defined with the
+// pulse colour (sweep-pulse.ts) so shell-card can read it without a cycle.
+export { SWEEP_ROLE } from "./sweep-pulse.ts";
 
 /**
  * The card glyph for a tick: the configured wink cycle when there is one, the
@@ -393,7 +395,7 @@ function sweepFor(shown: readonly TaskRecord[], now: number, options: AgentsWidg
 	const unfinished = shown.filter((task) => !isFinished(task.status));
 	if (unfinished.length === 0) return undefined;
 	const working = hasWorkingTask(unfinished, now, options.idleAfterMs);
-	const position = working ? Math.trunc(options.tick) * SWEEP_CELLS_PER_TICK : Math.trunc(now / SWEEP_WAITING_STEP_MS) * SWEEP_CELLS_PER_TICK;
+	const position = working ? Math.trunc(now / SWEEP_STEP_MS) : Math.trunc(now / SWEEP_WAITING_STEP_MS) * SWEEP_CELLS_PER_TICK;
 	return { position, role: working ? SWEEP_ROLE.WORKING : SWEEP_ROLE.WAITING };
 }
 

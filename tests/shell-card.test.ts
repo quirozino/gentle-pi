@@ -3,7 +3,7 @@ import test from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import {
 	CARD_STYLE, CARD_TONE, cardAwaitingResult, cardRunningLine, cardStyle, cardTopRows, markCardResult, panelExtraRows, panelHeaderRow, renderCard, setCardStyle,
-	type Card, type CardStyle, type CardTone,
+	type Card, type CardStyle, type CardTheme, type CardTone,
 } from "../lib/shell-card.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 
@@ -201,7 +201,7 @@ test("renderCard never exceeds extremely narrow supplied widths", () => {
 	}
 });
 
-// The frame sweep: a pulse (head plus two trailing cells) that circles the
+// The frame sweep: a snake pulse (head plus seven trailing cells) that circles the
 // card clockwise and recolours frame glyphs only.
 
 // Only the frame role and the pulse role are tagged, so cells parse flat.
@@ -235,24 +235,26 @@ function lit(position: number): string[] {
 }
 
 test("sweep head and trail run left to right along the top", () => {
-	assert.deepEqual(lit(2), ["0,0", "0,1", "0,2"]);
-	assert.deepEqual(lit(9), ["0,7", "0,8", "0,9"]);
+	assert.deepEqual(lit(12), ["0,6", "0,7", "0,8", "0,9", "0,10", "0,11", "0,12"]);
+	assert.deepEqual(lit(13), ["0,6", "0,7", "0,8", "0,9", "0,10", "0,11", "0,12", "0,13"]);
 });
 
 test("sweep skips title cells but keeps counting them", () => {
-	assert.deepEqual(lit(4), ["0,2"]);
-	assert.deepEqual(lit(5), []);
+	// Cells 0..7 hold title cells 3-5: only five of the eight light up.
+	assert.deepEqual(lit(7), ["0,0", "0,1", "0,2", "0,6", "0,7"]);
+	// Cells -2..5 end on the title: the head is hidden, the trail still shows.
+	assert.deepEqual(lit(5), ["0,0", "0,1", "0,2", "1,0", "2,0"]);
 });
 
 test("sweep turns down the right side, back along the bottom and up the left", () => {
-	assert.deepEqual(lit(14), ["0,12", "0,13", "1,13"]);
-	assert.deepEqual(lit(16), ["1,13", "2,13", "3,13"]);
-	assert.deepEqual(lit(18), ["3,11", "3,12", "3,13"]);
-	assert.deepEqual(lit(31), ["1,0", "2,0", "3,0"]);
+	assert.deepEqual(lit(14), ["0,7", "0,8", "0,9", "0,10", "0,11", "0,12", "0,13", "1,13"]);
+	assert.deepEqual(lit(16), ["0,9", "0,10", "0,11", "0,12", "0,13", "1,13", "2,13", "3,13"]);
+	assert.deepEqual(lit(18), ["0,11", "0,12", "0,13", "1,13", "2,13", "3,11", "3,12", "3,13"]);
+	assert.deepEqual(lit(31), ["1,0", "2,0", "3,0", "3,1", "3,2", "3,3", "3,4", "3,5"]);
 });
 
 test("sweep wraps around the perimeter", () => {
-	assert.deepEqual(lit(32), ["0,0", "1,0", "2,0"]);
+	assert.deepEqual(lit(32), ["0,0", "1,0", "2,0", "3,0", "3,1", "3,2", "3,3", "3,4"]);
 	assert.deepEqual(lit(32 + 9), lit(9));
 	assert.deepEqual(lit(-1), lit(31));
 });
@@ -274,6 +276,32 @@ test("sweep paints only through the given role and never changes plain text", ()
 	assert.deepEqual(swept, plain);
 	const tagged = renderCard(sweepCard, pulseTheme, 14, { expanded: true, sweep: { position: 7, role: "pulse" } });
 	assert.ok(roleGrid(tagged).flat().every((role) => role === null || role === SWEEP_FRAME || role === "pulse"));
+});
+
+// Matrix-Green paints a working pulse in its own colour, vars.sweep in
+// themes/Matrix-Green.json (#ff54a3); a waiting pulse keeps its muted role.
+const MATRIX_PULSE = "\x1b[38;2;255;84;163m";
+const matrixTheme: CardTheme & { name: string } = { name: "Matrix-Green", fg: (color: string, text: string) => `<${color}>${text}</${color}>` };
+
+test("Matrix-Green paints a working pulse in its pink pulse colour on the same cells, the frame staying in its role", () => {
+	// Only the frame role is tagged, so the cells parse flat and widths match pulseTheme's.
+	const matrixPulseTheme: CardTheme & { name: string } = { name: "Matrix-Green", fg: pulseTheme.fg };
+	const swept = renderCard(sweepCard, matrixPulseTheme, 14, { expanded: true, sweep: { position: 7, role: "accent" } }).join("\n");
+	// The snake fades from the pink head: exactly one cell (the head, top column 7) is #ff54a3.
+	assert.equal(swept.split(MATRIX_PULSE).length - 1, 1, "only the head is painted in #ff54a3");
+	assert.ok(swept.split("\n")[0].includes(`${MATRIX_PULSE}─\x1b[39m`), "the head cell is the pink pulse");
+	const shades = [...swept.matchAll(/\x1b\[38;2;(\d+);(\d+);(\d+)m/g)].map((match) => match.slice(1).join(";"));
+	assert.equal(new Set(shades).size, shades.length, `every trailing cell fades to its own shade: ${shades}`);
+	assert.ok(swept.includes(`<${SWEEP_FRAME}>`), "the rest of the frame keeps its role");
+	const asRole = swept.replace(/\x1b\[38;2;\d+;\d+;\d+m(.*?)\x1b\[39m/g, "<pulse>$1</pulse>");
+	assert.deepEqual(roleGrid(asRole.split("\n")), roleGrid(renderCard(sweepCard, pulseTheme, 14, { expanded: true, sweep: { position: 7, role: "pulse" } })), "the same cells light up");
+});
+
+test("Matrix-Green keeps a waiting pulse in muted, and other themes keep painting the pulse through its role", () => {
+	const waiting = renderCard(sweepCard, matrixTheme, 14, { expanded: true, sweep: { position: 7, role: "muted" } }).join("\n");
+	assert.ok(waiting.includes("<muted>") && !waiting.includes(MATRIX_PULSE));
+	const other = renderCard(sweepCard, { ...matrixTheme, name: "dark" } as CardTheme, 14, { expanded: true, sweep: { position: 7, role: "accent" } }).join("\n");
+	assert.ok(other.includes("<accent>") && !other.includes(MATRIX_PULSE));
 });
 
 test("absent sweep renders byte-identical output", () => {

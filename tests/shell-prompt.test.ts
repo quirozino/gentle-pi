@@ -312,3 +312,49 @@ test("T2 flat float prompt passes SGR resets, inversion and marker bytes through
 		assert.ok(rows.every((row) => !row.includes(open)), "the float prompt paints no background");
 	}
 });
+
+// Running sweep: the same pulse the running cards draw travels the prompt frame.
+// Each snake cell is marked with its depth behind the head (0 is the head).
+const pulseMark = (role: string, text: string, depth: number) => `[${role}@${depth}:${text}]`;
+const plainOptions = (overrides: Partial<PromptFrameOptions> = {}) => options({ fg: (_c, t) => t, state: PROMPT_STATE.WORKING, pulse: pulseMark, ...overrides });
+
+test("a running sweep paints its pulse cells on the prompt frame, clockwise like the cards", () => {
+	const width = 20;
+	// Perimeter 2*20+2*3-4 = 42; head 25 lights perimeter cells 18..25: top-row columns 18 and 19,
+	// the side row's right edge, then bottom-row columns 19 down to 15 (the head).
+	const swept = framePromptLines(editorLines(width), width, plainOptions({ sweep: { position: 25, role: "accent" } }));
+	assert.equal(swept[2], `╰${"─".repeat(14)}[text@0:─][text@1:─][text@2:─][text@3:─][text@4:╯]`);
+	assert.match(swept[1], /\[text@5:│\]$/);
+	assert.match(swept[0], /\[text@7:─\]\[text@6:╮\]$/);
+	// Head 20 sits on the first side row's right edge, its trail back along the top row.
+	const rows = framePromptLines(editorLines(width), width, plainOptions({ sweep: { position: 20, role: "accent" } }));
+	assert.match(rows[0], /\[text@3:─\]\[text@2:─\]\[text@1:╮\]$/);
+	assert.match(rows[1], /\[text@0:│\]$/);
+	assert.ok(rows[1].startsWith("│"), "the left edge stays plain");
+	assert.ok(rows[2].startsWith("╰") && !rows[2].includes("["), "the bottom row stays plain");
+});
+
+test("the prompt sweep keeps every row at width in both styles and wraps around the perimeter", () => {
+	const ansiPulse = (_role: string, text: string) => `\x1b[38;2;255;84;163m${text}\x1b[39m`;
+	for (const style of ["neon", "float"] as const) {
+		for (const width of [12, 30, 61]) {
+			let pulsed = 0;
+			for (let position = 0; position < 4 * width; position += 7) {
+				const rows = framePromptLines(editorLines(width), width, plainOptions({ style, bg: floatBg, pulse: ansiPulse, sweep: { position, role: "accent" } }));
+				assert.ok(rows.every((row) => visibleWidth(row) === width), `${style} ${width} ${position}`);
+				// The pulse passes under the title like on the cards, so not every position shows it.
+				if (rows.some((row) => row.includes("\x1b[38;2;255;84;163m"))) pulsed++;
+			}
+			assert.ok(pulsed > 0, `${style} ${width} shows the pulse`);
+		}
+	}
+});
+
+test("without a sweep the prompt frame is byte-identical, and a waiting pulse keeps its role", () => {
+	const width = 24;
+	const base = framePromptLines(editorLines(width), width, plainOptions());
+	assert.deepEqual(framePromptLines(editorLines(width), width, plainOptions({ sweep: undefined })), base);
+	const waiting = framePromptLines(editorLines(width), width, plainOptions({ sweep: { position: 0, role: "muted" } }));
+	assert.match(waiting[0], /^\[muted@0:╭\]─ /);
+	assert.match(waiting[1], /^\[muted@1:│\]/);
+});

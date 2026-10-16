@@ -1,7 +1,7 @@
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { stripAnsi } from "./terminal-theme.ts";
 import { SHELL_GLYPHS } from "./shell-glyphs.ts";
-import { CARD_STYLE, type CardStyle } from "./shell-card.ts";
+import { CARD_STYLE, CARD_TONE, sweepRoles, visibleSweep, type CardStyle, type CardSweep, type CellRole, type PulseCell } from "./shell-card.ts";
 
 // Pure prompt chrome: both styles keep Pi's rule/content/rule rows in the
 // configured frame (`╔═╗` with glyphs.frame=double); float draws it flat (no
@@ -70,6 +70,40 @@ export interface PromptFrameOptions {
 	 * width it was drawn with, e.g. the native selection count label.
 	 */
 	decorateBottomRule?: (row: string, width: number) => string;
+	/**
+	 * The running pulse travelling the frame, as on the running cards; undefined
+	 * draws the plain frame. Its cells paint through `pulse`.
+	 */
+	sweep?: CardSweep;
+	/** Paints one pulse run `depth` cells behind the head (sweep-pulse.ts); defaults to `fg`. */
+	pulse?: (role: string, text: string, depth: number) => string;
+}
+
+// Frame painting with the optional sweep. `row` and `column` are frame
+// coordinates (the float margins excluded); frame glyphs are single-width.
+type Edge = (text: string, row: number, column: number) => string;
+
+function edgePainter(options: PromptFrameOptions, width: number, height: number): Edge {
+	const sweep = visibleSweep(CARD_TONE.RUNNING, options.sweep);
+	const roles = sweep ? sweepRoles(sweep, width, height) : undefined;
+	if (!roles) return (text) => options.borderColor(text);
+	const pulse = options.pulse ?? options.fg;
+	return (text, row, column) => {
+		const cellRole: CellRole = roles(row);
+		const runs: { cell?: PulseCell; text: string }[] = [];
+		Array.from(text).forEach((glyph, offset) => {
+			const cell = cellRole(column + offset);
+			const last = runs[runs.length - 1];
+			if (last && last.cell?.role === cell?.role && last.cell?.depth === cell?.depth) last.text += glyph;
+			else runs.push({ cell, text: glyph });
+		});
+		return runs.map((run) => (run.cell === undefined ? options.borderColor(run.text) : pulse(run.cell.role, run.text, run.cell.depth))).join("");
+	};
+}
+
+/** `text` drawn so that it ends at the frame's last column. */
+function rightEdge(edge: Edge, text: string, row: number, width: number): string {
+	return edge(text, row, width - visibleWidth(text));
 }
 
 // A terminal cell cannot grow, so the face earns presence with weight and the
@@ -120,7 +154,7 @@ function stateLabel(options: PromptFrameOptions): string | undefined {
 	return STATE_LABEL[options.state];
 }
 
-function topRule(width: number, options: PromptFrameOptions, indicator: string | undefined): string {
+function topRule(width: number, options: PromptFrameOptions, indicator: string | undefined, edge: Edge): string {
 	const label = indicator ?? stateLabel(options);
 	const scanning = options.state === PROMPT_STATE.WORKING;
 	const glyph = petalGlyph(options.state, options.tick);
@@ -130,24 +164,24 @@ function topRule(width: number, options: PromptFrameOptions, indicator: string |
 	const titleWidth = visibleWidth(glyph) + (label ? visibleWidth(label) + (glyph ? 1 : 0) : 0);
 	const fill = width - titleWidth - 5;
 	const { topLeft, topRight, horizontal } = SHELL_GLYPHS.frame;
-	if (fill < 0) return options.borderColor(`${topLeft}${rule(width - 2)}${topRight}`);
-	return options.borderColor(`${topLeft}${horizontal} `) + title + options.borderColor(` ${rule(fill)}${topRight}`);
+	if (fill < 0) return edge(`${topLeft}${rule(width - 2)}${topRight}`, 0, 0);
+	return edge(`${topLeft}${horizontal} `, 0, 0) + title + rightEdge(edge, ` ${rule(fill)}${topRight}`, 0, width);
 }
 
-function bottomRule(width: number, options: PromptFrameOptions, indicator: string | undefined): string {
+function bottomRule(width: number, options: PromptFrameOptions, indicator: string | undefined, edge: Edge, row: number): string {
 	const { bottomLeft, bottomRight, horizontal } = SHELL_GLYPHS.frame;
-	if (!indicator) return options.borderColor(`${bottomLeft}${rule(width - 2)}${bottomRight}`);
+	if (!indicator) return edge(`${bottomLeft}${rule(width - 2)}${bottomRight}`, row, 0);
 	const fill = width - 3 - indicator.length - 1 - 1;
-	if (fill < 0) return options.borderColor(`${bottomLeft}${rule(width - 2)}${bottomRight}`);
-	return options.borderColor(`${bottomLeft}${horizontal} `) + options.fg(LABEL_ROLE, indicator) + options.borderColor(` ${rule(fill)}${bottomRight}`);
+	if (fill < 0) return edge(`${bottomLeft}${rule(width - 2)}${bottomRight}`, row, 0);
+	return edge(`${bottomLeft}${horizontal} `, row, 0) + options.fg(LABEL_ROLE, indicator) + rightEdge(edge, ` ${rule(fill)}${bottomRight}`, row, width);
 }
 
-function sideRules(line: string, innerWidth: number, options: PromptFrameOptions): string {
+function sideRules(line: string, innerWidth: number, edge: Edge, row: number): string {
 	const clipped = innerWidth === 0 ? "" : truncateToWidth(line, innerWidth, "");
 	const padding = " ".repeat(Math.max(0, innerWidth - visibleWidth(clipped)));
 	const content = clipped + padding;
 	const vertical = SHELL_GLYPHS.frame.vertical;
-	return options.borderColor(vertical) + content + options.borderColor(vertical);
+	return edge(vertical, row, 0) + content + edge(vertical, row, innerWidth + 1);
 }
 
 export interface PromptLayout {
@@ -215,15 +249,15 @@ function floatPromptRule(row: string): string {
  * the configured frame edges (`║` with glyphs.frame=double) around one padding
  * cell on each side, flat inside the float margins.
  */
-export function floatPromptRow(line: string, layout: PromptLayout, borderColor: PromptFrameOptions["borderColor"]): string {
+export function floatPromptRow(line: string, layout: PromptLayout, borderColor: PromptFrameOptions["borderColor"], rightColor = borderColor): string {
 	const clipped = truncateToWidth(line, layout.nativeWidth, "");
-	const vertical = borderColor(SHELL_GLYPHS.frame.vertical);
-	return floatPromptRule(vertical + " " + clipped + " ".repeat(Math.max(0, layout.nativeWidth - visibleWidth(clipped))) + " " + vertical);
+	const vertical = SHELL_GLYPHS.frame.vertical;
+	return floatPromptRule(borderColor(vertical) + " " + clipped + " ".repeat(Math.max(0, layout.nativeWidth - visibleWidth(clipped))) + " " + rightColor(vertical));
 }
 
 // The float top rule carries the face, the state label and any scroll or Esc
 // hints, so the closing rule stays free for the selection label.
-function floatTopRule(top: string, bottom: string, options: PromptFrameOptions, width: number): string {
+function floatTopRule(top: string, bottom: string, options: PromptFrameOptions, width: number, edge: Edge): string {
 	const glyph = petalGlyph(options.state, options.tick);
 	const petal = options.fg(petalTone(options.state, options.tick), options.bold ? options.bold(glyph) : glyph);
 	const label = stateLabel(options) ?? "waiting for input";
@@ -235,21 +269,23 @@ function floatTopRule(top: string, bottom: string, options: PromptFrameOptions, 
 		.map((text) => options.fg(LABEL_ROLE, text));
 	const { topLeft, topRight, horizontal } = SHELL_GLYPHS.frame;
 	const room = width - 5;
-	if (room < 1) return options.borderColor(`${topLeft}${rule(width - 2)}${topRight}`);
+	if (room < 1) return edge(`${topLeft}${rule(width - 2)}${topRight}`, 0, 0);
 	const status = truncateToWidth(petal + " " + paintedLabel + (info.length ? " · " + info.join(" · ") : ""), room, "");
 	const fill = room - visibleWidth(status);
-	return options.borderColor(`${topLeft}${horizontal} `) + status + options.borderColor(` ${rule(fill)}${topRight}`);
+	return edge(`${topLeft}${horizontal} `, 0, 0) + status + rightEdge(edge, ` ${rule(fill)}${topRight}`, 0, width);
 }
 
 export function framePromptLines(lines: string[], width: number, options: PromptFrameOptions, layout = resolvePromptLayout(width, options.style, options.bg)): string[] {
 	width = Math.max(0, Math.floor(width));
 	if (layout.background && lines.length >= 2) {
 		const ruleWidth = layout.width - 2;
+		const last = lines.length - 1;
+		const edge = edgePainter(options, ruleWidth, lines.length);
 		const { bottomLeft, bottomRight } = SHELL_GLYPHS.frame;
-		const closing = options.borderColor(`${bottomLeft}${rule(ruleWidth - 2)}${bottomRight}`);
+		const closing = edge(`${bottomLeft}${rule(ruleWidth - 2)}${bottomRight}`, last, 0);
 		return [
-			floatPromptRule(floatTopRule(lines[0], lines[lines.length - 1], options, ruleWidth)),
-			...lines.slice(1, -1).map((line) => floatPromptRow(line, layout, options.borderColor)),
+			floatPromptRule(floatTopRule(lines[0], lines[last], options, ruleWidth, edge)),
+			...lines.slice(1, -1).map((line, index) => floatPromptRow(line, layout, (text) => edge(text, index + 1, 0), (text) => edge(text, index + 1, ruleWidth - 1))),
 			floatPromptRule(options.decorateBottomRule ? options.decorateBottomRule(closing, ruleWidth) : closing),
 		];
 	}
@@ -269,9 +305,10 @@ export function framePromptLines(lines: string[], width: number, options: Prompt
 	const innerWidth = width - 2;
 	const top = lines[0];
 	const bottom = lines[lines.length - 1];
-	const content = lines.slice(1, -1).map((line) => sideRules(line, innerWidth, options));
-	const closing = bottomRule(width, options, options.escHint ?? scrollIndicator(bottom));
-	return [topRule(width, options, scrollIndicator(top)), ...content, options.decorateBottomRule ? options.decorateBottomRule(closing, width) : closing];
+	const edge = edgePainter(options, width, lines.length);
+	const content = lines.slice(1, -1).map((line, index) => sideRules(line, innerWidth, edge, index + 1));
+	const closing = bottomRule(width, options, options.escHint ?? scrollIndicator(bottom), edge, lines.length - 1);
+	return [topRule(width, options, scrollIndicator(top), edge), ...content, options.decorateBottomRule ? options.decorateBottomRule(closing, width) : closing];
 }
 
 export function withPromptHint(line: string, hint: string, fg: PromptFrameOptions["fg"]): string {

@@ -6,7 +6,7 @@ import { readConfiguredTheme, reportThemeFallback, themeFallbackNotice } from ".
 
 // The vendored Matrix-Green is a byte-identical copy of the live theme the
 // Promoción panels are gated on; a drift must be a deliberate pin update.
-const MATRIX_GREEN_SHA256 = "f80ced6e1bdaa01efa3231230ac1937a6afab95061cc43f98bf4cfafcf8b12ee";
+const MATRIX_GREEN_SHA256 = "2794d0cc24e9a224ba4e3712840a6086b5bd8e266ea2fe6a5ba5a2f717e96230";
 
 test("the vendored Matrix-Green theme matches its pinned sha256", () => {
 	const bytes = readFileSync(new URL("../themes/Matrix-Green.json", import.meta.url));

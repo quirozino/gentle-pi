@@ -1,4 +1,4 @@
-import { SWEEP_CELLS_PER_TICK, SWEEP_ROLE } from "./agents-widget.ts";
+import { SWEEP_ROLE, SWEEP_STEP_MS } from "./sweep-pulse.ts";
 import { ANIMATION_POLICY, resolveAnimationPolicy } from "./animation-policy.ts";
 import type { CardSweep } from "./shell-card.ts";
 
@@ -8,8 +8,8 @@ import type { CardSweep } from "./shell-card.ts";
 // pi saw start executing, or whose arguments it saw streaming in. A replayed
 // row is never live, so it never schedules a timer.
 
-/** The Agents wink rate: the sweep advances one tick per interval. */
-export const CARD_SWEEP_TICK_MS = 160;
+/** The snake's step: a sweeping row redraws, and the sweep advances one cell, per interval. */
+export const CARD_SWEEP_TICK_MS = SWEEP_STEP_MS;
 const POLICY_CACHE_MS = 1000;
 let policyCache: { at: number; quality: boolean } | undefined;
 
@@ -21,9 +21,9 @@ export function sweepAnimationsEnabled(now: number): boolean {
 	return policyCache.quality;
 }
 
-/** The pulse at a clock time: SWEEP_CELLS_PER_TICK cells per tick, in the working role. */
+/** The pulse at a clock time: one cell per step, in the working role. */
 export function cardSweepAt(now: number): CardSweep {
-	return { position: Math.floor(now / CARD_SWEEP_TICK_MS) * SWEEP_CELLS_PER_TICK, role: SWEEP_ROLE.WORKING };
+	return { position: Math.floor(now / SWEEP_STEP_MS), role: SWEEP_ROLE.WORKING };
 }
 
 /** The fields of pi's tool render context a live-row decision reads. */
