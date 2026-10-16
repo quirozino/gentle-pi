@@ -46,8 +46,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // also drops the left margin where gentle-pi flags that the transcript host
 // already insets the content one column (the Matrix scrollbar rails,
 // lib/transcript-gutter.ts "transcript-left-inset"), so the box keeps meeting
-// the other cards' edges there.
-const CHROME_MARKER = "/* ENGRAM_CHROME_PATCHED_V7 */";
+// the other cards' edges there. V8 keeps V7 but paints the running pulse in
+// the Matrix-Green accent instead of light pink: gentle-pi's own pulses turned
+// pink (lib/sweep-pulse.ts), and a pink pulse is lost on the pink frame.
+const CHROME_MARKER = "/* ENGRAM_CHROME_PATCHED_V8 */";
 // Index history: V1 made renderCall/renderResult return a width-aware,
 // multi-line-capable component instead of a fixed-content Text(). That
 // shape is exactly what V4's two-line box output needs (it already
@@ -82,8 +84,8 @@ const STRAY_V2_RE =
 // textLine, plus V5's sweep helpers and memoryCallSweep), sitting in front of
 // their own renderCallText. Matches from the marker through to (but not
 // including) the renderCallText that follows it, so re-patching a V3, V4 or
-// V5 install replaces the whole block with the current one (V6 too).
-const STRAY_V3_V5_RE = /\n*\/\* ENGRAM_CHROME_PATCHED_V[3456] \*\/[\s\S]*?(?=\n+export function renderCallText)/;
+// V5 install replaces the whole block with the current one (V6 and V7 too).
+const STRAY_V3_V5_RE = /\n*\/\* ENGRAM_CHROME_PATCHED_V[34567] \*\/[\s\S]*?(?=\n+export function renderCallText)/;
 
 // Anchors on the signature, so this matches the pristine, never-patched
 // function, a healed V1 patch (which just prefixed the same signature with
@@ -169,7 +171,7 @@ function paintCells(cells, color, lit) {
   let swept = false;
   cells.forEach((cell, column) => {
     const on = lit(column);
-    if (on !== swept) painted += on ? SWEEP_PINK_BOLD : color;
+    if (on !== swept) painted += on ? SWEEP_BOLD : color;
     swept = on;
     painted += cell;
   });
@@ -188,7 +190,7 @@ function textLine(color, content, width, litLeft, litRight) {
   const right = "\\u2551";
   const fillWidth = width - visibleWidth(left) - visibleWidth(content) - visibleWidth(right);
   if (fillWidth < 0) return undefined;
-  const wall = (lit) => (lit ? SWEEP_PINK_BOLD + "\\u2551" + color : "\\u2551");
+  const wall = (lit) => (lit ? SWEEP_BOLD + "\\u2551" + color : "\\u2551");
   return color + wall(litLeft) + " " + content + " ".repeat(fillWidth) + wall(litRight) + RESET;
 }
 
@@ -213,9 +215,9 @@ function boxGeometry(width) {
 // The running sweep. It mirrors gentle-pi's lib/card-sweep.ts (tick, pace,
 // live-row rules, idle cutoff, redraw scheduling) and lib/shell-card.ts
 // (pulse length) as a small self-contained copy: this file lives inside
-// gentle-engram and cannot import gentle-pi modules. Light pink (256-color
-// 218) stands out from the hot-pink frame it travels on.
-const SWEEP_PINK_BOLD = "\\x1b[38;5;218m\\x1b[1m";
+// gentle-engram and cannot import gentle-pi modules. The Matrix-Green accent
+// (#2bff6f, 24-bit) stands out from the hot-pink frame it travels on.
+const SWEEP_BOLD = "\\x1b[38;2;43;255;111m\\x1b[1m";
 const SWEEP_TICK_MS = 160;
 const SWEEP_CELLS_PER_TICK = 10;
 const SWEEP_LENGTH = 3;
@@ -526,7 +528,7 @@ function patchTests(engramDir, quiet) {
   const testFile = join(engramDir, "test", "memory-tool-chrome.test.mjs");
   if (!existsSync(testFile)) return;
   const content = readFileSync(testFile, "utf8");
-  if (content.includes("ENGRAM_CHROME_PATCHED_V7")) {
+  if (content.includes("ENGRAM_CHROME_PATCHED_V8")) {
     if (!quiet) console.log("patch-engram-chrome: tests already patched; skipping.");
     return;
   }

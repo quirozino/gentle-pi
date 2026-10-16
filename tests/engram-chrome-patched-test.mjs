@@ -1,4 +1,4 @@
-/* ENGRAM_CHROME_PATCHED_V7 */
+/* ENGRAM_CHROME_PATCHED_V8 */
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -219,12 +219,12 @@ test("renderCallText and renderResultText remain callable with no width (non-TUI
   assert.ok(result.startsWith("╠ ") && result.endsWith(" ╣"));
 });
 
-test("a running call sweeps a light-pink pulse around its frame without changing its width", () => {
+test("a running call sweeps a Matrix-green pulse around its frame without changing its width", () => {
   const still = renderCallText("mem_search", { query: "auth model" }, 60);
-  assert.ok(!still.includes("\x1b[38;5;218m"), "the still frame carries no sweep colour");
+  assert.ok(!still.includes("\x1b[38;2;43;255;111m"), "the still frame carries no sweep colour");
   for (const head of [0, 1, 30, 61, 999]) {
     const swept = renderCallText("mem_search", { query: "auth model" }, 60, head);
-    assert.ok(swept.includes("\x1b[38;5;218m"), `head ${head} paints the light-pink pulse`);
+    assert.ok(swept.includes("\x1b[38;2;43;255;111m"), `head ${head} paints the Matrix-green pulse`);
     assert.equal(stripAnsi(swept), stripAnsi(still), "the sweep recolours cells only");
     for (const line of swept.split("\n")) assert.equal(visibleWidth(line), 60);
   }
