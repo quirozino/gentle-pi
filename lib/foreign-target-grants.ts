@@ -6,6 +6,9 @@ export class ForeignTargetGrants {
 	private readonly grants = new Map<string, Set<string>>();
 	private manager?: ExtensionContext["sessionManager"];
 	private sessionId?: string;
+	// pi shows one dialog at a time and a new one replaces the visible one
+	// without settling it, so prompts queue here instead of overlapping.
+	private prompting: Promise<unknown> = Promise.resolve();
 
 	async authorize(ctx: Pick<ExtensionContext, "sessionManager" | "hasUI" | "ui">, target: WorktreeIdentity, options: { continuation?: boolean; signal?: AbortSignal } = {}): Promise<void> {
 		if (options.signal?.aborted) throw new Error("Foreign clone authorization aborted.");
@@ -18,6 +21,16 @@ export class ForeignTargetGrants {
 		}
 		if (this.grants.get(id)?.has(target.commonDir)) return;
 		if (options.continuation) throw new Error("Foreign clone continuation grant was lost; start a new explicit launch.");
+		const turn = this.prompting.then(() => this.prompt(ctx, target, id, options));
+		this.prompting = turn.catch(() => undefined);
+		return turn;
+	}
+
+	private async prompt(ctx: Pick<ExtensionContext, "sessionManager" | "hasUI" | "ui">, target: WorktreeIdentity, id: string, options: { signal?: AbortSignal }): Promise<void> {
+		if (options.signal?.aborted) throw new Error("Foreign clone authorization aborted.");
+		if (ctx.sessionManager !== this.manager || ctx.sessionManager.getSessionId() !== id) throw new Error("Session identity changed during foreign clone authorization.");
+		// A launch queued behind another prompt for the same clone reuses its answer.
+		if (this.grants.get(id)?.has(target.commonDir)) return;
 		if (!ctx.hasUI || !ctx.ui?.confirm || await ctx.ui.confirm("Authorize foreign clone subagent", `Launch a subagent in ${target.root}? Git common directory: ${target.commonDir}. This grant applies only to this live session and clone.`) !== true) throw new Error("Foreign clone requires interactive human consent before launch.");
 		if (options.signal?.aborted) throw new Error("Foreign clone authorization aborted.");
 		if (ctx.sessionManager !== this.manager || ctx.sessionManager.getSessionId() !== id) throw new Error("Session identity changed during foreign clone authorization.");
