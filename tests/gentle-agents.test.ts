@@ -6793,3 +6793,18 @@ test("a human stop of a monitor from /gentle:jobs delivers its pending lines, th
 		jobs.cleanup();
 	}
 });
+
+test("subagent_run refuses a Judgment Day judge launched on a generic agent", async () => {
+	const { pi, fire } = fakePi();
+	gentleAgents(pi, {}, deps().deps);
+	const { ctx } = fakeContext();
+	const call = async (input: Record<string, unknown>) =>
+		(await fire("tool_call", ctx, { toolCallId: "t", toolName: "subagent_run", input })).find((result) => result !== undefined) as { block?: boolean; reason?: string } | undefined;
+	await fire("session_start", ctx);
+	const task = "You are one of two blind Judgment Day judges. Stay read-only.";
+	const blocked = await call({ agent: "gentle-ai-verify", mode: "background", label: "juez A judgment day", task });
+	assert.equal(blocked?.block, true);
+	assert.match(blocked!.reason!, /jd-judge-a/);
+	assert.equal(await call({ agent: "jd-judge-a", mode: "background", label: "juez A judgment day", task }), undefined);
+	assert.equal(await call({ agent: "gentle-ai-verify", mode: "background", label: "verify T1", task: "Check S1." }), undefined);
+});

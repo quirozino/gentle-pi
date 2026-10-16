@@ -21,6 +21,7 @@ import { createMonitorController, mergeMonitorBatches, type MonitorNotice } from
 import { JobsView } from "../lib/jobs-view.ts";
 import { JOBS_SIDEBAR_EVENT, JOBS_STATUS_KEY } from "../lib/jobs-sidebar-state.ts";
 import { HERDR_BUSY_EVENT } from "../lib/herdr-busy.ts";
+import { judgmentDayAgentBlock } from "../lib/judgment-day-guard.ts";
 import { Text, type TUI } from "@earendil-works/pi-tui";
 import { ANIMATION_POLICY, resolveAnimationPolicy } from "../lib/animation-policy.ts";
 import { invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
@@ -878,6 +879,13 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			block: true,
 			reason: `Standalone sleep is blocked while background work is active (${tasks} task(s), ${running} job(s)). End the turn now; each completion arrives automatically as a session message and starts a new turn.`,
 		};
+	});
+	// Judgment Day judges must run on jd-judge-a/jd-judge-b so each keeps its
+	// profile model; a generic agent labelled "judge" would run both on one model.
+	pi.on("tool_call", (event) => {
+		if (event.toolName !== "subagent_run") return undefined;
+		const reason = judgmentDayAgentBlock(event.input);
+		return reason ? { block: true, reason } : undefined;
 	});
 	// Same active-task predicate as publishActivity.
 	const backgroundWork = () => {
