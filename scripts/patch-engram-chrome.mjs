@@ -456,6 +456,35 @@ const INDEX_RENDER_METHODS_PATCHED = `${INDEX_MARKER}
         };
       },`;
 
+// gentle-engram 0.4.x renderResult: same Text() shape, plus mem_doctor's
+// caller binding appended to the collapsed result. The patched body keeps
+// that line and the same sweep/width behavior as INDEX_RENDER_METHODS_PATCHED.
+const INDEX_RENDER_METHODS_V0_4 = `      renderCall(args) {
+        return new Text(renderCallText(toolName, args), 0, 0);
+      },
+      renderResult(result, options, _theme, context) {
+        const rendered = renderResultText(toolName, result, { expanded: options.expanded, isPartial: options.isPartial, isError: context.isError });
+        const caller = toolName === "mem_doctor" ? (result.details as { data?: { caller_binding?: { status: string } } } | undefined)?.data?.caller_binding : undefined;
+        return new Text(caller && !options.expanded ? \`Project checks: \${rendered}\\nCaller binding: \${caller.status} (later writes not guaranteed)\` : rendered, 0, 0);
+      },`;
+
+const INDEX_RENDER_METHODS_0_4_PATCHED = `${INDEX_MARKER}
+      renderCall(args, _theme, context) {
+        const sweep = memoryCallSweep(context, context?.isPartial !== false && context?.isError !== true, Date.now());
+        return { render: (width) => renderCallText(toolName, args, width, sweep).split("\\n"), invalidate() {} };
+      },
+      renderResult(result, options, _theme, context) {
+        memoryCallSweep(context, options.isPartial === true && context?.isError !== true, Date.now());
+        const caller = toolName === "mem_doctor" ? (result.details as { data?: { caller_binding?: { status: string } } } | undefined)?.data?.caller_binding : undefined;
+        return {
+          render: (width) => {
+            const rendered = renderResultText(toolName, result, { expanded: options.expanded, isPartial: options.isPartial, isError: context.isError }, width);
+            return (caller && !options.expanded ? \`Project checks: \${rendered}\\nCaller binding: \${caller.status} (later writes not guaranteed)\` : rendered).split("\\n");
+          },
+          invalidate() {},
+        };
+      },`;
+
 const INDEX_TEXT_IMPORT = 'import { Text } from "@earendil-works/pi-tui";\n';
 // gentle-engram's own import of the chrome helpers; the patched renderCall
 // also needs memoryCallSweep from it.
@@ -486,8 +515,10 @@ export function patchIndexFile(target) {
   const healed = original.replace(OLD_INDEX_MARKER_RE, "");
   if (healed !== original && healed.includes(INDEX_RENDER_METHODS_V1_V2)) {
     working = healed.replace(INDEX_RENDER_METHODS_V1_V2, INDEX_RENDER_METHODS_PATCHED);
-  } else if (original.includes(INDEX_RENDER_METHODS_V0)) {
-    working = original.replace(INDEX_RENDER_METHODS_V0, INDEX_RENDER_METHODS_PATCHED);
+  } else if (original.includes(INDEX_RENDER_METHODS_V0) || original.includes(INDEX_RENDER_METHODS_V0_4)) {
+    working = original.includes(INDEX_RENDER_METHODS_V0)
+      ? original.replace(INDEX_RENDER_METHODS_V0, INDEX_RENDER_METHODS_PATCHED)
+      : original.replace(INDEX_RENDER_METHODS_V0_4, INDEX_RENDER_METHODS_0_4_PATCHED);
     // Text becomes unused once renderCall/renderResult stop constructing it
     // directly; only drop the import when it is actually otherwise unused.
     if (working.includes(INDEX_TEXT_IMPORT) && !/\bText\(/.test(working.replace(INDEX_TEXT_IMPORT, ""))) {

@@ -667,6 +667,29 @@ for (const [label, source] of [["V1", V1_INDEX], ["V2", V2_INDEX]] as const) {
 	});
 }
 
+// gentle-engram 0.4.x: renderResult also appends mem_doctor's caller binding.
+const PRISTINE_INDEX_0_4 = PRISTINE_INDEX.replace(
+	`        return new Text(renderResultText(toolName, result, { expanded: options.expanded, isPartial: options.isPartial, isError: context.isError }), 0, 0);`,
+	`        const rendered = renderResultText(toolName, result, { expanded: options.expanded, isPartial: options.isPartial, isError: context.isError });
+        const caller = toolName === "mem_doctor" ? (result.details as { data?: { caller_binding?: { status: string } } } | undefined)?.data?.caller_binding : undefined;
+        return new Text(caller && !options.expanded ? \`Project checks: \${rendered}\\nCaller binding: \${caller.status} (later writes not guaranteed)\` : rendered, 0, 0);`,
+);
+
+test("patching a gentle-engram 0.4 index.ts sweeps and keeps mem_doctor's caller binding line", async (t) => {
+	assert.notEqual(PRISTINE_INDEX_0_4, PRISTINE_INDEX, "fixture must carry the 0.4 renderResult body");
+	const target = tempFile(t, "index.ts", PRISTINE_INDEX_0_4);
+	assert.deepEqual(patchIndexFile(target), { changed: true, ok: true });
+
+	const patched = readFileSync(target, "utf8");
+	assertSweepingIndex(patched);
+	assert.ok(patched.includes('const caller = toolName === "mem_doctor"'), "the caller binding lookup must survive");
+	assert.ok(patched.includes("Caller binding: ${caller.status} (later writes not guaranteed)"), "the caller binding line must survive");
+	assert.match(patched, /renderResultText\(toolName, result, \{ expanded: options\.expanded, isPartial: options\.isPartial, isError: context\.isError \}, width\)/);
+
+	assert.equal(patchIndexFile(target).changed, false, "re-running against a patched 0.4 file should be a no-op");
+	assert.equal(readFileSync(target, "utf8"), patched);
+});
+
 test("patchIndexFile reports failure instead of half-patching when the chrome import is missing", async (t) => {
 	const source = PRISTINE_INDEX.replace(`${CHROME_IMPORT}\n`, "");
 	const target = tempFile(t, "index.ts", source);
