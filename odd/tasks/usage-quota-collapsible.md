@@ -76,3 +76,4 @@ The Usage list is also long (11 rows) and pushes the rest of the card down.
   toggle (lib/shell-bar.ts:626-630); SUGGESTION `toggle()` relies on `this` (lib/shell-bar.ts:530).
 - T4 (inline, user-authorized follow-up): RED "minimal density keeps every row"; GREEN 449/450 with only the
   known base failure. The roles test now uses SGR-coded fake roles, since `<role>` markup hid the heading.
+- T4 commit `5e3e718a8`. RDD assess vs `f6af66cbe`: medium, under_budget (pending in slice).
