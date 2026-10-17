@@ -163,6 +163,22 @@ test("parseCodexUsage filters invalid numeric windows without inventing a five-h
 	assert.deepEqual(parseCodexUsage({ rate_limit: { primary_window: { used_percent: 0, limit_window_seconds: 0 } } }, NOW).limits, []);
 });
 
+test("parseCodexHeaders drops a window the server reports with no data, like the Codex CLI", () => {
+	// Weekly-only plans send a zeroed secondary window with no duration or reset.
+	const usage = parseCodexHeaders(
+		{
+			"x-codex-primary-used-percent": "43",
+			"x-codex-primary-window-minutes": "10080",
+			"x-codex-primary-reset-at": "1791052544",
+			"x-codex-secondary-used-percent": "0",
+		},
+		NOW,
+	);
+	assert.ok(usage);
+	assert.deepEqual(usage.limits[0].windows.map((w) => `${w.label}:${w.usedPercent}`), ["week:43"]);
+	assert.equal(parseCodexHeaders({ "x-codex-primary-used-percent": "0", "x-codex-primary-window-minutes": "0" }, NOW), undefined);
+});
+
 test("accountIdFromToken decodes the chatgpt account claim from an OAuth JWT", () => {
 	const claims = Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "acct-123" } })).toString("base64url");
 	assert.equal(accountIdFromToken(`header.${claims}.sig`), "acct-123");
