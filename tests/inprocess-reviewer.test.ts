@@ -291,6 +291,52 @@ test("refuses with TIMED_OUT when the completion exceeds its bound", async () =>
 	assert.match(refused.message, /20ms/);
 });
 
+test("an already-aborted request skips auth and provider dispatch", async () => {
+	const controller = new AbortController();
+	controller.abort();
+	let authCalls = 0;
+	let completionCalls = 0;
+	const registry: InProcessReviewerRegistry = {
+		find: () => fakeModel(),
+		getApiKeyAndHeaders: async () => { authCalls++; return { ok: true, apiKey: "test-key" }; },
+	};
+	const outcome = await runInProcessReviewer(baseRequest({ signal: controller.signal }), {
+		registry,
+		complete: (async () => { completionCalls++; return assistantText("should not dispatch"); }) as typeof completeSimple,
+	});
+	assert.equal(expectRefused(outcome).code, INPROCESS_REVIEWER_FAILURE.ABORTED);
+	assert.equal(authCalls, 0);
+	assert.equal(completionCalls, 0);
+});
+
+test("a noncooperative authentication resolver is bounded by the reviewer deadline", async () => {
+	let authCalls = 0;
+	const registry: InProcessReviewerRegistry = {
+		find: () => fakeModel(),
+		getApiKeyAndHeaders: async () => { authCalls++; return await new Promise<never>(() => {}); },
+	};
+	const started = Date.now();
+	const settled = await Promise.race([
+		runInProcessReviewer(baseRequest({ timeoutMs: 20 }), { registry, complete: (async () => assistantText("should not dispatch")) as typeof completeSimple }).then(outcome => ({ outcome })),
+		new Promise<undefined>(resolve => setTimeout(() => resolve(undefined), 250)),
+	]);
+	assert.ok(settled, "reviewer must settle while auth remains unresolved");
+	assert.equal(expectRefused(settled.outcome).code, INPROCESS_REVIEWER_FAILURE.TIMED_OUT);
+	assert.ok(Date.now() - started < 250, "deadline must not wait for a noncooperative auth resolver");
+	assert.equal(authCalls, 1);
+});
+
+test("a noncooperative provider is bounded by the reviewer deadline", async () => {
+	const started = Date.now();
+	const settled = await Promise.race([
+		runInProcessReviewer(baseRequest({ timeoutMs: 20 }), { registry: fakeRegistry([fakeModel()]), complete: (async () => await new Promise<never>(() => {})) as typeof completeSimple }).then(outcome => ({ outcome })),
+		new Promise<undefined>(resolve => setTimeout(() => resolve(undefined), 250)),
+	]);
+	assert.ok(settled, "reviewer must settle while provider remains unresolved");
+	assert.equal(expectRefused(settled.outcome).code, INPROCESS_REVIEWER_FAILURE.TIMED_OUT);
+	assert.ok(Date.now() - started < 250, "deadline must not wait for a noncooperative provider");
+});
+
 test("refuses with ABORTED when the caller's own signal aborts", async () => {
 	const controller = new AbortController();
 	controller.abort();

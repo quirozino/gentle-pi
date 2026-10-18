@@ -149,6 +149,24 @@ function refuse(code: InProcessReviewerFailureCode, message: string, evidence?: 
 	return { kind: "refused", code, message, ...(evidence === undefined ? {} : { evidence }) };
 }
 
+/** Races a potentially noncooperative async seam against caller/deadline cancellation. */
+function awaitWithAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		let settled = false;
+		const cleanup = () => signal.removeEventListener("abort", onAbort);
+		const finish = (callback: () => void) => {
+			if (settled) return;
+			settled = true;
+			cleanup();
+			callback();
+		};
+		const onAbort = () => finish(() => reject(signal.reason ?? new Error("reviewer operation aborted")));
+		signal.addEventListener("abort", onAbort, { once: true });
+		if (signal.aborted) onAbort();
+		operation.then(value => finish(() => resolve(value)), error => finish(() => reject(error)));
+	});
+}
+
 function isTextContent(part: { type?: unknown }): part is TextContent {
 	return part.type === "text";
 }
@@ -184,6 +202,9 @@ export function openCodeSessionAttributionHeaders(model: Model<Api>, sessionId: 
  * never reads process.env — every seam is injected through `deps`.
  */
 export async function runInProcessReviewer(request: InProcessReviewerRequest, deps: InProcessReviewerDeps): Promise<InProcessReviewerOutcome> {
+	if (request.signal?.aborted === true) {
+		return refuse(INPROCESS_REVIEWER_FAILURE.ABORTED, `Reviewer completion for ${request.routingKey} was aborted by the caller.`);
+	}
 	const parsed = parseSelection(request.selection);
 	if (parsed === undefined) {
 		return refuse(
@@ -227,7 +248,32 @@ export async function runInProcessReviewer(request: InProcessReviewerRequest, de
 		);
 	}
 
-	const auth = await deps.registry.getApiKeyAndHeaders(model);
+	// Start the absolute deadline before resolving auth. A resolver may hang,
+	// and its late completion must never dispatch a provider after cancellation.
+	const timeoutSignal = AbortSignal.timeout(request.timeoutMs);
+	const combinedSignal = request.signal === undefined ? timeoutSignal : AbortSignal.any([request.signal, timeoutSignal]);
+	const abortRefusal = (): InProcessReviewerOutcome | undefined => {
+		if (timeoutSignal.aborted) {
+			return refuse(INPROCESS_REVIEWER_FAILURE.TIMED_OUT, `Reviewer completion for ${request.routingKey} exceeded its ${request.timeoutMs}ms bound.`);
+		}
+		if (request.signal?.aborted === true) {
+			return refuse(INPROCESS_REVIEWER_FAILURE.ABORTED, `Reviewer completion for ${request.routingKey} was aborted by the caller.`);
+		}
+		return undefined;
+	};
+	let auth: Awaited<ReturnType<InProcessReviewerRegistry["getApiKeyAndHeaders"]>>;
+	try {
+		auth = await awaitWithAbort(Promise.resolve().then(() => {
+			if (combinedSignal.aborted) throw combinedSignal.reason ?? new Error("reviewer auth aborted");
+			return deps.registry.getApiKeyAndHeaders(model);
+		}), combinedSignal);
+	} catch (error) {
+		const aborted = abortRefusal();
+		if (aborted !== undefined) return aborted;
+		throw error;
+	}
+	const authAbort = abortRefusal();
+	if (authAbort !== undefined) return authAbort;
 	// Negation narrowing (`!auth.ok`) does not eliminate the `ok: true` arm of
 	// this discriminated union under this project's `strict: false` tsconfig;
 	// an explicit `=== false` comparison narrows correctly in both directions.
@@ -252,13 +298,6 @@ export async function runInProcessReviewer(request: InProcessReviewerRequest, de
 	// merge order pi's core uses for explicit header sources.
 	const attributionHeaders = openCodeSessionAttributionHeaders(model, request.sessionId);
 
-	// The caller's own signal (if any) and a floor timeout race together:
-	// whichever fires first aborts the completion. The catch branch below
-	// tells them apart by which underlying signal actually fired, never by
-	// inspecting the thrown error's shape, which providers are free to vary.
-	const timeoutSignal = AbortSignal.timeout(request.timeoutMs);
-	const combinedSignal = request.signal === undefined ? timeoutSignal : AbortSignal.any([request.signal, timeoutSignal]);
-
 	const context: Context = {
 		messages: [
 			{
@@ -278,27 +317,18 @@ export async function runInProcessReviewer(request: InProcessReviewerRequest, de
 	};
 
 	// An abort is classified by which signal actually fired, never by the
-	// error's shape or the message's text, and the same classification serves
-	// both settlement paths: a provider may reject on abort, or — the pi-ai
-	// provider convention — resolve an AssistantMessage with `stopReason:
-	// "aborted"` carrying whatever text streamed before the cut. Either way a
-	// fired signal is a timeout or a caller abort, never empty or usable output.
-	const abortRefusal = (): InProcessReviewerOutcome | undefined => {
-		if (timeoutSignal.aborted) {
-			return refuse(INPROCESS_REVIEWER_FAILURE.TIMED_OUT, `Reviewer completion for ${request.routingKey} exceeded its ${request.timeoutMs}ms bound.`);
-		}
-		if (request.signal?.aborted === true) {
-			return refuse(INPROCESS_REVIEWER_FAILURE.ABORTED, `Reviewer completion for ${request.routingKey} was aborted by the caller.`);
-		}
-		return undefined;
-	};
+	// error's shape or the message's text. A fired signal is never usable output.
 
 	// `SimpleStreamOptions` is identical on both paths; only the return shape
 	// differs (an event stream versus a promise), hence `.result()` — which is
 	// exactly what pi-ai's own compat layer does with the same stream.
 	let assistant: AssistantMessage;
 	try {
-		assistant = provider === undefined ? await deps.complete(model, context, options) : await provider.streamSimple(model, context, options).result();
+		const completion = Promise.resolve().then(() => {
+			if (combinedSignal.aborted) throw combinedSignal.reason ?? new Error("reviewer completion aborted");
+			return provider === undefined ? deps.complete(model, context, options) : provider.streamSimple(model, context, options).result();
+		});
+		assistant = await awaitWithAbort(completion, combinedSignal);
 	} catch (error) {
 		return abortRefusal() ?? refuse(INPROCESS_REVIEWER_FAILURE.PROVIDER_FAILED, `Reviewer completion failed for ${request.routingKey}: ${sanitizeErrorExcerpt(error)}`);
 	}
