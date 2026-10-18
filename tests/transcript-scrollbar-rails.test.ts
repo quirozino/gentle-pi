@@ -83,7 +83,7 @@ test("under the rails the left inset goes after leading OSC 133 marks so pi-tui 
 	installTranscriptRails(fakeHost(view), view, { theme: () => matrix, cells: [] });
 	const zone = "\x1b]133;A\x07";
 	const end = "\x1b]133;B\x07\x1b]133;C\x1b\\";
-	const document = { render: () => [zone, "text", `${end}last`], invalidate() {} };
+	const document = { render: (_width: number) => [zone, "text", `${end}last`], invalidate() {} };
 	const node = { type: "scroll", component: document, state: view };
 	const root = { entries: [{ component: { [Symbol.for("@earendil-works/pi-tui/layout-node")]: () => node } }] };
 	const uninstall = installTranscriptRightGutter(root as never);
