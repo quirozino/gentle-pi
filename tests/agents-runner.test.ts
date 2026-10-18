@@ -1129,6 +1129,20 @@ test("AgentRunner primary IPC cleanup respects native connection state", async (
 	}
 });
 
+test("AgentRunner propagates principal GGA binding even when child launches under a worker model", async () => {
+	const { runner, spawnOptions } = harness();
+	const principalEnv = { GGA_PROVIDER: "pi-session", GGA_PI_MODEL: "openai/gpt-4.1", GGA_PI_BRIDGE: "/private/session/bridge", GGA_PI_SOCKET: "/private/session/socket", GGA_PI_CAPABILITY: "opaque" };
+	const task = runner.run(request({ model: { provider: "anthropic", id: "claude-sonnet-4" }, env: principalEnv }));
+	await tick();
+	const launch = spawnOptions[0];
+	assert.equal(launch?.env.GGA_PI_MODEL, "openai/gpt-4.1");
+	assert.equal(launch?.env.GGA_PROVIDER, "pi-session");
+	assert.equal(launch?.env.GGA_PI_BRIDGE, "/private/session/bridge");
+	assert.equal(launch?.env.GGA_PI_SOCKET, "/private/session/socket");
+	assert.equal(launch?.env.GGA_PI_CAPABILITY, "opaque");
+	runner.cancel(task.id);
+});
+
 test("AgentRunner retains permission broker fd3 and assigns messaging IPC to fd4", async () => {
 	const { runner, children, spawnOptions } = harness();
 	const task = runner.run(request({ authorizeParentStandingReviewPermission: () => true }));

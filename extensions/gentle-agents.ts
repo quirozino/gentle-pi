@@ -74,6 +74,7 @@ import { SUBAGENT_COMPLETED_EVENT, subagentCompletedEvent } from "../lib/subagen
 import { CHILD_METRICS_EVENT, CHILD_METRICS_REVOKED, childEvent, launchSelection, type LaunchSelection } from "../lib/runtime-metrics-children.ts";
 import { runtimeMetricsEnvAllows, type RuntimeMetricsPolicyDeps } from "../lib/runtime-metrics-policy.ts";
 import { publishTaskStatusChanges } from "../lib/notification-events.ts";
+import { requestSessionGgaEnvironment } from "../lib/session-gga-bridge.ts";
 
 // Gentle Agents: subagents as isolated `pi --mode rpc` children, a task
 // store that notifies per task, and a Gentle Shell card above the editor.
@@ -914,7 +915,22 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	type JobNotice = { job: JobRecord; kind: "exit" } | MonitorNotice;
 	const jobNotices: JobNotice[] = [];
 	let jobOutputDir: string | undefined;
+	const sessionGgaEnvironments = new Map<string, NodeJS.ProcessEnv>();
+	pi.on("tool_call", (event, ctx) => {
+		const toolName = (event as { toolName?: unknown }).toolName;
+		if (toolName !== "bash_background" && toolName !== "monitor") return;
+		const sessionId = ctx.sessionManager.getSessionId();
+		const model = ctx.model;
+		if (!sessionId || !model?.provider || !model.id) return;
+		const env = { ...deps.env, PI_SESSION_ID: sessionId, PI_PROVIDER: model.provider, PI_MODEL: model.id };
+		sessionGgaEnvironments.set(sessionId, requestSessionGgaEnvironment(pi.events, sessionId, env));
+	});
+	pi.on("session_shutdown", (_event, ctx) => {
+		const sessionId = ctx.sessionManager.getSessionId();
+		if (sessionId) sessionGgaEnvironments.delete(sessionId);
+	});
 	const jobs = createJobRegistry({
+		environment: (sessionId) => sessionGgaEnvironments.get(sessionId),
 		outputDir: deps.jobOutputDir ?? (() => (jobOutputDir ??= mkdtempSync(join(os.tmpdir(), "gentle-jobs-")))),
 		now: deps.now,
 		shell: deps.jobShell ?? ((cwd) => {
@@ -1896,8 +1912,11 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		const parentSessionId = ctx.sessionManager.getSessionId() ?? "";
 		const parentWorktreeRoot = ctx.sessionManager.getCwd();
 		const parentRepositoryIdentity = resolveCanonicalGitRepositoryIdentitySync(parentWorktreeRoot);
+		const principalModel = ctx.model;
 		const childEnv = { ...deps.env };
-		if (foreign) for (const key of inheritedUnsafeGitEnvironmentKeys(childEnv)) delete childEnv[key];
+		const principalSelection = principalModel?.provider && principalModel.id ? `${principalModel.provider}/${principalModel.id}` : undefined;
+		const inheritedGgaEnv = pi.events === undefined ? childEnv : requestSessionGgaEnvironment(pi.events, parentSessionId, childEnv, principalSelection ?? null);
+		if (foreign) for (const key of inheritedUnsafeGitEnvironmentKeys(inheritedGgaEnv)) delete inheritedGgaEnv[key];
 		const request: TaskRequest = {
 			agent,
 			prompt,
@@ -1927,7 +1946,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			// A writer claims its surfaces in its canonical worktree root for its queued
 			// and running lifetime; a continuation is a new task and claims them again.
 			...(isBoundedWriter(agent.name) && surfaces ? { writerSurfaces: surfaces, writerRoot: canonicalWriterRoot(target ?? parentWorktreeRoot, foreign ? resolveSessionWorktree : deps.resolveWorktree) } : {}),
-			env: childEnv,
+			env: inheritedGgaEnv,
 			...(foreign || parentRepositoryIdentity === undefined ? {} : {
 				authorizeParentStandingReviewPermission: (repositoryIdentity: string) => {
 					try {
@@ -2554,6 +2573,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		publishActivity();
 	});
 	pi.on("session_start", async (event, ctx) => {
+		sessionGgaEnvironments.clear();
 		// gentle-shell#1064 slice 3b-ii: a parent session that has no explicit
 		// profile binding freezes `p → P → G` now. This handler is parent-only (a
 		// child returns before registering it) and runs for every reason Pi

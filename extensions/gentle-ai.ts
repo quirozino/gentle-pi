@@ -114,6 +114,7 @@ import {
 	type ProfilePinStatus,
 } from "../lib/agent-profile-pin.ts";
 import { bindSessionProfile, readSessionProfileBinding } from "../lib/session-profile-binding.ts";
+import { SESSION_GGA_BRIDGE_REQUEST_EVENT, startSessionGgaBridge, type SessionGgaBridge } from "../lib/session-gga-bridge.ts";
 import {
 	applyOrchestratorSettings,
 	readOrchestratorSettings,
@@ -9772,6 +9773,19 @@ function createGentleAiExtensionForTesting(
 	return function gentleAi(pi: ExtensionAPI): void {
 	declareReviewRelayHandshake(dependencies.processEnv ?? process.env);
 	const pendingReviewConsentFallbackKey = Symbol("pending-review-consent-fallback");
+	let activeSessionGgaBridge: SessionGgaBridge | undefined;
+	let activeSessionGgaId: string | undefined;
+	let unsubscribeSessionGgaRequest: (() => void) | undefined;
+	const subscribeSessionGgaRequest = () => {
+		if (unsubscribeSessionGgaRequest !== undefined || typeof pi.events?.on !== "function") return;
+		unsubscribeSessionGgaRequest = pi.events.on(SESSION_GGA_BRIDGE_REQUEST_EVENT, (data) => {
+			if (!data || typeof data !== "object") return;
+			const request = data as { sessionId?: unknown; principalModel?: unknown; bridge?: unknown };
+			if (typeof request.sessionId !== "string" || request.sessionId !== activeSessionGgaId || activeSessionGgaBridge === undefined) return;
+			request.bridge = activeSessionGgaBridge.capability;
+		});
+	};
+	subscribeSessionGgaRequest();
 	const candidateViews = dependencies.candidateViews === undefined ? new CandidateViewRegistry() : dependencies.candidateViews;
 	const herdrLifecycle = createHerdrConfirmationLifecycle(pi.events);
 	const permissionEnvironment = dependencies.processEnv ?? process.env;
@@ -9839,6 +9853,14 @@ function createGentleAiExtensionForTesting(
 	let reminderManager: ExtensionContext["sessionManager"] | undefined;
 	let unbindPreparation: (() => void) | undefined;
 	pi.on("session_shutdown", (event, context) => {
+		if ((event as { reason?: unknown }).reason === "reload") {
+			unsubscribeSessionGgaRequest?.();
+			unsubscribeSessionGgaRequest = undefined;
+		}
+		activeSessionGgaId = undefined;
+		const closingGgaBridge = activeSessionGgaBridge;
+		activeSessionGgaBridge = undefined;
+		void closingGgaBridge?.close();
 		pinnedRddStatusLines.delete(pendingReviewConsentSessionKey(context, pendingReviewConsentFallbackKey));
 		rddOffReviewLoadout = false;
 		auto.reset();
@@ -10279,6 +10301,21 @@ function createGentleAiExtensionForTesting(
 	};
 
 	pi.on("session_start", async (event, ctx) => {
+		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1") {
+			const previousBridge = activeSessionGgaBridge;
+			activeSessionGgaBridge = undefined;
+			activeSessionGgaId = undefined;
+			await previousBridge?.close();
+			if (ctx.modelRegistry) {
+				try {
+					const bridge = await startSessionGgaBridge({ registry: ctx.modelRegistry as unknown as InProcessReviewerRegistry });
+					activeSessionGgaBridge = bridge;
+					activeSessionGgaId = ctx.sessionManager.getSessionId() ?? undefined;
+				} catch (error) {
+					if (ctx.hasUI) ctx.ui.notify(`Session GGA routing unavailable: ${error instanceof Error ? error.message : String(error)}`, "warning");
+				}
+			}
+		}
 		auto.reset();
 		yolo.reset(ctx);
 		// Package-owned children reset local state but never initialize primary defaults.

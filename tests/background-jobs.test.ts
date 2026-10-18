@@ -37,6 +37,7 @@ interface FakeRun {
 	cwd: string;
 	onData: (data: Buffer) => void;
 	signal?: AbortSignal;
+	env?: NodeJS.ProcessEnv;
 	resolve: (exitCode: number | null) => void;
 	reject: (error: Error) => void;
 }
@@ -45,7 +46,7 @@ function fakeOperations() {
 	const runs: FakeRun[] = [];
 	const operations: JobExecOperations = {
 		exec: (command, cwd, options) => new Promise((resolve, reject) => {
-			const run: FakeRun = { command, cwd, onData: options.onData, signal: options.signal, resolve: (exitCode) => resolve({ exitCode }), reject };
+			const run: FakeRun = { command, cwd, onData: options.onData, signal: options.signal, env: options.env, resolve: (exitCode) => resolve({ exitCode }), reject };
 			options.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
 			runs.push(run);
 		}),
@@ -147,6 +148,19 @@ test("stopAll resolves only after every job's log file is closed", async () => {
 		assert.equal(job.status, "stopped");
 		assert.equal(registry.pending(), 0);
 	} finally { cleanup(); }
+});
+
+test("background job snapshots the principal GGA environment at job launch", () => {
+	const dir = mkdtempSync(join(tmpdir(), "gentle-jobs-env-test-"));
+	const fake = fakeOperations();
+	const env = { GGA_PROVIDER: "pi-session", GGA_PI_MODEL: "openai/gpt-4.1", GGA_PI_CAPABILITY: "private" };
+	try {
+		const registry = createJobRegistry({ outputDir: () => dir, now: Date.now, shell: () => ({ operations: fake.operations }), environment: (sessionId) => sessionId === "s1" ? env : undefined, onSettled() {} });
+		registry.start({ command: "gga run", cwd: "/repo", ownerSessionId: "s1" });
+		registry.start({ command: "gga run", cwd: "/repo", ownerSessionId: "s2" });
+		assert.equal(fake.runs[0]?.env, env);
+		assert.equal(fake.runs[1]?.env, undefined);
+	} finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("the shell command prefix runs before the command, but the job keeps the original command", () => {

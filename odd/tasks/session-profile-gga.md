@@ -1,0 +1,36 @@
+# Session profile → GGA routing
+Objective: route session-launched GGA reviews through the active principal model. Base: 297a0e7212b84f28219d1dae6886cca4d4b7e871; local feature branch required before source edits.
+Delivery: feature-branch-chain (owner selected); initial forecast exceeds 400 authored lines (session bridge, adapters, tests, documentation). Tests: package focused Node/TypeScript tests and typecheck.
+
+## Specs
+- S1: "pero debería ser con cualquiera que este seleccionado en gentle:profiles"
+- S2: "gentle:profiles y seleccione el perfil por ejemplo llamado openai y no entiendo por qué tiene problemas de cuota si ese perfil por ejemplo todo es de gpt, deberia cambiar enseguida porque ahora gentle shell tiene esa función"
+- S3: "El modelo principal de la sesión (recomendado)" — owner selected this option over the review role.
+- S4: "puedes corregirlo"; "queda autorizado por mi persona owner"
+- S5: "Sí, bloquear sin revisión válida (recomendado)" — owner selected fail-closed session transport even with STRICT_MODE=false; existing providers retain their prior policy.
+
+Implementation assumptions (not additional user requirements): snapshot provider/model when a principal shell command starts; preserve exact principal selection through child commands; use tool-free single-prompt model completion, no inherited chat context; isolate sessions and avoid rewriting .gga or global configuration. External terminals cannot access a session-only profile selection. Existing explicit GGA_PROVIDER overrides remain human-owned.
+
+## Tasks
+- T1 [S1-S3] done; route: read-only exploration; commit: none. Confirmed profile Enter is session-local, standalone GGA loads .gga and GGA_PROVIDER; installed gga invokes isolated Claude CLI.
+- T2 [S1-S5] done; owner-selected non-strict fail-closed policy and independent findings corrected; functional checks green; route: bounded worker (context backstop); commit: none. Implement session-scoped adapter and functional tests RED/GREEN, docs alongside behavior; preserve foreground/background/child routing and provider-neutral completion.
+- T3 [S1-S5] in_progress; independent reports received and corrections tested; native work-unit reviews in progress; route: independent verification (security and concurrency); commit: none. Verify isolation, no tools/history, errors/deadlines, selected exact model, native assessment/review if due. No DDATA writes or remote delivery.
+
+## Log
+- L1: "pero debería ser con cualquiera que este seleccionado en gentle:profiles"
+- L2: "puedes corregirlo"
+- L3: "queda autorizado por mi persona owner"
+- L4: Owner selected "El modelo principal de la sesión (recomendado)".
+- L5: Read-only preflight: installed checkout clean, branch feat/sync-gentle-shell-4-3-0, HEAD 297a0e7212b84f28219d1dae6886cca4d4b7e871. DDATA work remains preserved separately.
+- L6: Feature tracker branch feat/session-profile-gga created at base HEAD. Owner selected feature-branch-chain.
+- L7: Owner approved "Sí, corregir ambos componentes (recomendado)". No Claude compatibility shim: GGA adds explicit pi-session provider (GGA_PI_BRIDGE absolute executable, GGA_PI_MODEL exact principal model). GGA worktree /srv/workspaces/gga-session-profile; existing dirty sibling worktrees preserved.
+- L8: GGA implementation focused tests initially RED4; parent fixed helper failure propagation and corrected test to invalidate prior successful cache before simulating transport failure. Initial focused6 GREEN. Independent GGA verifier reproduced cache bypass for suffixed provider; parent fixed exact-provider guard/model identity and PASSED+exit37 regression. Updated GGA8 tests GREEN, syntax0; independent proof covers old candidate only (parent edited concurrently).
+- L9: Shell workers implemented authenticated tool-free IPC + env routing, then reproduced/fixed stale foreground model, child overriding principal, reload listener leak. Parent replaced history-dependent smoke with optional GGA_TEST_EXECUTABLE + isolated git fixture. job14 suite577 GREEN.
+- L10: Shell independent verifier mve4lk1d-1k-u5gd failed before final report but reproduced post-revoke auth dispatch, trickle idle-timeout bypass and JSON-escaped wire size mismatch. Worker corrected with RED/GREEN; job15 suite584 GREEN, skip0, diffcheck0. Independent updated proof unavailable; no automatic verifier retry.
+- L11: Parent observed user_bash only recognized direct gga, missing git commit hooks; new test RED exit1, fixed binding on every session user_bash command and docs. job16 full focused suite584/pass584 fail0 skip0, isolated GGA smoke passed, diffcheck0. No install/commit/remote operations.
+- L12: Remaining proof blockers: Shell typecheck TS2554 tests/transcript-scrollbar-rails.test.ts91 (unchanged file); GGA make test-unit unavailable (ShellSpec missing). Do not claim verified completion or install.
+- L13: Owner response to restoring ShellSpec, diagnosing types and new independent review: "si autorizado". Installed isolated ShellSpec0.29.0-dev at /srv/workspaces/.tools/shellspec.uas9Up commitf2d13f991885ef44e6b54e571e0842222251b111 (job17 exit0). job18 reproduced typecheck TS2554 exit1. Fixed fixture render to accept unused width (no production change). job20 rails8/pass8 and typecheck0 (zero recorded diagnostics). job19 GGA general unit255examples0failures exit0. Candidate held stable throughout fresh independent review.
+- L14: Fresh independent GGA review conditional PASS: eight tests, four killed guards,14baseline differential cases preserved. Caveat provider errors with STRICT_MODE=false exit0. Owner selected "Sí, bloquear sin revisión válida (recomendado)"; session-only policy added for errors/timeouts/ambiguous status, existing provider policy preserved. New rule RED3failures in job22; job24 runs GREEN + general suite.
+- L15: Fresh independent Shell review S1-S3 PASS tested scope; S4 FAIL trust and double-prefix. Parent reproduced RED in verifier scratch scripts and committed regression tests (uncommitted source); fixed SettingsManager projectTrusted from ctx.isProjectTrusted(), stopped reapplying host prefix. job21 tests594/pass594, typecheck failed due new fixture env inference; added NodeJS.ProcessEnv annotation; job23 typecheck0. Independent hook smoke unavailable (child-mode harness), parent functional isolated GGA smoke passed. No edits during reviewers; these changes followed both final reports.
+- L16: job24 GGA10tests/general255examples/syntax/diff all exit0. Shell trust/prefix tests594/pass594; job23 typecheck0 after NodeJS.ProcessEnv fixture annotation. Local passive fixture commit37c519d92e0da21019bbc28e7a6da95267cf4520; shared reviewer commit8c903bd028192ff1e93ae00ceb32071fe4a6caaa (122authored lines) approved+acknowledged native review-884a9d30947c34a9 on isolated /srv/workspaces/gentle-pi-session-review, base37c519d. Advisory R3-001 tests/inprocess-reviewer.test.ts325 nonblocking.
+- L17: Native START on dirty source rejected preauthority selection/range mismatch (no lineage); isolated clean committed review worktree resolved it. No authority reset/recovery or hook bypass. Remaining session bridge+launch behavior kept coherent in next work unit despite exceeding400lines; user chose feature-branch-chain. No remote actions or live GGA replacement.

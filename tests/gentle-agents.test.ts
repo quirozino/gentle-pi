@@ -2276,7 +2276,7 @@ test("default Node spawn adapter distinguishes IPC-only and permission-capable c
 			const scratch = captured[index]?.options.env.TMPDIR;
 			assert.match(scratch ?? "", /[\\/]ga[A-Za-z0-9]{6}$/, "each child receives its own TMPDIR");
 			const scratchEnv = process.platform === "win32" ? { TMPDIR: scratch, TMP: scratch, TEMP: scratch } : { TMPDIR: scratch };
-			assert.deepEqual(captured[index]?.options.env, { PATH: "/bin", FIXTURE: fixture, GENTLE_PI_CONFIG_HOME: process.env.GENTLE_PI_CONFIG_HOME, GENTLE_PI_AGENTS_CHILD: "1", GENTLE_PI_AGENTS_OWNED_IPC: ownedIpc, ...(permissionChannel ? { GENTLE_PI_AGENTS_PARENT_PERMISSION_FD: "3" } : {}), [REQUESTED_TOOLS_ENV]: "read,grep,subagent_parent_message", ...scratchEnv });
+			assert.deepEqual(captured[index]?.options.env, { PATH: "/bin", FIXTURE: fixture, GENTLE_PI_CONFIG_HOME: process.env.GENTLE_PI_CONFIG_HOME, GGA_PROVIDER: "pi-session", GENTLE_PI_AGENTS_CHILD: "1", GENTLE_PI_AGENTS_OWNED_IPC: ownedIpc, ...(permissionChannel ? { GENTLE_PI_AGENTS_PARENT_PERMISSION_FD: "3" } : {}), [REQUESTED_TOOLS_ENV]: "read,grep,subagent_parent_message", ...scratchEnv });
 			assert.equal(captured[index]?.options.shell, undefined, "the adapter does not invoke a shell");
 			assert.equal(captured[index]?.options.windowsHide, true, "the adapter always hides a Windows console");
 			assert.equal(captured[index]?.options.detached, process.platform !== "win32", "the adapter forwards the runner's platform selection");
@@ -6518,12 +6518,12 @@ test("a subdirectory session cwd and workspace_root of the same worktree share o
 // Background jobs share the subagent parent delivery router: the exit notice
 // is stored and woken like an idle completion, or steered into a running turn.
 function fakeJobShell() {
-	const runs: Array<{ command: string; onData(data: Buffer): void; signal?: AbortSignal; exit(code: number): void }> = [];
+	const runs: Array<{ command: string; onData(data: Buffer): void; signal?: AbortSignal; env?: NodeJS.ProcessEnv; exit(code: number): void }> = [];
 	const shell = () => ({
 		operations: {
-			exec: (command: string, _cwd: string, options: { onData(data: Buffer): void; signal?: AbortSignal }) => new Promise<{ exitCode: number | null }>((done, fail) => {
+			exec: (command: string, _cwd: string, options: { onData(data: Buffer): void; signal?: AbortSignal; env?: NodeJS.ProcessEnv }) => new Promise<{ exitCode: number | null }>((done, fail) => {
 				options.signal?.addEventListener("abort", () => fail(new Error("aborted")), { once: true });
-				runs.push({ command, onData: options.onData, signal: options.signal, exit: (code) => done({ exitCode: code }) });
+				runs.push({ command, onData: options.onData, signal: options.signal, env: options.env, exit: (code) => done({ exitCode: code }) });
 			}),
 		},
 	});
@@ -6533,6 +6533,72 @@ function fakeJobShell() {
 // A job settles only after its log file closes, which takes real I/O turns.
 const jobIo = () => new Promise((done) => setTimeout(done, 50));
 const toolText = (result: { content: Array<{ text?: string }> }) => result.content.map((part) => part.text ?? "").join("\n");
+
+test("background GGA command snapshots the principal model instead of a child worker selection", async () => {
+	const { pi, tools, fire } = fakePi();
+	const jobs = fakeJobShell();
+	gentleAgents(pi, {}, { ...deps().deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	const { ctx } = fakeContext();
+	Object.defineProperty(ctx, "model", { configurable: true, value: { provider: "openai", id: "gpt-4.1" } });
+	try {
+		await fire("session_start", ctx);
+		await fire("tool_call", ctx, { toolName: "bash_background", input: { command: "gga run" } });
+		await tools.get("bash_background")!.execute("b1", { command: "gga run" }, undefined, undefined, ctx);
+		assert.equal(jobs.runs[0]?.env?.GGA_PROVIDER, "pi-session");
+		assert.equal(jobs.runs[0]?.env?.GGA_PI_MODEL, "openai/gpt-4.1");
+		assert.equal(jobs.runs[0]?.env?.GGA_PI_BRIDGE, undefined, "missing handoff cannot fall back to shared GGA configuration");
+		jobs.runs[0]?.exit(0);
+		await jobIo();
+	} finally {
+		await fire("session_shutdown", ctx);
+		jobs.cleanup();
+	}
+});
+
+test("child worker model cannot replace its inherited principal GGA binding for background or nested launches", async (t) => {
+	const { pi, tools, fire } = fakePi();
+	const runtime = deps();
+	const jobs = fakeJobShell();
+	const capability = "bb509d48-53bd-4a2c-b90a-21d24a5d920c";
+	runtime.deps.env = {
+		...runtime.deps.env,
+		PI_SESSION_ID: "principal-session",
+		PI_PROVIDER: "openai",
+		PI_MODEL: "principal-a",
+		GGA_PROVIDER: "pi-session",
+		GGA_PI_BRIDGE: "/private/bridge-client",
+		GGA_PI_SOCKET: "/private/session.sock",
+		GGA_PI_CAPABILITY: capability,
+		GGA_PI_MODEL: "openai/principal-a",
+	};
+	gentleAgents(pi, {}, { ...runtime.deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	const { ctx } = fakeContext();
+	ctx.sessionManager.getSessionId = () => "worker-session";
+	Object.defineProperty(ctx, "model", { configurable: true, value: { provider: "anthropic", id: "worker-b" } });
+	const requests: TaskRequest[] = [];
+	const originalRun = AgentRunner.prototype.run;
+	t.mock.method(AgentRunner.prototype, "run", function (request: TaskRequest) {
+		requests.push(request);
+		return originalRun.call(this, request);
+	});
+	try {
+		await fire("session_start", ctx);
+		await fire("tool_call", ctx, { toolName: "bash_background", input: { command: "gga run" } });
+		await tools.get("bash_background")!.execute("child-job", { command: "gga run" }, undefined, undefined, ctx);
+		assert.equal(jobs.runs[0]?.env?.GGA_PI_MODEL, "openai/principal-a");
+		assert.equal(jobs.runs[0]?.env?.GGA_PI_BRIDGE, "/private/bridge-client");
+		await tools.get("subagent_run")!.execute("nested-gga", { agent: "explore", task: "Inspect review routing", mode: "background" }, undefined, undefined, ctx);
+		assert.equal(requests.length, 1);
+		assert.equal(requests[0]?.env?.GGA_PI_MODEL, "openai/principal-a");
+		assert.equal(requests[0]?.env?.GGA_PI_BRIDGE, "/private/bridge-client");
+		assert.equal(requests[0]?.env?.PI_MODEL, "principal-a", "the child principal stays distinct from the worker model");
+		jobs.runs[0]?.exit(0);
+		await jobIo();
+	} finally {
+		await fire("session_shutdown", ctx);
+		jobs.cleanup();
+	}
+});
 
 test("standalone bash sleep is blocked only while background work is active (#1903)", async () => {
 	const { pi, tools, fire, sent } = fakePi();

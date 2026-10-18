@@ -1,5 +1,7 @@
 import {
 	createBashToolDefinition,
+	createLocalBashOperations,
+	SettingsManager,
 	createFindToolDefinition,
 	createGrepToolDefinition,
 	createLsToolDefinition,
@@ -8,6 +10,7 @@ import {
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { bundledGentlePiAgentHome } from "../lib/agent-home.ts";
+import { requestSessionGgaEnvironment, type SessionGgaBridgeEvents } from "../lib/session-gga-bridge.ts";
 import { keepNativeWorkingRow, shellEnabled } from "../lib/shell-bar.ts";
 import {
 	mergeDisabledTools,
@@ -57,6 +60,77 @@ function withAgentHome(deps: unknown, env: NodeJS.ProcessEnv): unknown {
 	};
 }
 
+function installUserBashSessionGga(api: ExtensionAPI, env: NodeJS.ProcessEnv): void {
+	const events: SessionGgaBridgeEvents | undefined = api.events;
+	if (events === undefined) return;
+	api.on("user_bash", (event, ctx) => {
+		// Bind every session command: GGA may run indirectly in a Git hook or wrapper.
+		const sessionId = ctx.sessionManager.getSessionId();
+		const model = ctx.model;
+		const launchEnv = {
+			...env,
+			...(sessionId ? { PI_SESSION_ID: sessionId } : {}),
+			...(model?.provider && model.id ? { PI_PROVIDER: model.provider, PI_MODEL: model.id } : {}),
+		};
+		const principal = model?.provider && model.id ? `${model.provider}/${model.id}` : null;
+		const routedEnv = requestSessionGgaEnvironment(events, sessionId, launchEnv, principal);
+		const settings = SettingsManager.create(event.cwd, bundledGentlePiAgentHome(env), { projectTrusted: ctx.isProjectTrusted?.() === true });
+		const operations = createLocalBashOperations({ shellPath: settings.getShellPath() });
+		return {
+			operations: {
+				exec(command, cwd, options) {
+					// AgentSession already applies the trusted shell prefix before this call.
+					return operations.exec(command, cwd, { ...options, env: routedEnv });
+				},
+			},
+		};
+	});
+}
+
+function withSessionGgaSpawnHook(deps: unknown, api: ExtensionAPI): unknown {
+	const source = (deps ?? {}) as { sdk?: Record<string, unknown> };
+	if (source.sdk === undefined) return deps;
+	const events: SessionGgaBridgeEvents | undefined = api.events;
+	const principalBySession = new Map<string, string | null>();
+	let activeSessionId: string | undefined;
+	const capturePrincipal = (_event: unknown, ctx: ExtensionContext) => {
+		const sessionId = ctx.sessionManager.getSessionId();
+		if (!sessionId) return;
+		activeSessionId = sessionId;
+		const model = ctx.model;
+		principalBySession.set(sessionId, model?.provider && model.id ? `${model.provider}/${model.id}` : null);
+	};
+	api.on("session_start", capturePrincipal);
+	api.on("model_select", capturePrincipal);
+	api.on("tool_call", capturePrincipal);
+	api.on("session_shutdown", (_event, ctx) => {
+		const sessionId = ctx.sessionManager.getSessionId();
+		if (sessionId) principalBySession.delete(sessionId);
+		if (activeSessionId === sessionId) activeSessionId = undefined;
+	});
+	const sdk = source.sdk;
+	const factory = (sdk.createBashToolDefinition ?? createBashToolDefinition) as (cwd: string, options?: Record<string, unknown>) => unknown;
+	return {
+		...source,
+		sdk: {
+			...sdk,
+			createBashToolDefinition: (cwd: string, options: Record<string, unknown> = {}) => {
+				const prior = options.spawnHook as ((context: { command: string; cwd: string; env: NodeJS.ProcessEnv }) => { command: string; cwd: string; env: NodeJS.ProcessEnv }) | undefined;
+				return factory(cwd, {
+					...options,
+					spawnHook: (context: { command: string; cwd: string; env: NodeJS.ProcessEnv }) => {
+						const spawned = prior?.(context) ?? context;
+						if (events === undefined) return spawned;
+						const sessionId = spawned.env.PI_SESSION_ID ?? activeSessionId;
+						const principal = sessionId && principalBySession.has(sessionId) ? principalBySession.get(sessionId) : undefined;
+						return { ...spawned, env: requestSessionGgaEnvironment(events, sessionId, spawned.env, principal) };
+					},
+				});
+			},
+		},
+	};
+}
+
 export default async function gentlePiPrettyExtension(
 	pi: unknown,
 	deps?: unknown,
@@ -76,6 +150,8 @@ export default async function gentlePiPrettyExtension(
 	deps = withAgentHome(deps, env);
 	if (!shellEnabled(env)) return extension(pi, deps);
 	const api = pi as ExtensionAPI;
+	deps = withSessionGgaSpawnHook(deps, api);
+	installUserBashSessionGga(api, env);
 	// Scope interception to this bundled dependency, never to the shared host UI.
 	// Its tools/autocomplete/status APIs pass through; prompt ownership stays with
 	// Gentle Shell (or a genuine third-party editor). This also blocks stale restores.

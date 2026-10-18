@@ -17,6 +17,7 @@ import type {
 import { __testing, applyModelConfig, applyModelConfigAsync, createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import { PROFILES_KIND, PROFILES_VERSION, readProfilesFileResult } from "../lib/agent-profiles.ts";
 import { bindSessionProfile, readSessionProfileBinding, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
+import { SESSION_GGA_BRIDGE_REQUEST_EVENT } from "../lib/session-gga-bridge.ts";
 import type { AgentRoutingEntry, ThinkingLevel } from "../lib/model-routing-authority.ts";
 type LiveSession = Pick<ExtensionAPI, "setModel" | "setThinkingLevel" | "getThinkingLevel">;
 import { PROFILE_PIN_KIND, PROFILE_PIN_VERSION, setProfilePinWorktreeResolverForTesting, writeProfilePinSync } from "../lib/agent-profile-pin.ts";
@@ -1655,6 +1656,24 @@ test("concurrent guarded confirmations coalesce the Herdr lifecycle per extensio
 });
 
 
+test("session GGA event listener unsubscribes on supported extension reload teardown", () => {
+	const handlers = new Map<string, (data: unknown) => void>();
+	const piHandlers = new Map<string, Array<(event: unknown, ctx: any) => unknown>>();
+	const pi = {
+		on(event: string, handler: (event: unknown, ctx: any) => unknown) { piHandlers.set(event, [...(piHandlers.get(event) ?? []), handler]); },
+		events: {
+			emit(channel: string, data: unknown) { handlers.get(channel)?.(data); },
+			on(channel: string, handler: (data: unknown) => void) { handlers.set(channel, handler); return () => { handlers.delete(channel); }; },
+		},
+		registerCommand() {}, registerTool() {},
+	} as unknown as ExtensionAPI;
+	createGentleAiExtension({ nativeReviewCli: null })(pi);
+	assert.equal(handlers.has(SESSION_GGA_BRIDGE_REQUEST_EVENT), true);
+	const context = { sessionManager: { getSessionId: () => "reload-session" }, cwd: process.cwd(), hasUI: false, model: undefined } as any;
+	for (const handler of piHandlers.get("session_shutdown") ?? []) handler({ reason: "reload" }, context);
+	assert.equal(handlers.has(SESSION_GGA_BRIDGE_REQUEST_EVENT), false);
+});
+
 for (const channel of ["rpiv:ask-user:blocked", "gentle-pi:ask-user-question:blocked"]) {
 test(`${channel} emits only a private, balanced Herdr projection`, () => {
 	type HerdrBlockedEvent = { active: boolean; label?: string };
@@ -1681,9 +1700,9 @@ test(`${channel} emits only a private, balanced Herdr projection`, () => {
 	createGentleAiExtension({ nativeReviewCli: null })(pi);
 	const privateHostDiscovery = "gentle:yolo:host-ui";
 	assert.equal(eventHandlers.has(privateHostDiscovery), true);
-	assert.deepEqual([...eventHandlers.keys()].filter(name => name !== privateHostDiscovery).sort(), [
+	assert.deepEqual([...eventHandlers.keys()].filter(name => name !== privateHostDiscovery && name !== SESSION_GGA_BRIDGE_REQUEST_EVENT).sort(), [
 		"gentle-pi:ask-user-choice:blocked", "gentle-pi:ask-user-question:blocked", "gentle-pi:review-consent:blocked", "rpiv:ask-user:blocked",
-	], "only the four blocked channels remain besides the known private host adapter");
+	], "only the four blocked channels remain besides the known private host adapters");
 	assert.deepEqual(published, [], "registering host discovery emits no public event or private payload");
 	assert.equal(eventHandlers.has("gentle-pi:ask-user-choice:blocked"), true);
 	assert.equal(eventHandlers.has("rpiv:ask-user:blocked"), true);

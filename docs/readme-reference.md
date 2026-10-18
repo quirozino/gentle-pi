@@ -188,6 +188,12 @@ Callers own keyboard policy, theme state, and business actions.
 
 **Bash UI tradeoff:** `quiet-tools` leaves Bash execution and UI to Pi, preserving configured `shellPath` and shell prefixes. Bash no longer uses Gentle's quiet cards or direct-command lifecycle renderer; the six other quiet tool cards and codemode remain unchanged.
 
+### Session profile routing for GGA
+
+In Gentle Shell, `gga run` uses the principal Pi session's currently selected provider/model, snapshotted when each foreground or background shell command starts. Nested Gentle Agents children inherit that principal binding rather than substituting their worker model. The route uses Pi's live provider registry for one tool-free completion with only GGA's review prompt; it does not replay Pi chat history or write `.gga`, shared configuration, credentials, or process-wide environment values. A private per-session local socket and capability are revoked at session shutdown. GGA's cache key includes the exact principal model so approvals cannot cross models. Human `!` commands also inherit the session route through Pi's `user_bash` event and its standard local Bash backend. Binding every session command covers GGA invoked indirectly by `git commit` hooks, aliases, or wrapper scripts without parsing shell command text. Commands in unrelated terminals remain outside the session route.
+
+This requires an installed GGA build that supports the explicit `pi-session` provider protocol. If that provider is unavailable, GGA fails rather than falling back to its configured provider. A human-supplied `GGA_PROVIDER` environment override remains authoritative. Reload Gentle Shell after updating the Shell extension; install/update GGA separately through its owner-managed rollout.
+
 **Migration note:** Do not enable `pi-tool-cards` and `quiet-tools` together: Pi rejects duplicate `read`, `edit`, and `write` registrations. Disable or remove the standalone package during migration; gentle-pi does not change those package registrations or delete that repository. The global fullscreen setting described below is a separate install-time change.
 
 ## Install

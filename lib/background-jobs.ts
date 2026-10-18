@@ -83,7 +83,7 @@ export function createOutputTail() {
 
 /** The subset of Pi's `BashOperations` a job needs. */
 export interface JobExecOperations {
-	exec(command: string, cwd: string, options: { onData: (data: Buffer) => void; signal?: AbortSignal }): Promise<{ exitCode: number | null }>;
+	exec(command: string, cwd: string, options: { onData: (data: Buffer) => void; signal?: AbortSignal; env?: NodeJS.ProcessEnv }): Promise<{ exitCode: number | null }>;
 }
 
 export type JobStatus = "running" | "exited" | "stopped" | "failed";
@@ -127,6 +127,8 @@ export interface JobRegistryDeps {
 	now(): number;
 	/** Resolved at each start so a changed shell setting applies to the next job. */
 	shell(cwd: string): { operations: JobExecOperations; commandPrefix?: string };
+	/** Resolve a principal-session environment snapshot for each job launch. */
+	environment?(ownerSessionId: string): NodeJS.ProcessEnv | undefined;
 	/** Called once when a job ends on its own (exited or failed), never for a stop. */
 	onSettled(job: JobRecord): void;
 }
@@ -173,6 +175,7 @@ export function createJobRegistry(deps: JobRegistryDeps) {
 		jobs.set(id, job);
 		aborts.set(id, abort);
 		const execCommand = commandPrefix ? `${commandPrefix}\n${request.command}` : request.command;
+		const environment = deps.environment?.(request.ownerSessionId);
 		let linePartial = "";
 		const emitLines = (text: string, end: boolean) => {
 			if (!request.onLine) return;
@@ -200,7 +203,7 @@ export function createJobRegistry(deps: JobRegistryDeps) {
 			job.tail = tail.lines();
 			emitLines(text, false);
 		};
-		const run = operations.exec(execCommand, request.cwd, { onData, signal: abort.signal }).then(
+		const run = operations.exec(execCommand, request.cwd, { onData, signal: abort.signal, ...(environment === undefined ? {} : { env: environment }) }).then(
 			({ exitCode }) => finish(job, output, () => {
 				flushDecoder();
 				if (job.status !== "running") return;
