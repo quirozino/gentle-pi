@@ -18,7 +18,22 @@
 import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { delimiter, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { PI_CONTRACTS, PI_SOURCE_PATHS, runPiContract } from "../lib/pi-contracts.ts";
+
+// Node refuses to strip types under node_modules, which is where a global
+// install of this package lives; fall back to jiti there so the check still
+// runs after a Pi update.
+async function loadContracts() {
+	const source = new URL("../lib/pi-contracts.ts", import.meta.url);
+	try {
+		return await import(source.href);
+	} catch (error) {
+		if (error?.code !== "ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING") throw error;
+		const { createJiti } = await import("jiti");
+		return createJiti(import.meta.url).import(fileURLToPath(source));
+	}
+}
+
+const { PI_CONTRACTS, PI_SOURCE_PATHS, runPiContract } = await loadContracts();
 
 const PACKAGE_NAME = "@earendil-works/pi-coding-agent";
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
