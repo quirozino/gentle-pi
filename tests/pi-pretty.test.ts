@@ -3,9 +3,35 @@ import test from "node:test";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { AgentSession, SettingsManager } from "@earendil-works/pi-coding-agent";
-import pretty from "../extensions/pi-pretty.ts";
+import { AgentSession, SettingsManager, createBashToolDefinition } from "@earendil-works/pi-coding-agent";
+import pretty, { buildSessionGgaSpawnHook } from "../extensions/pi-pretty.ts";
 import { setBundledInstallForTesting } from "../lib/gentle-shell-bundled.ts";
+
+// Pi's BashTool.execute reads many of ReadonlySessionManager's methods. The
+// call paths these tests exercise only touch getSessionId/getSessionFile, so we
+// stub the rest with throwers to keep them honest about real usage.
+function fakeReadonlySessionManager(sessionId = "fixture-session") {
+	const unreachable = () => {
+		throw new Error("session manager method called outside expected contract");
+	};
+	return {
+		getCwd: () => process.cwd(),
+		getSessionDir: unreachable,
+		getSessionId: () => sessionId,
+		getSessionFile: () => undefined,
+		getLeafId: unreachable,
+		getLeafEntry: unreachable,
+		getEntry: unreachable,
+		getLabel: unreachable,
+		getBranch: unreachable,
+		buildContextEntries: unreachable,
+		buildSessionProjection: unreachable,
+		getHeader: unreachable,
+		getEntries: unreachable,
+		getTree: unreachable,
+		getSessionName: () => undefined,
+	} as any;
+}
 
 test("bundled pretty cannot replace or restore an editor owned by the host", async () => {
 	const handlers = new Map<string, Function[]>();
@@ -203,4 +229,231 @@ test("in a bundled install pi-pretty gets the agent home and Pi's tool factories
 	assert.notEqual(kept.sdk, sdk);
 	assert.equal(kept.sdk.getAgentDir(), "/host");
 	assert.equal(typeof kept.sdk.createBashToolDefinition, "function");
+});
+
+// Live reload crash: `GENTLE_PI_QUIET_TOOLS=1` disables pi-pretty's own bash,
+// so the active bash tool was Pi's native one with no GGA env. Our bridge now
+// registers a Pi-defined bash carrying the same session spawn hook, leaving
+// pi-pretty's other registrations, the host shell config, the trusted prefix,
+// and quiet-tools' registerToolRenderer swap untouched.
+test("agent bash tool under quiet tools preserves the session GGA env via the registered Pi definition", async () => {
+	const previousGgaEnv: Record<string, string | undefined> = {};
+	for (const key of ["GGA_PROVIDER", "GGA_PI_BRIDGE", "GGA_PI_SOCKET", "GGA_PI_CAPABILITY", "GGA_PI_MODEL"] as const) {
+		previousGgaEnv[key] = process.env[key];
+		delete process.env[key];
+	}
+	try {
+		const handlers = new Map<string, (event: any, ctx: any) => void>();
+		const recordedTools = new Map<string, any>();
+		let bridgeRequests = 0;
+		const capability = "4b163817-f9a2-43aa-b8a8-e99a7bb2f497";
+		const events = {
+			emit(channel: string, data: unknown) {
+				if (channel !== "gentle-pi.session-gga-bridge.request") return;
+				bridgeRequests++;
+				const payload = data as { sessionId?: string; principalModel?: string };
+				assert.equal(payload.sessionId, "fixture-session");
+				assert.equal(payload.principalModel, "anthropic/claude-sonnet-4");
+				Object.assign(data as object, {
+					bridge: { executablePath: "/session/bridge-client", socketPath: "/session/bridge.sock", capability },
+				});
+			},
+		};
+		// Stub bundle that mimics pi-pretty's "PRETTY_DISABLE_TOOLS=bash" suppression:
+		// no bash registration. Lets our session bridge take over the active tool.
+		const bundledSuppressesBash = async (_api: unknown, _deps: unknown) => {};
+		const env: NodeJS.ProcessEnv = {
+			...process.env,
+			GENTLE_PI_SHELL: "1",
+			GENTLE_PI_QUIET_TOOLS: "1",
+			GENTLE_SHELL_PREFIX: "/pkg",
+		};
+		delete env.GENTLE_PI_AGENTS_CHILD;
+		delete env.PRETTY_DISABLE_TOOLS;
+		const api = {
+			on(event: string, handler: (event: any, ctx: any) => void) {
+				handlers.set(event, handler);
+			},
+			events,
+			registerTool(tool: any) {
+				recordedTools.set(tool.name, tool);
+			},
+		};
+		await pretty(api, undefined, bundledSuppressesBash as any, env);
+		assert.ok(recordedTools.has("bash"), "active bash must come from the session GGA bridge when pi-pretty suppresses its own");
+		const bashTool = recordedTools.get("bash");
+		assert.equal(bashTool.name, "bash");
+		assert.equal(typeof bashTool.execute, "function");
+		const sessionCtx = { model: { provider: "anthropic", id: "claude-sonnet-4" }, sessionManager: fakeReadonlySessionManager() } as any;
+		handlers.get("session_start")?.({}, sessionCtx);
+		handlers.get("model_select")?.({ model: sessionCtx.model }, sessionCtx);
+		// Drive the registered bash through a real Pi bash definition that uses
+		// the same spawn-hook builder plus custom operations so we can inspect the
+		// spawned env without touching the production closure.
+		const captured: { command?: string; env?: NodeJS.ProcessEnv } = {};
+		const capturedCommand = "echo hi";
+		const captureOps = {
+			exec: (command: string, _cwd: string, options: any) => {
+				captured.command = command;
+				captured.env = options.env;
+				return Promise.resolve({ exitCode: 0 });
+			},
+		};
+		const captureCapture = {
+			activeSessionId: () => "fixture-session",
+			principalFor: (sessionId: string | undefined) => sessionId === "fixture-session" ? "anthropic/claude-sonnet-4" : undefined,
+		};
+		const testBash = createBashToolDefinition(process.cwd(), {
+			exposeSessionEnvironment: true,
+			operations: captureOps,
+			spawnHook: buildSessionGgaSpawnHook(events, captureCapture),
+		});
+		await testBash.execute("call-1", { command: capturedCommand }, new AbortController().signal, undefined, {
+			cwd: process.cwd(),
+			sessionManager: fakeReadonlySessionManager(),
+			model: sessionCtx.model,
+		} as any);
+		assert.equal(captured.command, capturedCommand);
+		assert.equal(captured.env?.GGA_PROVIDER, "pi-session");
+		assert.equal(captured.env?.GGA_PI_MODEL, "anthropic/claude-sonnet-4");
+		assert.equal(captured.env?.GGA_PI_BRIDGE, "/session/bridge-client");
+		assert.equal(captured.env?.GGA_PI_SOCKET, "/session/bridge.sock");
+		assert.equal(captured.env?.GGA_PI_CAPABILITY, capability);
+		assert.equal(captured.env?.PI_PROVIDER, "anthropic");
+		assert.equal(captured.env?.PI_MODEL, "claude-sonnet-4");
+		assert.equal(bridgeRequests, 1, "bash executes one bridge request per command");
+	} finally {
+		for (const [key, value] of Object.entries(previousGgaEnv)) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+	}
+});
+
+// Regression: explicit `GGA_PROVIDER` override is preserved across the bridge.
+test("agent bash spawn hook keeps an explicit GGA_PROVIDER override intact", async () => {
+	const previousGgaEnv: Record<string, string | undefined> = {};
+	for (const key of ["GGA_PROVIDER", "GGA_PI_BRIDGE", "GGA_PI_SOCKET", "GGA_PI_CAPABILITY", "GGA_PI_MODEL"] as const) {
+		previousGgaEnv[key] = process.env[key];
+		delete process.env[key];
+	}
+	process.env.GGA_PROVIDER = "custom-explicit";
+	try {
+		let bridgeRequests = 0;
+		const capability = "11111111-1119-4abc-9def-111111111111";
+		const events = {
+			emit(channel: string, data: unknown) {
+				if (channel !== "gentle-pi.session-gga-bridge.request") return;
+				bridgeRequests++;
+				Object.assign(data as object, {
+					bridge: { executablePath: "/session/bridge-client", socketPath: "/session/bridge.sock", capability },
+				});
+			},
+		};
+		const captured: { env?: NodeJS.ProcessEnv } = {};
+		const captureOps = {
+			exec: (_command: string, _cwd: string, options: any) => {
+				captured.env = options.env;
+				return Promise.resolve({ exitCode: 0 });
+			},
+		};
+		const captureCapture = {
+			activeSessionId: () => "fixture-session",
+			principalFor: (sessionId: string | undefined) => sessionId === "fixture-session" ? "anthropic/claude-sonnet-4" : undefined,
+		};
+		const testBash = createBashToolDefinition(process.cwd(), {
+			exposeSessionEnvironment: true,
+			operations: captureOps,
+			spawnHook: buildSessionGgaSpawnHook(events, captureCapture),
+		});
+		await testBash.execute("call-2", { command: "true" }, new AbortController().signal, undefined, {
+			cwd: process.cwd(),
+			sessionManager: fakeReadonlySessionManager(),
+			model: { provider: "anthropic", id: "claude-sonnet-4" },
+		} as any);
+		assert.equal(captured.env?.GGA_PROVIDER, "custom-explicit", "explicit GGA_PROVIDER stays authoritative");
+		assert.equal(captured.env?.GGA_PI_MODEL, "anthropic/claude-sonnet-4");
+		assert.equal(bridgeRequests >= 1, true, "bridge is still requested so GGA routing stays wired");
+		assert.equal(captured.env?.PI_MODEL, "claude-sonnet-4");
+	} finally {
+		for (const [key, value] of Object.entries(previousGgaEnv)) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+	}
+});
+
+// Regression: trusted `shellCommandPrefix` is applied exactly once on the
+// human `!` path. The agent bash tool also accepts Pi's prefix when registered
+// with `commandPrefix` — Pi owns that wiring, we never wrap it twice.
+test("agent bash tool honors Pi's commandPrefix once through the spawn hook chain", async () => {
+	const events = { emit() {} };
+	let applied = 0;
+	const captureOps = {
+		exec: (_command: string, _cwd: string, _options: any) => {
+			applied++;
+			return Promise.resolve({ exitCode: 0 });
+		},
+	};
+	const testBash = createBashToolDefinition(process.cwd(), {
+		exposeSessionEnvironment: true,
+		commandPrefix: "true",
+		operations: captureOps,
+		spawnHook: buildSessionGgaSpawnHook(events, {
+			activeSessionId: () => "fixture-session",
+			principalFor: () => "anthropic/claude-sonnet-4",
+		}),
+	});
+	await testBash.execute("call-3", { command: "echo ok" }, new AbortController().signal, undefined, {
+		cwd: process.cwd(),
+		sessionManager: fakeReadonlySessionManager(),
+		model: { provider: "anthropic", id: "claude-sonnet-4" },
+	} as any);
+	assert.equal(applied, 1, "Pi adds the prefix exactly once around the spawn hook");
+});
+
+// Pi forbids action methods such as `getSettings()` during extension loading.
+// The registered bash must therefore load without touching them and resolve
+// the host shellCommandPrefix/shellPath lazily at execute time.
+test("agent bash tool loads while pi blocks action methods and resolves host settings lazily at execute", async () => {
+	const handlers = new Map<string, (event: any, ctx: any) => void>();
+	const recordedTools = new Map<string, any>();
+	let loading = true;
+	const settingsCalls: string[] = [];
+	const events = { emit() {} };
+	const bundledSuppressesBash = async (_api: unknown, _deps: unknown) => {};
+	const env: NodeJS.ProcessEnv = {
+		...process.env,
+		GENTLE_PI_SHELL: "1",
+		GENTLE_PI_QUIET_TOOLS: "1",
+		GENTLE_SHELL_PREFIX: "/pkg",
+	};
+	delete env.GENTLE_PI_AGENTS_CHILD;
+	delete env.PRETTY_DISABLE_TOOLS;
+	const api = {
+		on(event: string, handler: (event: any, ctx: any) => void) {
+			handlers.set(event, handler);
+		},
+		events,
+		registerTool(tool: any) {
+			recordedTools.set(tool.name, tool);
+		},
+		getSettings() {
+			settingsCalls.push(loading ? "load" : "execute");
+			if (loading) throw new Error("Action methods cannot be called during extension loading");
+			return { shellCommandPrefix: "printf lazy-prefix;", shellPath: undefined };
+		},
+	};
+	await pretty(api, undefined, bundledSuppressesBash as any, env);
+	assert.ok(recordedTools.has("bash"), "load must succeed even while getSettings throws");
+	assert.equal(settingsCalls.filter(when => when === "load").length, 0,
+		"extension loading must never call pi action methods");
+	loading = false;
+	const bashTool = recordedTools.get("bash");
+	const executeCtx = { cwd: process.cwd(), sessionManager: fakeReadonlySessionManager(), model: { provider: "anthropic", id: "claude-sonnet-4" } } as any;
+	const result = await bashTool.execute("call-4", { command: "printf ok" }, new AbortController().signal, undefined, executeCtx);
+	const text = result.content.filter((part: any) => part.type === "text").map((part: any) => part.text ?? "").join("\n");
+	assert.match(text, /lazy-prefixok/, `execute must delegate with the host commandPrefix resolved after bind; output: ${text}`);
+	assert.equal((text.match(/lazy-prefix/g) ?? []).length, 1, "the resolved prefix is applied exactly once");
+	assert.equal(settingsCalls.filter(when => when === "execute").length >= 1, true, "execute resolves settings lazily");
 });
