@@ -49,7 +49,7 @@ import type {
 	ToolResultEvent,
 	ToolResultEventResult,
 } from "@earendil-works/pi-coding-agent";
-import { Key, Text, isKeyRelease, matchesKey, truncateToWidth, type KeybindingsManager, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { Key, Text, isKeyRelease, matchesKey, truncateToWidth, visibleWidth, type KeybindingsManager, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { resolveGentlePiAgentHome, gentlePiConfigHome } from "../lib/agent-home.ts";
 import {
 	BACKGROUND_SUBAGENTS_FILE,
@@ -3261,11 +3261,14 @@ class SddModelPanel implements OverlayComponent {
 	}
 
 	private fitStyledLine(line: string, width: number): string {
+		// Terminal columns, not UTF-16 units: "✅" is one unit and two columns,
+		// so padding by `.length` pushes the right border one column out.
 		const visible = stripAnsi(line);
-		if (visible.length > width) {
+		const used = visibleWidth(visible);
+		if (used > width) {
 			return truncateToWidth(visible, Math.max(1, width), "…", true);
 		}
-		return `${line}${" ".repeat(Math.max(0, width - visible.length))}`;
+		return `${line}${" ".repeat(Math.max(0, width - used))}`;
 	}
 
 	private renderLine(text = "", width: number, tone?: PanelTone): string {

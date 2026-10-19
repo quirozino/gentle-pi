@@ -8,6 +8,7 @@ import test from "node:test";
 import { gzipSync } from "node:zlib";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { validateToolArguments } from "@earendil-works/pi-ai";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
@@ -1290,6 +1291,13 @@ test("model panel fills the terminal height like the profiles panel", () => {
 	assert.match(plain[0] ?? "", /^╭─+╮$/);
 	assert.match(plain[39] ?? "", /^╰─+╯$/);
 	for (const line of plain) assert.equal(line.length, 72);
+});
+
+test("model panel keeps its right border aligned when a row holds an emoji", () => {
+	const lines = __testing.renderSddModelPanel({}, ["openai/gpt-5.5"], ["✅-agent"], 72, undefined, 40);
+	const plain = lines.map(stripAnsi);
+	assert.ok(plain.some((line) => line.includes("✅-agent")));
+	for (const line of plain) assert.equal(visibleWidth(line), 72);
 });
 
 test("model panel lists grow with the terminal height instead of a fixed window", () => {
