@@ -7,7 +7,7 @@ import { join } from "node:path";
 import test, { after, afterEach } from "node:test";
 import { initTheme, type ExtensionAPI, type ExtensionContext, type SlashCommandInfo, type SourceInfo } from "@earendil-works/pi-coding-agent";
 import { CURSOR_MARKER, matchesKey, stripTerminalSequences as stripAnsi, TuiMainScreen, visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
-import installGentleShell, { backgroundChangeRefreshesSettled, buildShellBarModel, createActiveProfileReader, changesShortcut, devBinaryCard, extractQueuedText, fetchCodexUsage, fetchKimiUsage, fetchNanUsage, loadFileDiff, shellGitRunner, openInExternalEditor, usageShortcut, GentlePromptEditor } from "../extensions/gentle-shell.ts";
+import installGentleShell, { backgroundChangeRefreshesSettled, buildShellBarModel, createActiveProfileModelsReader, createActiveProfileOrchestratorReader, createActiveProfileReader, changesShortcut, devBinaryCard, extractQueuedText, fetchCodexUsage, fetchKimiUsage, fetchNanUsage, loadFileDiff, shellGitRunner, openInExternalEditor, usageShortcut, GentlePromptEditor } from "../extensions/gentle-shell.ts";
 import { CODEX_USAGE_URL, KIMI_USAGE_URL, NAN_QUOTA_URL, USAGE_SOURCE_EVENT, USAGE_SOURCE_SCHEMA } from "../lib/shell-usage.ts";
 import { bindSessionProfile, clearSessionProfileBinding, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
 import { createVimEditorAdapter, isAuditedPiEditorVersion } from "../lib/vim-editor-adapter.ts";
@@ -7264,4 +7264,28 @@ test("successful work in a path is reported to the DDATA panel as the session's 
 	await fireToolResult(handlers, { type: "tool_result", toolName: "read", toolCallId: "r1", input: { path: "/srv/workspaces/ddata-r/c.ts" }, content: [], isError: false }, ctx);
 	assert.deepEqual(env.notes(), ["/srv/workspaces/ddata-x/a.ts", "/srv/workspaces/ddata-z/sub"]);
 	await fire(handlers, "session_shutdown", ctx);
+});
+
+test("usage models follow the session's own profile, not the global active one", (t) => {
+	const root = mkdtempSync(join(tmpdir(), "shell-profile-models-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const commonDir = join(root, "git");
+	mkdirSync(join(commonDir, "gentle-ai"), { recursive: true });
+	const team = { worker: { model: "nan/qwen3.8-flash" }, orchestrator: { model: "openai-codex/gpt-6.1-sol" } };
+	const all = { worker: { model: "nan/glm5.3-flash" }, orchestrator: { model: "claude-bridge/claude-opus-5-5" } };
+	writeFileSync(join(root, "profiles.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profiles", version: 1, active: "team", profiles: { team, all } }));
+	bindSessionProfile("session-all", "all", all);
+	t.after(() => clearSessionProfileBinding("session-all"));
+	const env = { GENTLE_PI_CONFIG_HOME: root };
+	const read = createActiveProfileReader(env);
+	const models = createActiveProfileModelsReader(env, read.config);
+	const orchestrator = createActiveProfileOrchestratorReader(env, read.config);
+	assert.deepEqual(models(), ["openai-codex/gpt-6.1-sol", "nan/qwen3.8-flash"], "unbound reads the global active profile");
+	read.bind(root, () => ({ root, commonDir }), "session-all");
+	assert.equal(read(), "all (session)");
+	assert.deepEqual(models(), ["claude-bridge/claude-opus-5-5", "nan/glm5.3-flash"]);
+	assert.equal(orchestrator(), "claude-bridge/claude-opus-5-5");
+	read.reset();
+	assert.deepEqual(models(), ["openai-codex/gpt-6.1-sol", "nan/qwen3.8-flash"]);
+	assert.equal(orchestrator(), "openai-codex/gpt-6.1-sol");
 });

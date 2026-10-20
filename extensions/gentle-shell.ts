@@ -7,6 +7,7 @@ import { lstat, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { profilesFilePath, profileRoleEntries, readProfileOrchestrator, readProfilesFileResult, summarizeProfile } from "../lib/agent-profiles.ts";
 import { resolveSessionProfile, sessionProfileLabel, sessionProfileModelProfiles } from "../lib/session-profile-freeze.ts";
+import type { AgentModelConfig } from "../lib/model-routing-authority.ts";
 import { installStartupListingMargin } from "../lib/startup-listing-margin.ts";
 import { installUserMessageFrame, setUserMessageFrameTheme } from "../lib/user-message-frame.ts";
 import { installAlertDialogFrames, installAlertNoticeFrames, setAlertFrameTheme } from "../lib/alert-frame.ts";
@@ -247,26 +248,37 @@ export interface ShellDeps {
 // not just mtime: profile writes replace the store atomically. Keep the cache
 // local to this shell instance and recheck on the next frame after panel edits.
 /** The model the active profile pins as its orchestrator, cached by fingerprint. */
-export function createActiveProfileOrchestratorReader(env: NodeJS.ProcessEnv = process.env): () => string | undefined {
+export function createActiveProfileOrchestratorReader(env: NodeJS.ProcessEnv = process.env, sessionConfig?: () => AgentModelConfig | undefined): () => string | undefined {
+	const config = createActiveProfileConfigReader(env, sessionConfig);
+	return () => {
+		const current = config();
+		return current === undefined ? undefined : readProfileOrchestrator(current)?.model;
+	};
+}
+
+// The routing of the profile this session uses: the session's own resolution
+// when the status reader is bound to one, else the global active profile.
+function createActiveProfileConfigReader(env: NodeJS.ProcessEnv, sessionConfig?: () => AgentModelConfig | undefined): () => AgentModelConfig | undefined {
 	const path = profilesFilePath(env.GENTLE_PI_CONFIG_HOME ?? join(os.homedir(), ".pi", "gentle-ai"));
 	let fingerprint: string | undefined;
-	let model: string | undefined;
+	let config: AgentModelConfig | undefined;
 	return () => {
+		const session = sessionConfig?.();
+		if (session !== undefined) return session;
 		try {
 			const stat = statSync(path, { bigint: true });
 			const next = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
 			if (next !== fingerprint) {
 				const result = readProfilesFileResult(path);
 				const active = result.status === "valid" ? result.file.active : undefined;
-				const config = active === undefined || result.status !== "valid" ? undefined : result.file.profiles[active];
-				model = config === undefined ? undefined : readProfileOrchestrator(config)?.model;
+				config = active === undefined || result.status !== "valid" ? undefined : result.file.profiles[active];
 				fingerprint = next;
 			}
-			return model;
+			return config;
 		} catch {
 			fingerprint = undefined;
-			model = undefined;
-			return model;
+			config = undefined;
+			return config;
 		}
 	};
 }
@@ -278,31 +290,20 @@ export function createActiveProfileOrchestratorReader(env: NodeJS.ProcessEnv = p
  * report. Cached by file fingerprint like the profile name reader, and empty
  * whenever the store is unreadable.
  */
-export function createActiveProfileModelsReader(env: NodeJS.ProcessEnv = process.env): () => string[] {
-	const path = profilesFilePath(env.GENTLE_PI_CONFIG_HOME ?? join(os.homedir(), ".pi", "gentle-ai"));
-	let fingerprint: string | undefined;
+export function createActiveProfileModelsReader(env: NodeJS.ProcessEnv = process.env, sessionConfig?: () => AgentModelConfig | undefined): () => string[] {
+	const read = createActiveProfileConfigReader(env, sessionConfig);
+	let source: AgentModelConfig | undefined;
 	let models: string[] = [];
 	return () => {
-		try {
-			const stat = statSync(path, { bigint: true });
-			const next = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
-			if (next !== fingerprint) {
-				const result = readProfilesFileResult(path);
-				const active = result.status === "valid" ? result.file.active : undefined;
-				const config = active === undefined ? undefined : result.status === "valid" ? result.file.profiles[active] : undefined;
-				// The orchestrator's model comes first: it is the one running now, and the
-				// profile keeps it under a reserved key that the role summary skips.
-				const orchestrator = config === undefined ? undefined : readProfileOrchestrator(config)?.model;
-				const roles = config === undefined ? [] : summarizeProfile(config).models.map((entry) => entry.model);
-				models = orchestrator === undefined ? roles : [orchestrator, ...roles.filter((model) => model !== orchestrator)];
-				fingerprint = next;
-			}
-			return models;
-		} catch {
-			fingerprint = undefined;
-			models = [];
-			return models;
-		}
+		const config = read();
+		if (config === source) return models;
+		source = config;
+		// The orchestrator's model comes first: it is the one running now, and the
+		// profile keeps it under a reserved key that the role summary skips.
+		const orchestrator = config === undefined ? undefined : readProfileOrchestrator(config)?.model;
+		const roles = config === undefined ? [] : summarizeProfile(config).models.map((entry) => entry.model);
+		models = orchestrator === undefined ? roles : [orchestrator, ...roles.filter((model) => model !== orchestrator)];
+		return models;
 	};
 }
 
@@ -310,6 +311,8 @@ export type ActiveProfileReader = (() => string | undefined) & {
 	bind(cwd: string, resolveWorktree: WorktreeResolver, sessionId?: string): boolean;
 	refresh(): boolean;
 	reset(): void;
+	/** Routing of the bound session's profile; undefined when unbound or the session has none. */
+	config(): AgentModelConfig | undefined;
 };
 
 // Unbound reads retain the global file-identity cache, including atomic replacements.
@@ -323,6 +326,7 @@ export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env):
 	let identity: WorktreeIdentity | undefined;
 	let sessionId: string | undefined;
 	let effective: string | undefined;
+	let effectiveConfig: AgentModelConfig | undefined;
 	const global = () => {
 		try {
 			const stat = statSync(path, { bigint: true });
@@ -347,15 +351,18 @@ export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env):
 		// startup → live p → P → G only in follow mode), with the existing
 		// spelling: "name (session)", "name (local)", "name (repo)", or the bare
 		// global name.
-		const next = cwd === undefined ? global() : sessionProfileLabel(resolveSessionProfile({
+		const resolution = cwd === undefined ? undefined : resolveSessionProfile({
 			sessionId,
 			cwd,
 			configHome: gentlePiConfigHome(env),
 			resolveWorktree: () => identity,
 			env,
-		}));
-		const changed = next !== effective;
+		});
+		const next = resolution === undefined ? global() : sessionProfileLabel(resolution);
+		const nextConfig = resolution === undefined ? undefined : sessionProfileModelProfiles(resolution);
+		const changed = next !== effective || JSON.stringify(nextConfig) !== JSON.stringify(effectiveConfig);
 		effective = next;
+		effectiveConfig = nextConfig;
 		return changed;
 	};
 	reader.bind = (nextCwd, resolveWorktree, nextSessionId) => {
@@ -366,7 +373,8 @@ export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env):
 		bound = true;
 		return reader.refresh();
 	};
-	reader.reset = () => { bound = false; cwd = undefined; identity = undefined; sessionId = undefined; effective = undefined; };
+	reader.reset = () => { bound = false; cwd = undefined; identity = undefined; sessionId = undefined; effective = undefined; effectiveConfig = undefined; };
+	reader.config = () => bound ? effectiveConfig : undefined;
 	return reader;
 }
 
@@ -1922,8 +1930,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	const deps: ShellDeps = {
 		...defaultShellDeps,
 		activeProfile: profileReader,
-		activeProfileModels: createActiveProfileModelsReader(env),
-		profileOrchestrator: createActiveProfileOrchestratorReader(env),
+		activeProfileModels: createActiveProfileModelsReader(env, profileReader.config),
+		profileOrchestrator: createActiveProfileOrchestratorReader(env, profileReader.config),
 		...overrides,
 	};
 	// DDATA environment pipeline: background refreshes on session start and
