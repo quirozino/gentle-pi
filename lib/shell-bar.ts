@@ -231,9 +231,6 @@ export function renderDdataPipelineLine(pipeline: DdataPipeline, theme: ShellBar
 	return visibleWidth(line) <= width ? line : truncateToWidth(line, width, "…");
 }
 
-/** Hanging indent for a detail value that moved below its label. */
-const DETAIL_HANG = "    ";
-
 // Greedy word wrap of plain text to `room` columns; a word wider than a line is clipped.
 function wrapPlain(text: string, room: number): string[] {
 	const lines: string[] = [];
@@ -254,8 +251,8 @@ function wrapPlain(text: string, room: number): string[] {
 /**
  * One detail row: icon and label on the left, the value flush right. When the
  * value does not fit beside the label, it moves below it, whole, wrapped on
- * hanging-indented lines; nothing is cut unless a single word is wider than a
- * line. No line exceeds `width`.
+ * lines that start where the label text starts (after the icon); nothing is cut
+ * unless a single word is wider than a line. No line exceeds `width`.
  */
 function detailRow(theme: ShellBarTheme, width: number, row: { icon: string; iconRole: string; key: string; value: string; valueRole?: string }): string[] {
 	if (width <= 0) return [""];
@@ -269,9 +266,10 @@ function detailRow(theme: ShellBarTheme, width: number, row: { icon: string; ico
 	if (budget >= 1 && visibleWidth(row.value) <= budget) {
 		return [`${left}${" ".repeat(width - leftWidth - visibleWidth(row.value))}${paint(row.value)}`];
 	}
-	const room = width - DETAIL_HANG.length;
+	const hang = " ".repeat(visibleWidth(`${row.icon} `));
+	const room = width - hang.length;
 	if (room < 1) return [left];
-	return [left, ...wrapPlain(row.value, room).map((line) => DETAIL_HANG + paint(line))];
+	return [left, ...wrapPlain(row.value, room).map((line) => hang + paint(line))];
 }
 
 /** Evidence text as shown: "otra versión · X" reads as "≠ X". */
