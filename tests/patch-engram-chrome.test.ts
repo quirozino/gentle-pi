@@ -283,7 +283,7 @@ test("patching a file with the stray V2 block heals it: no orphan helpers, no du
 	assert.equal(visibleWidth(call.split("\n")[0]), 60);
 });
 
-test("patching a V3-marked file heals it to V8: no orphan V3 helpers, no duplicate definitions", async (t) => {
+test("patching a V3-marked file heals it to V9: no orphan V3 helpers, no duplicate definitions", async (t) => {
 	const target = tempFile(t, "memory-tool-chrome.js", V3_CHROME);
 	const result = patchChromeFile(target);
 	assert.deepEqual(result, { changed: true, ok: true });
@@ -302,9 +302,9 @@ test("patching a V3-marked file heals it to V8: no orphan V3 helpers, no duplica
 	assert.equal(visibleWidth(lines[0]), 60);
 	assert.ok(boxed(lines[0]).startsWith("\u2554") && boxed(lines[0]).endsWith("\u2557"));
 
-	// A second run against the now-V8 file must be a true no-op.
+	// A second run against the now-V9 file must be a true no-op.
 	const secondPass = readFileSync(target, "utf8");
-	assert.equal(patchChromeFile(target).changed, false, "re-running against an already-healed V8 file should be a no-op");
+	assert.equal(patchChromeFile(target).changed, false, "re-running against an already-healed V9 file should be a no-op");
 	assert.equal(readFileSync(target, "utf8"), secondPass, "healing then re-patching must not change a single byte");
 });
 
@@ -385,13 +385,13 @@ test("renderResultText frames only the status line: box bottom border first, the
 	assert.equal(bodyLines.join("\n"), "full details\nwith more content");
 });
 
-test("patching a V4-marked file heals it to V8: no orphan V4 helpers, no duplicate definitions", async (t) => {
+test("patching a V4-marked file heals it to V9: no orphan V4 helpers, no duplicate definitions", async (t) => {
 	const target = tempFile(t, "memory-tool-chrome.js", V4_CHROME);
 	assert.deepEqual(patchChromeFile(target), { changed: true, ok: true });
 
 	const patched = readFileSync(target, "utf8");
 	assert.ok(!patched.includes("ENGRAM_CHROME_PATCHED_V4"), "stray V4 marker must be gone");
-	assert.ok(patched.includes("ENGRAM_CHROME_PATCHED_V8"), "should carry the V8 marker");
+	assert.ok(patched.includes("ENGRAM_CHROME_PATCHED_V9"), "should carry the V9 marker");
 	for (const name of ["function borderLine", "function textLine", "function stripAnsi", "const PINK = ", "export function renderCallText", "export function renderResultText", "export function memoryCallSweep"]) {
 		assert.equal(patched.split(name).length - 1, 1, `${name} must be defined exactly once`);
 	}
@@ -402,7 +402,7 @@ test("patching a V4-marked file heals it to V8: no orphan V4 helpers, no duplica
 	for (const line of lines) assert.equal(visibleWidth(line), 60);
 
 	const healed = readFileSync(target, "utf8");
-	assert.equal(patchChromeFile(target).changed, false, "re-running against an already-healed V8 file should be a no-op");
+	assert.equal(patchChromeFile(target).changed, false, "re-running against an already-healed V9 file should be a no-op");
 	assert.equal(readFileSync(target, "utf8"), healed, "healing then re-patching must not change a single byte");
 });
 
@@ -624,16 +624,17 @@ function registerMemoryTools(pi) {
 `;
 
 function assertSweepingIndex(patched: string) {
-	assert.ok(patched.includes("ENGRAM_INDEX_PATCHED_V3"), "should carry the V3 marker");
-	assert.ok(!/ENGRAM_INDEX_PATCHED_V[12]\b/.test(patched), "older index markers must be gone");
+	assert.ok(patched.includes("ENGRAM_INDEX_PATCHED_V4"), "should carry the V4 marker");
+	assert.ok(!/ENGRAM_INDEX_PATCHED_V[123]\b/.test(patched), "older index markers must be gone");
 	assert.ok(!patched.includes("new Text("), "renderCall/renderResult must no longer construct a fixed-content Text()");
 	assert.ok(
 		patched.includes('import { compactResultStatus, humanToolName, memoryCallSweep, renderCallText, renderResultText } from "./memory-tool-chrome.js";'),
 		"the chrome import must bring in memoryCallSweep",
 	);
 	assert.match(patched, /renderCall\(args, _theme, context\) \{/, "renderCall must take pi's render context");
-	assert.match(patched, /const sweep = memoryCallSweep\(context, context\?\.isPartial !== false && context\?\.isError !== true, Date\.now\(\)\);/);
-	assert.match(patched, /render: \(width\) => renderCallText\(toolName, args, width, sweep\)\.split\("\\n"\)/);
+	assert.match(patched, /const running = context\?\.isPartial !== false && context\?\.isError !== true;/);
+	assert.match(patched, /const sweep = memoryCallSweep\(context, running, Date\.now\(\)\);/);
+	assert.match(patched, /render: \(width\) => renderCallText\(toolName, args, width, sweep, running\)\.split\("\\n"\)/, "renderCall must tell the chrome the call is still running");
 	assert.match(patched, /memoryCallSweep\(context, options\.isPartial === true && context\?\.isError !== true, Date\.now\(\)\);/, "renderResult must settle the row's pending redraw");
 	assert.equal((patched.match(/renderCall\(/g) ?? []).length, 1, "renderCall must be defined exactly once");
 }
@@ -655,14 +656,34 @@ test("patching index.ts twice is byte-identical (idempotent)", async (t) => {
 	assert.equal(readFileSync(target, "utf8"), firstPass);
 });
 
-for (const [label, source] of [["V1", V1_INDEX], ["V2", V2_INDEX]] as const) {
-	test(`patching a ${label}-marked index.ts heals it to V3`, async (t) => {
+// The shape every live install carried before V4: V3's sweeping renderCall,
+// which never tells the chrome whether the call is still running, so a
+// running call drew only the top half of its box.
+const V3_INDEX = V2_INDEX.replace(
+	`/* ENGRAM_INDEX_PATCHED_V2 */
+      renderCall(args) {
+        return { render: (width) => renderCallText(toolName, args, width).split("\\n"), invalidate() {} };
+      },
+      renderResult(result, options, _theme, context) {
+        return {`,
+	`/* ENGRAM_INDEX_PATCHED_V3 */
+      renderCall(args, _theme, context) {
+        const sweep = memoryCallSweep(context, context?.isPartial !== false && context?.isError !== true, Date.now());
+        return { render: (width) => renderCallText(toolName, args, width, sweep).split("\\n"), invalidate() {} };
+      },
+      renderResult(result, options, _theme, context) {
+        memoryCallSweep(context, options.isPartial === true && context?.isError !== true, Date.now());
+        return {`,
+).replace(CHROME_IMPORT, 'import { compactResultStatus, humanToolName, memoryCallSweep, renderCallText, renderResultText } from "./memory-tool-chrome.js";');
+
+for (const [label, source] of [["V1", V1_INDEX], ["V2", V2_INDEX], ["V3", V3_INDEX]] as const) {
+	test(`patching a ${label}-marked index.ts heals it to V4`, async (t) => {
 		const target = tempFile(t, "index.ts", source);
 		assert.deepEqual(patchIndexFile(target), { changed: true, ok: true });
 		const healed = readFileSync(target, "utf8");
 		assertSweepingIndex(healed);
 
-		assert.equal(patchIndexFile(target).changed, false, "re-running against an already-healed V3 file should be a no-op");
+		assert.equal(patchIndexFile(target).changed, false, "re-running against an already-healed V4 file should be a no-op");
 		assert.equal(readFileSync(target, "utf8"), healed);
 	});
 }
@@ -709,14 +730,14 @@ test("patchChromeFile reports failure instead of writing a half-patched file whe
 // real install (tests/fixtures/engram-chrome/memory-tool-chrome.v5.js).
 const V5_CHROME = readFileSync(new URL("./fixtures/engram-chrome/memory-tool-chrome.v5.js", import.meta.url), "utf8");
 
-test("patching a V5-marked install heals it to V8: one copy of every helper, the box inside the margins", async (t) => {
+test("patching a V5-marked install heals it to V9: one copy of every helper, the box inside the margins", async (t) => {
 	assert.ok(V5_CHROME.includes("ENGRAM_CHROME_PATCHED_V5"), "the fixture is a V5 install");
 	const target = tempFile(t, "memory-tool-chrome.js", V5_CHROME);
 	assert.deepEqual(patchChromeFile(target), { changed: true, ok: true });
 
 	const patched = readFileSync(target, "utf8");
 	assert.ok(!patched.includes("ENGRAM_CHROME_PATCHED_V5"), "stray V5 marker must be gone");
-	assert.ok(patched.includes("ENGRAM_CHROME_PATCHED_V8"), "should carry the V8 marker");
+	assert.ok(patched.includes("ENGRAM_CHROME_PATCHED_V9"), "should carry the V9 marker");
 	for (const name of ["function borderLine", "function textLine", "function boxGeometry", "function sweepPath", "const PINK = ", "export function renderCallText", "export function renderResultText", "export function memoryCallSweep"]) {
 		assert.equal(patched.split(name).length - 1, 1, `${name} must be defined exactly once`);
 	}
@@ -729,7 +750,7 @@ test("patching a V5-marked install heals it to V8: one copy of every helper, the
 	assert.ok(boxed(lines[3]).startsWith("╚") && boxed(lines[3]).endsWith("╝"));
 
 	const healed = readFileSync(target, "utf8");
-	assert.equal(patchChromeFile(target).changed, false, "re-running against an already-healed V8 file should be a no-op");
+	assert.equal(patchChromeFile(target).changed, false, "re-running against an already-healed V9 file should be a no-op");
 	assert.equal(readFileSync(target, "utf8"), healed, "healing then re-patching must not change a single byte");
 });
 
@@ -755,36 +776,36 @@ test("inside gentle-pi's transcript gutter the box drops its right margin and re
 // gentle-engram 0.2.0's memory-tool-chrome.js as the V6 patch left it (captured from a live install).
 const V6_CHROME = readFileSync(new URL("./fixtures/engram-chrome/memory-tool-chrome.v6.js", import.meta.url), "utf8");
 
-test("patching a V6-marked install heals it to V8: one copy of every helper, no stray V6 marker", async (t) => {
+test("patching a V6-marked install heals it to V9: one copy of every helper, no stray V6 marker", async (t) => {
 	assert.ok(V6_CHROME.includes("ENGRAM_CHROME_PATCHED_V6"), "the fixture is a V6 install");
 	const target = tempFile(t, "memory-tool-chrome.js", V6_CHROME);
 	assert.equal(patchChromeFile(target).changed, true);
 	const patched = readFileSync(target, "utf8");
 	assert.ok(!patched.includes("ENGRAM_CHROME_PATCHED_V6"), "stray V6 marker must be gone");
-	assert.ok(patched.includes("ENGRAM_CHROME_PATCHED_V8"), "should carry the V8 marker");
+	assert.ok(patched.includes("ENGRAM_CHROME_PATCHED_V9"), "should carry the V9 marker");
 	for (const name of ["function borderLine", "function textLine", "function boxGeometry", "function sweepPath", "const PINK = ", "export function renderCallText", "export function renderResultText", "export function memoryCallSweep", "const TRANSCRIPT_LEFT_INSET"]) {
 		assert.equal(patched.split(name).length - 1, 1, `${name} defined exactly once`);
 	}
-	assert.equal(patchChromeFile(target).changed, false, "re-running against an already-healed V8 file should be a no-op");
+	assert.equal(patchChromeFile(target).changed, false, "re-running against an already-healed V9 file should be a no-op");
 	await loadModule(target);
 });
 
 // gentle-engram 0.2.0's memory-tool-chrome.js as the V7 patch left it (captured from a live install).
 const V7_CHROME = readFileSync(new URL("./fixtures/engram-chrome/memory-tool-chrome.v7.js", import.meta.url), "utf8");
 
-test("patching a V7-marked install heals it to V8: the pulse turns Matrix green, one copy of every helper", async (t) => {
+test("patching a V7-marked install heals it to V9: the pulse turns Matrix green, one copy of every helper", async (t) => {
 	assert.ok(V7_CHROME.includes("ENGRAM_CHROME_PATCHED_V7") && V7_CHROME.includes("\\x1b[38;5;218m"), "the fixture is a V7 install with the light-pink pulse");
 	const target = tempFile(t, "memory-tool-chrome.js", V7_CHROME);
 	assert.equal(patchChromeFile(target).changed, true);
 	const patched = readFileSync(target, "utf8");
 	assert.ok(!patched.includes("ENGRAM_CHROME_PATCHED_V7"), "stray V7 marker must be gone");
-	assert.ok(patched.includes("ENGRAM_CHROME_PATCHED_V8"), "should carry the V8 marker");
+	assert.ok(patched.includes("ENGRAM_CHROME_PATCHED_V9"), "should carry the V9 marker");
 	assert.ok(!patched.includes("\\x1b[38;5;218m"), "the light-pink pulse is gone");
 	assert.ok(patched.includes("\\x1b[38;2;43;255;111m"), "the pulse is the Matrix-Green accent");
 	for (const name of ["function borderLine", "function sweepPath", "const PINK = ", "const SWEEP_BOLD = ", "export function renderCallText", "export function renderResultText", "export function memoryCallSweep"]) {
 		assert.equal(patched.split(name).length - 1, 1, `${name} defined exactly once`);
 	}
-	assert.equal(patchChromeFile(target).changed, false, "re-running against an already-healed V8 file should be a no-op");
+	assert.equal(patchChromeFile(target).changed, false, "re-running against an already-healed V9 file should be a no-op");
 	await loadModule(target);
 });
 
@@ -806,4 +827,66 @@ test("under gentle-pi's Matrix rails the box drops its left margin too and keeps
 		}
 		assert.equal(lines[1].indexOf("🧠"), 2, "the text keeps its two cells inside the frame");
 	}
+});
+
+test("a V3-marked gentle-engram 0.4+ index.ts heals to V4 and keeps mem_doctor's caller binding line", async (t) => {
+	const target = tempFile(t, "index.ts", PRISTINE_INDEX_0_4);
+	patchIndexFile(target);
+	const v3 = readFileSync(target, "utf8").replace(
+		/\/\* ENGRAM_INDEX_PATCHED_V4 \*\/\n {6}renderCall[\s\S]*?\n {6}},\n/,
+		`/* ENGRAM_INDEX_PATCHED_V3 */
+      renderCall(args, _theme, context) {
+        const sweep = memoryCallSweep(context, context?.isPartial !== false && context?.isError !== true, Date.now());
+        return { render: (width) => renderCallText(toolName, args, width, sweep).split("\\n"), invalidate() {} };
+      },
+`,
+	);
+	assert.ok(v3.includes("ENGRAM_INDEX_PATCHED_V3") && !v3.includes("ENGRAM_INDEX_PATCHED_V4"), "the fixture is a V3 install");
+	writeFileSync(target, v3, "utf8");
+
+	assert.deepEqual(patchIndexFile(target), { changed: true, ok: true });
+	const healed = readFileSync(target, "utf8");
+	assertSweepingIndex(healed);
+	assert.ok(healed.includes("Caller binding: ${caller.status} (later writes not guaranteed)"), "the caller binding line must survive");
+	assert.equal(patchIndexFile(target).changed, false, "re-running against an already-healed V4 file should be a no-op");
+});
+
+test("a running call with no result yet closes its own box; a settled call leaves the bottom to its result", async (t) => {
+	const target = tempFile(t, "memory-tool-chrome.js", PRISTINE_CHROME);
+	patchChromeFile(target);
+	const mod = await loadModule(target);
+	const width = 60;
+
+	for (const sweep of [undefined, 3]) {
+		const running = stripAnsi(mod.renderCallText("mem_save", { title: "Stage admin CSS" }, width, sweep, true)).split("\n");
+		assert.equal(running.length, 3, `a running call is a closed box of its own: ${JSON.stringify(running)}`);
+		assert.ok(boxed(running[0]).startsWith("╔") && boxed(running[0]).endsWith("╗"), `top border: ${running[0]}`);
+		assert.ok(boxed(running[1]).includes("\u{1F9E0}"), `call text line: ${running[1]}`);
+		assert.ok(boxed(running[2]).startsWith("╚") && boxed(running[2]).endsWith("╝"), `bottom border: ${running[2]}`);
+		for (const line of running) assert.equal(visibleWidth(line), width, `every line measures exactly ${width}: ${JSON.stringify(line)}`);
+		assert.equal(running[0].length, running[2].length, "top and bottom borders have identical codepoint counts");
+	}
+
+	const settled = stripAnsi(mod.renderCallText("mem_save", { title: "Stage admin CSS" }, width, undefined, false)).split("\n");
+	const result = stripAnsi(mod.renderResultText("mem_save", {}, { expanded: false }, width)).split("\n");
+	assert.equal(settled.length, 2, "a settled call keeps only the top half");
+	assert.equal([...settled, ...result].length, 4, "call and result still form one closed box");
+	assert.equal(stripAnsi(mod.renderCallText("mem_save", { title: "Stage admin CSS" }, width)), settled.join("\n"), "omitting the flag keeps the settled shape");
+});
+
+const V8_CHROME = readFileSync(new URL("./fixtures/engram-chrome/memory-tool-chrome.v8.js", import.meta.url), "utf8");
+
+test("patching a V8-marked install heals it to V9: running calls close their box, one copy of every helper", async (t) => {
+	assert.ok(V8_CHROME.includes("ENGRAM_CHROME_PATCHED_V8"), "the fixture is a V8 install");
+	const target = tempFile(t, "memory-tool-chrome.js", V8_CHROME);
+	assert.equal(patchChromeFile(target).changed, true);
+	const patched = readFileSync(target, "utf8");
+	assert.ok(!patched.includes("ENGRAM_CHROME_PATCHED_V8"), "stray V8 marker must be gone");
+	assert.ok(patched.includes("ENGRAM_CHROME_PATCHED_V9"), "should carry the V9 marker");
+	for (const name of ["function borderLine", "function sweepPath", "const PINK = ", "const SWEEP_BOLD = ", "export function renderCallText", "export function renderResultText", "export function memoryCallSweep"]) {
+		assert.equal(patched.split(name).length - 1, 1, `${name} defined exactly once`);
+	}
+	assert.equal(patchChromeFile(target).changed, false, "re-running against an already-healed V9 file should be a no-op");
+	const mod = await loadModule(target);
+	assert.equal(stripAnsi(mod.renderCallText("mem_save", { title: "x" }, 40, undefined, true)).split("\n").length, 3, "the healed install closes a running call's box");
 });

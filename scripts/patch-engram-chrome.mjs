@@ -49,15 +49,19 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // the other cards' edges there. V8 keeps V7 but paints the running pulse in
 // the Matrix-Green accent instead of light pink: gentle-pi's own pulses turned
 // pink (lib/sweep-pulse.ts), and a pink pulse is lost on the pink frame.
-const CHROME_MARKER = "/* ENGRAM_CHROME_PATCHED_V8 */";
+// V9 keeps V8 but closes a running call's box with its own bottom border:
+// a call waits seconds for its result (several memory writes in parallel),
+// and a box open at the bottom read as a broken frame, not as "running".
+const CHROME_MARKER = "/* ENGRAM_CHROME_PATCHED_V9 */";
 // Index history: V1 made renderCall/renderResult return a width-aware,
 // multi-line-capable component instead of a fixed-content Text(). That
 // shape is exactly what V4's two-line box output needs (it already
 // `.split("\n")`s the result), so V2 only moves the marker -- see
 // patchIndexFile's heal branch below. V3 hands pi's render context to the
 // chrome so a running call can sweep its frame and wake itself through
-// context.invalidate.
-const INDEX_MARKER = "/* ENGRAM_INDEX_PATCHED_V3 */";
+// context.invalidate. V4 also tells the chrome whether the call is still
+// running, so a running call can close its own box until the result does.
+const INDEX_MARKER = "/* ENGRAM_INDEX_PATCHED_V4 */";
 
 // Find gentle-engram's directory
 function findEngramDir() {
@@ -84,15 +88,15 @@ const STRAY_V2_RE =
 // textLine, plus V5's sweep helpers and memoryCallSweep), sitting in front of
 // their own renderCallText. Matches from the marker through to (but not
 // including) the renderCallText that follows it, so re-patching a V3, V4 or
-// V5 install replaces the whole block with the current one (V6 and V7 too).
-const STRAY_V3_V5_RE = /\n*\/\* ENGRAM_CHROME_PATCHED_V[34567] \*\/[\s\S]*?(?=\n+export function renderCallText)/;
+// V5 install replaces the whole block with the current one (V6 to V8 too).
+const STRAY_V3_V5_RE = /\n*\/\* ENGRAM_CHROME_PATCHED_V[345678] \*\/[\s\S]*?(?=\n+export function renderCallText)/;
 
 // Anchors on the signature, so this matches the pristine, never-patched
 // function, a healed V1 patch (which just prefixed the same signature with
 // its own marker comment), and a V3/V4 patch (which added a trailing
 // `, width` parameter but kept the same base signature).
 const RENDER_CALL_RE =
-  /(?:\/\* ENGRAM_CHROME_PATCHED_V1 \*\/\n)?export function renderCallText\(toolName, args = \{\}(?:, width(?:, sweep)?)?\) \{[\s\S]*?^}/m;
+  /(?:\/\* ENGRAM_CHROME_PATCHED_V1 \*\/\n)?export function renderCallText\(toolName, args = \{\}(?:, width(?:, sweep(?:, running)?)?)?\) \{[\s\S]*?^}/m;
 const RENDER_RESULT_RE =
   /export function renderResultText\(toolName, result, options = \{\}(?:, width)?\) \{[\s\S]*?^}/m;
 
@@ -306,15 +310,16 @@ export function memoryCallSweep(context, running, now) {
   return Math.floor(now / SWEEP_TICK_MS) * SWEEP_CELLS_PER_TICK;
 }
 
-// Emits the box's TOP half only: a pure border line, then the call's own
-// text line. renderResultText (below) emits the bottom half -- they render
-// as two separate Pi tool-call components sharing one width, so a
-// completed call+result reads as a single closed four-sided box. While a
-// call has no result yet, this top half is legitimately unmatched at the
-// bottom -- that reads as "in progress" and must not be closed early.
+// Emits the box's TOP half: a pure border line, then the call's own text
+// line. renderResultText (below) emits the bottom half -- they render as two
+// separate Pi tool-call components sharing one width, so a completed
+// call+result reads as a single closed four-sided box. While the call is
+// \`running\` (no final result yet) it closes the box with its own bottom
+// border instead, so a call waiting on its result never reads as a broken
+// frame; the result takes that border over once it arrives.
 // \`sweep\` is the running pulse's head from memoryCallSweep; undefined
 // draws the still frame.
-export function renderCallText(toolName, args = {}, width, sweep) {
+export function renderCallText(toolName, args = {}, width, sweep, running) {
   const arg = compactToolArg(toolName, args);
   const inner = \`🧠 \${humanToolName(toolName)}\${arg ? \` \${arg}\` : ""} …\`;
   const compact = \`\${PINK_BOLD}╔ \${inner} ╗\${RESET}\`;
@@ -324,7 +329,10 @@ export function renderCallText(toolName, args = {}, width, sweep) {
   const path = typeof sweep === "number" && Number.isFinite(sweep) ? sweepPath(sweep, box.frame) : undefined;
   const top = box.row(borderLine(PINK_BOLD, "╔", "╗", box.frame, path?.top));
   const text = box.row(textLine(PINK_BOLD, inner, box.frame, path?.left, path?.right));
-  return top && text ? \`\${top}\\n\${text}\` : compact;
+  if (!top || !text) return compact;
+  if (running !== true) return \`\${top}\\n\${text}\`;
+  const bottom = box.row(borderLine(PINK_BOLD, "╚", "╝", box.frame));
+  return bottom ? \`\${top}\\n\${text}\\n\${bottom}\` : compact;
 }`;
 
 // renderResultText: reuses PINK/RESET/borderLine/textLine defined above.
@@ -434,17 +442,29 @@ const INDEX_RENDER_METHODS_V1_V2 = `      renderCall(args) {
       },`;
 const OLD_INDEX_MARKER_RE = /^[ \t]*\/\* ENGRAM_INDEX_PATCHED_V[12] \*\/\n/m;
 
+// V3's renderCall, which every V3 install carries under its marker: it
+// sweeps, but never tells the chrome whether the call is still running.
+// Healing V3 swaps exactly this block for INDEX_RENDER_CALL; renderResult
+// was not changed by V4.
+const INDEX_RENDER_CALL_V3 = `/* ENGRAM_INDEX_PATCHED_V3 */
+      renderCall(args, _theme, context) {
+        const sweep = memoryCallSweep(context, context?.isPartial !== false && context?.isError !== true, Date.now());
+        return { render: (width) => renderCallText(toolName, args, width, sweep).split("\\n"), invalidate() {} };
+      },`;
+const INDEX_RENDER_CALL = `${INDEX_MARKER}
+      renderCall(args, _theme, context) {
+        const running = context?.isPartial !== false && context?.isError !== true;
+        const sweep = memoryCallSweep(context, running, Date.now());
+        return { render: (width) => renderCallText(toolName, args, width, sweep, running).split("\\n"), invalidate() {} };
+      },`;
+
 // renderCall reads pi's render context (renderCall(args, theme, context) in
 // @earendil-works/pi-coding-agent's ToolDefinition) so memoryCallSweep can
 // tell a running live row from a finished or replayed one and wake it
 // through context.invalidate. pi re-runs renderCall on every update of the
 // row, so the sweep head is taken once per render pass. renderResult settles
 // the same row slot: a final result leaves no redraw pending.
-const INDEX_RENDER_METHODS_PATCHED = `${INDEX_MARKER}
-      renderCall(args, _theme, context) {
-        const sweep = memoryCallSweep(context, context?.isPartial !== false && context?.isError !== true, Date.now());
-        return { render: (width) => renderCallText(toolName, args, width, sweep).split("\\n"), invalidate() {} };
-      },
+const INDEX_RENDER_METHODS_PATCHED = `${INDEX_RENDER_CALL}
       renderResult(result, options, _theme, context) {
         memoryCallSweep(context, options.isPartial === true && context?.isError !== true, Date.now());
         return {
@@ -468,11 +488,7 @@ const INDEX_RENDER_METHODS_V0_4 = `      renderCall(args) {
         return new Text(caller && !options.expanded ? \`Project checks: \${rendered}\\nCaller binding: \${caller.status} (later writes not guaranteed)\` : rendered, 0, 0);
       },`;
 
-const INDEX_RENDER_METHODS_0_4_PATCHED = `${INDEX_MARKER}
-      renderCall(args, _theme, context) {
-        const sweep = memoryCallSweep(context, context?.isPartial !== false && context?.isError !== true, Date.now());
-        return { render: (width) => renderCallText(toolName, args, width, sweep).split("\\n"), invalidate() {} };
-      },
+const INDEX_RENDER_METHODS_0_4_PATCHED = `${INDEX_RENDER_CALL}
       renderResult(result, options, _theme, context) {
         memoryCallSweep(context, options.isPartial === true && context?.isError !== true, Date.now());
         const caller = toolName === "mem_doctor" ? (result.details as { data?: { caller_binding?: { status: string } } } | undefined)?.data?.caller_binding : undefined;
@@ -496,7 +512,8 @@ const INDEX_CHROME_IMPORT_PATCHED =
  * Patch an index.ts file (or fixture copy) so renderCall/renderResult
  * return a width-aware duck-typed component that sweeps while the call
  * runs, instead of a fixed-content Text(), and drop the now-unused Text
- * import. Heals a V1/V2 patch (same render body, older marker) the same
+ * import. Heals a V1/V2 patch (same render body, older marker) and a V3
+ * patch (renderCall that does not pass the running flag) the same
  * way. Returns { changed, ok }; ok is false, with the file untouched, when
  * the render methods or the chrome import are not found.
  */
@@ -505,6 +522,12 @@ export function patchIndexFile(target) {
 
   if (original.includes(INDEX_MARKER)) {
     return { changed: false, ok: true };
+  }
+
+  // A V3 install already imports memoryCallSweep: only its renderCall moves.
+  if (original.includes(INDEX_RENDER_CALL_V3)) {
+    writeFileSync(target, original.replace(INDEX_RENDER_CALL_V3, INDEX_RENDER_CALL), "utf8");
+    return { changed: true, ok: true };
   }
 
   if (!original.includes(INDEX_CHROME_IMPORT)) {
@@ -559,7 +582,7 @@ function patchTests(engramDir, quiet) {
   const testFile = join(engramDir, "test", "memory-tool-chrome.test.mjs");
   if (!existsSync(testFile)) return;
   const content = readFileSync(testFile, "utf8");
-  if (content.includes("ENGRAM_CHROME_PATCHED_V8")) {
+  if (content.includes("ENGRAM_CHROME_PATCHED_V9")) {
     if (!quiet) console.log("patch-engram-chrome: tests already patched; skipping.");
     return;
   }

@@ -1,4 +1,4 @@
-/* ENGRAM_CHROME_PATCHED_V8 */
+/* ENGRAM_CHROME_PATCHED_V9 */
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -234,4 +234,11 @@ test("memoryCallSweep sweeps a live running row and stays still once it finishes
   const context = { state: {}, args: {}, executionStarted: true, argsComplete: true, sweep: true, invalidate() {} };
   assert.equal(typeof memoryCallSweep(context, true, 0), "number");
   assert.equal(memoryCallSweep(context, false, 160), undefined, "the final render is still and cancels the pending redraw");
+});
+
+test("a running call closes its own box until its result takes the bottom border over", () => {
+  const running = stripAnsi(renderCallText("mem_save", { title: "x" }, 60, undefined, true)).split("\n");
+  assert.equal(running.length, 3);
+  assert.ok(running[2].includes("╚") && running[2].includes("╝"));
+  assert.equal(stripAnsi(renderCallText("mem_save", { title: "x" }, 60)).split("\n").length, 2);
 });

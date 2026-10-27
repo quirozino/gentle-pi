@@ -111,8 +111,8 @@ test("patchEngramChrome quiet mode patches gentle-engram and prints nothing on t
 	assert.equal(calls.log, 0, "quiet mode must not log routine status");
 	assert.equal(calls.warn, 0, "quiet mode must not warn on the happy path");
 	assert.equal(calls.error, 0, "a successful patch must not log an error");
-	assert.ok(readFileSync(join(engramDir, "memory-tool-chrome.js"), "utf8").includes("ENGRAM_CHROME_PATCHED_V8"));
-	assert.ok(readFileSync(join(engramDir, "index.ts"), "utf8").includes("ENGRAM_INDEX_PATCHED_V3"));
+	assert.ok(readFileSync(join(engramDir, "memory-tool-chrome.js"), "utf8").includes("ENGRAM_CHROME_PATCHED_V9"));
+	assert.ok(readFileSync(join(engramDir, "index.ts"), "utf8").includes("ENGRAM_INDEX_PATCHED_V4"));
 });
 
 test("patchEngramChrome is idempotent: a second quiet call changes nothing and stays quiet", (t) => {
