@@ -1,8 +1,11 @@
 import { CustomEditor, InteractiveMode, keyHint, UserMessageComponent, type ExtensionAPI, type ExtensionContext, type KeybindingsManager } from "@earendil-works/pi-coding-agent";
 import { isHomeOrBroadUserDirectory } from "../lib/bounded-writer-admission.ts";
-import { Editor, decodeKittyPrintable, isKeyRelease, matchesKey, parseKey, truncateToWidth, visibleWidth, type EditorTheme, type TUI } from "@earendil-works/pi-tui";
+import { Editor, Image, decodeKittyPrintable, getCapabilities, isKeyRelease, matchesKey, parseKey, truncateToWidth, visibleWidth, type EditorTheme, type TUI } from "@earendil-works/pi-tui";
+import { readClipboardImage, type ClipboardImage } from "../lib/clipboard-image.ts";
+import { describeAttachment, ImageAttachments } from "../lib/image-attachments.ts";
 import { execFile, spawnSync } from "node:child_process";
 import { existsSync, realpathSync, statSync, unwatchFile, watchFile } from "node:fs";
+import { openInExternalEditor, type ExternalEditorHost } from "../lib/external-editor.ts";
 import { lstat, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { profilesFilePath, profileRoleEntries, readProfileOrchestrator, readProfilesFileResult, summarizeProfile } from "../lib/agent-profiles.ts";
@@ -20,7 +23,7 @@ import { dirname, join, resolve } from "node:path";
 import { buildShellHeaderModel, createUsageCollapse, renderShellBar, renderShellBelowInputFloat, renderShellBottomOnlyBar, renderShellHeaderChrome, keepNativeWorkingRow, renderShellSidebarCard, shellBarEnabled, shellEnabled, shellHeaderUsageHit, shellJobsCount, statusTitleText, type ShellBarModel, type ShellBarTheme, type ShellSidebarCard } from "../lib/shell-bar.ts";
 import { directoryLevels, findRepoRoot } from "../lib/directory-tree.ts";
 import { createCiStatusController, type CiRow, type CiStatusController, type CiView } from "../lib/ci-status.ts";
-import { CHANGE_STATUS, DIFF_MAX_BYTES, DIFF_MAX_LINES, DIFF_TOO_LARGE, WorktreeChangesTracker, renderChangesWidget, type ChangedFile, type ChangesModel, type FileRevision, type GitRunner, type LineCounter, type WorktreeChanges } from "../lib/shell-changes.ts";
+import { CHANGE_STATUS, DIFF_MAX_BYTES, DIFF_MAX_LINES, DIFF_TOO_LARGE, WorktreeChangesTracker, changesDigest, renderChangesWidget, type ChangedFile, type ChangesModel, type FileRevision, type GitRunner, type LineCounter, type WorktreeChanges } from "../lib/shell-changes.ts";
 import { WorktreeChangesView } from "../lib/shell-changes-view.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
 import { SessionWorktreeRegistry, resolveSessionWorktree, worktreeGitEnvironment, type WorktreeResolver, type WorktreeIdentity } from "../lib/session-worktree-registry.ts";
@@ -40,7 +43,7 @@ import { BANNER_COLORS, DEFAULT_BANNER_CONFIG, readBannerConfig, readBannerConfi
 import { agentsViewKey } from "../lib/agents-keys.ts";
 import { serveShellChrome } from "../lib/shell-chrome-gate.ts";
 import { GentleAiDevBinaryOverrideError, resolveGentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
-import { DOUBLE_ESC_CANCEL_HINT, floatPromptRow, framePromptLines, resolvePromptLayout, IDLE_ESC_CLEAR_HINT, PROMPT_HINT, PROMPT_STATE, SHELL_PULSE_MS, withPromptHint, type PromptState } from "../lib/shell-prompt.ts";
+import { DOUBLE_ESC_CANCEL_HINT, floatPromptRow, framePromptLines, resolvePromptLayout, IDLE_ESC_CLEAR_HINT, PROMPT_HINT, PROMPT_STATE, SHELL_PULSE_WATCHDOG_MS, withPromptHint, type PromptState } from "../lib/shell-prompt.ts";
 import { SHELL_GLYPHS } from "../lib/shell-glyphs.ts";
 import { oddPhaseRegistry } from "../lib/odd-phase.ts";
 import { bareToolName, installPromotionCompletionCapture, promotionStatusRegistry, restorePromotionState, settledOutcome, settledVerifierMessage, settledVerifierResult, verifierRunStart, verifierRunTaskId } from "../lib/promotion-report.ts";
@@ -249,6 +252,8 @@ export interface ShellDeps {
 	 */
 	ddataEnv?: () => DdataEnvController;
 	ciStatus?: () => CiStatusController;
+	/** Clipboard image source for the prompt's attachment chips; tests inject a fake. */
+	readClipboardImage?(): Promise<ClipboardImage | null>;
 }
 
 // The rail digest runs every frame. Cache parsing by file identity and metadata,
@@ -478,33 +483,38 @@ export function sessionTokensByModel(ctx: ExtensionContext): Map<string, number>
 }
 
 type ShellSessionStats = { costTotal: number; usage: ReturnType<ExtensionContext["getContextUsage"]> };
-const shellSessionStats = new WeakMap<object, {
-	sessionId: string | undefined;
-	leafId: string | null;
-	entryCount: number | undefined;
-	model: ExtensionContext["model"];
-	contextWindow: number | undefined;
-	stats: ShellSessionStats;
-}>();
+// The exact identity sessionStats' memo keys on: when any element differs the
+// stats are recomputed. Undefined means the host lacks the leaf identity and
+// the stats must be computed fresh on every call. Callers that digest live
+// state per frame (issue #1681) reuse this key so their own memos can never
+// disagree with sessionStats about what is still current.
+type SessionStatsKey = readonly [
+	sessionId: string | undefined,
+	leafId: string | null,
+	entryCount: number | undefined,
+	model: ExtensionContext["model"],
+	contextWindow: number | undefined,
+];
+const shellSessionStats = new WeakMap<object, { key: SessionStatsKey; stats: ShellSessionStats }>();
 
-function sessionStats(ctx: ExtensionContext): ShellSessionStats {
+function sessionStatsKey(ctx: ExtensionContext): SessionStatsKey | undefined {
 	const manager = ctx.sessionManager as ExtensionContext["sessionManager"] & { getEntryCount?(): number };
-	const compute = (): ShellSessionStats => ({ costTotal: sessionCost(ctx), usage: ctx.getContextUsage() });
 	// Append-only session entries move the leaf, including compaction and branch
 	// switches. A virtual model's routed physical model comes from the latest
 	// response, which is appended as an entry, so the leaf covers it as well.
 	// Older/test hosts without that identity must stay uncached.
-	if (typeof manager.getLeafId !== "function") return compute();
-	const sessionId = manager.getSessionId();
-	const leafId = manager.getLeafId();
-	const entryCount = manager.getEntryCount?.();
-	const model = ctx.model;
-	const contextWindow = model?.contextWindow;
-	const cached = shellSessionStats.get(manager);
-	if (cached && cached.sessionId === sessionId && cached.leafId === leafId &&
-		cached.entryCount === entryCount && cached.model === model && cached.contextWindow === contextWindow) return cached.stats;
+	if (typeof manager.getLeafId !== "function") return undefined;
+	return [manager.getSessionId(), manager.getLeafId(), manager.getEntryCount?.(), ctx.model, ctx.model?.contextWindow] as const;
+}
+
+function sessionStats(ctx: ExtensionContext): ShellSessionStats {
+	const compute = (): ShellSessionStats => ({ costTotal: sessionCost(ctx), usage: ctx.getContextUsage() });
+	const key = sessionStatsKey(ctx);
+	if (!key) return compute();
+	const cached = shellSessionStats.get(ctx.sessionManager);
+	if (cached && cached.key.every((value, index) => value === key[index])) return cached.stats;
 	const stats = compute();
-	shellSessionStats.set(manager, { sessionId, leafId, entryCount, model, contextWindow, stats });
+	shellSessionStats.set(ctx.sessionManager, { key, stats });
 	return stats;
 }
 
@@ -551,6 +561,80 @@ export function buildShellBarModel(
 		...(options.jobs !== undefined ? { jobs: options.jobs } : {}),
 		statuses,
 	};
+}
+
+export interface FooterStatusMemoDeps {
+	pi: ExtensionAPI;
+	ctx: ExtensionContext;
+	footerData: ShellFooterData;
+	usage: () => ProviderUsage | undefined;
+	profile: () => string | undefined;
+	jobs: () => RunningJobDisplay[] | undefined;
+	review: () => ReviewSidebarSnapshot | undefined;
+	tracker: () => Pick<WorktreeChangesTracker, "model" | "unbornRoots">;
+	visualSettings: () => unknown;
+	cardStyle: () => unknown;
+	/** Fork: extra builder options and model fields (profile models, DDATA, CI, gauge tick, Usage collapse); they join the key by value. */
+	extras?: () => { options?: BuildOptions; model?: Partial<ShellBarModel> };
+}
+
+// Issue #1681: railDigest evaluates every rail's digest before the fullscreen
+// layout's prepared cache can answer, so both Status rails digest per
+// keystroke and a cache hit still paid for building and serializing the whole
+// bar model. The memo keys on the cheap live inputs the model reads instead:
+// the digest serializes only this key, and the model is rebuilt just when one
+// of those inputs moved. On hosts without leaf identity the session stats
+// stay uncached and ride the key by value, so those hosts keep exactly the
+// pre-memo digest honesty.
+export function createFooterStatusMemo(deps: FooterStatusMemoDeps): { key(): string; model(): ShellBarModel } {
+	const { pi, ctx, footerData } = deps;
+	let cache: { key: string; model: ShellBarModel } | undefined;
+	const key = (): string => {
+		const statsKey = sessionStatsKey(ctx);
+		const model = ctx.model;
+		return JSON.stringify([
+			// Session statistics identity by value: without leaf identity the
+			// computed stats ride the key, so those hosts keep exactly the pre-memo
+			// digest honesty. The model rides its value pieces (id, contextWindow,
+			// effort lookup, OAuth state) because that is all buildShellBarModel
+			// reads — serializing the model object itself would bloat every digest.
+			statsKey ? [statsKey[0], statsKey[1], statsKey[2]] : sessionStats(ctx),
+			model?.id ?? null,
+			model?.contextWindow ?? null,
+			model?.reasoning ? (isNanAdaptiveReasoningModel(model) ? "auto" : pi.getThinkingLevel()) : undefined,
+			model ? ctx.modelRegistry.isUsingOAuth(model) : false,
+			footerData.getGitBranch(),
+			deps.profile(),
+			ctx.sessionManager.getSessionName(),
+			ctx.sessionManager.getCwd(),
+			[...footerData.getExtensionStatuses()].sort(([a], [b]) => a.localeCompare(b)),
+			deps.usage(),
+			deps.jobs(),
+			deps.review(),
+			(() => {
+				const { model: changes, unbornRoots } = deps.tracker();
+				return { fingerprint: changesFingerprint(changes), files: changes.files.length, added: changes.added, deleted: changes.deleted, unbornRoots: unbornRoots.length };
+			})(),
+			deps.visualSettings(),
+			deps.cardStyle(),
+			deps.extras?.(),
+		]);
+	};
+	const model = (): ShellBarModel => {
+		const k = key();
+		if (cache?.key === k) return cache.model;
+		const tracker = deps.tracker();
+		const extras = deps.extras?.();
+		const built: ShellBarModel = {
+			...buildShellBarModel(pi, ctx, footerData, { ...extras?.options, dirty: tracker.model.files.length, usage: deps.usage(), profile: deps.profile(), jobs: deps.jobs() }),
+			changes: { files: tracker.model.files.length, added: tracker.model.added, deleted: tracker.model.deleted },
+			review: deps.review(),
+			...extras?.model,
+		};
+		cache = { key: k, model: built };
+		return built;
+	};
+	return { key, model };
 }
 
 // Gauge-specific theme roles (issue #2222): resolved from the installed theme
@@ -623,6 +707,11 @@ interface PromptEditorDeps {
 	workingLabel?: () => string | undefined;
 	/** Paints one sweep pulse run `depth` cells behind the head (sweep-pulse.ts); defaults to `fg`. */
 	pulse?: (role: string, text: string, depth: number) => string;
+	/** Pasted images become atomic `[Image#N]` chips; absent, Pi's paste handler runs unchanged. */
+	attachments?: ImageAttachments;
+	readClipboardImage?: () => Promise<ClipboardImage | null>;
+	/** Injectable silence-watchdog window; production and tests default to SHELL_PULSE_WATCHDOG_MS. */
+	watchdogMs?: number;
 }
 
 // Gauge animation frame shared by the prompt pulse and the optional idle ticker.
@@ -688,7 +777,10 @@ export class GentlePromptEditor extends CustomEditor {
 	private visualReplacePending = false;
 	private visualObjectPending: "i" | "a" | undefined;
 	private visualAnchor: { line: number; col: number } | undefined;
-	private pulse: NodeJS.Timeout | undefined;
+	private watchdog: NodeJS.Timeout | undefined;
+	// Last time a frame painted (or the watchdog forced one) while working; the
+	// quality watchdog repaints only when now() drifts past its window.
+	private lastRenderAt = 0;
 	private readonly deps: PromptEditorDeps;
 	private floatMouseLayout?: ReturnType<typeof resolvePromptLayout>;
 	// Native selection engine (shift+home/end, alt+a, replace-on-key): ported
@@ -706,19 +798,97 @@ export class GentlePromptEditor extends CustomEditor {
 	// the text is still exactly this, so an edit in between never gets
 	// silently discarded (issue #1218 review).
 	private pendingIdleClearText: string | undefined;
+	// Pi's own paste handler (files, text, unsupported formats). Pi assigns
+	// `onPasteImage` after construction; the accessor below keeps it as the
+	// fallback and routes every paste key, Vim NORMAL included, to pasteImage.
+	private piPasteImage: (() => void) | undefined;
+	private pastingImage = false;
+	private disposed = false;
+	// Counts submitted drafts, so a clipboard read that resolves after its
+	// draft was sent never lands in (and rides along with) the next message.
+	private submittedDrafts = 0;
 
 	constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager, deps: PromptEditorDeps) {
 		super(tui, theme, keybindings);
 		this.selectionEngine = new SelectionEngine(this);
 		this.deps = deps;
 		this.keybindingsManager = keybindings;
+		const attachments = deps.attachments;
+		if (!attachments || !deps.readClipboardImage) return;
+		// SAFETY: Pi's Editor routes cursor movement, wrapping and deletion through
+		// its private segment(). Wrapping it only merges registered chips into one
+		// segment; if a future Pi drops the method, chips degrade to plain text.
+		const host = this as unknown as {
+			segment?: (text: string, mode?: string) => Iterable<{ segment: string; index: number; input: string }>;
+			submitValue?: () => void;
+		};
+		const segment = host.segment;
+		if (typeof segment === "function") host.segment = (text, mode) => attachments.segment(text, segment.call(this, text, mode));
+		// SAFETY: Pi empties the draft in its private submitValue() before onSubmit.
+		// Counting here only marks the draft boundary; if a future Pi drops the
+		// method, a late read falls back to landing in the next draft.
+		const submitValue = host.submitValue;
+		if (typeof submitValue === "function") host.submitValue = () => { this.submittedDrafts += 1; submitValue.call(this); };
+		// Undefined until Pi installs its handler, so Pi's `if (!onPasteImage)`
+		// wiring still runs; afterwards every read returns the chip handler.
+		Object.defineProperty(this, "onPasteImage", {
+			configurable: true,
+			enumerable: true,
+			get: () => this.piPasteImage ? () => this.pasteImage() : undefined,
+			set: (handler: (() => void) | undefined) => { this.piPasteImage = handler; },
+		});
+	}
+
+	/** Registered image chips on `line`; the Vim adapter keeps NORMAL motions out of them. */
+	atomicSpans(line: string): Array<{ start: number; end: number }> {
+		return this.deps.attachments?.spans(line) ?? [];
+	}
+
+	/** Insert the clipboard image as a chip, or hand the paste to Pi. */
+	private pasteImage(): void {
+		const attachments = this.deps.attachments;
+		const read = this.deps.readClipboardImage;
+		if (!attachments || !read) { this.piPasteImage?.(); return; }
+		// The Windows clipboard read on WSL takes about a second; a repeated key
+		// press during it must not insert a second chip or a stray path.
+		if (this.pastingImage) return;
+		this.pastingImage = true;
+		void this.insertClipboardImage(attachments, read).finally(() => { this.pastingImage = false; });
+	}
+
+	private async insertClipboardImage(attachments: ImageAttachments, read: () => Promise<ClipboardImage | null>): Promise<void> {
+		const draft = this.submittedDrafts;
+		let image: ClipboardImage | null;
+		try { image = await read(); } catch { image = null; }
+		// A read that outlives this editor (session switch, quit) must not
+		// register bytes in the next session or write into a disposed prompt.
+		if (this.disposed) return;
+		// The draft this paste belonged to was already sent: neither attach the
+		// image to the next message nor run Pi's fallback into the new draft.
+		if (this.submittedDrafts !== draft) {
+			if (image) this.deps.notifyCompatibility?.("Image paste discarded: the message was sent before the clipboard finished reading. Paste again to attach it.");
+			return;
+		}
+		try {
+			if (!image) { this.piPasteImage?.(); return; }
+			const { token } = attachments.add(image);
+			const cursor = this.getCursor();
+			const line = this.getLines()[cursor.line] ?? "";
+			const before = cursor.col > 0 && !/\s/.test(line[cursor.col - 1] ?? "") ? " " : "";
+			const after = cursor.col < line.length && !/\s/.test(line[cursor.col] ?? "") ? " " : "";
+			this.insertTextAtCursor(`${before}${token}${after}`);
+			this.deps.requestRender();
+		} catch (error) {
+			// Never let a paste reject unhandled: Node 24 ends the process on it.
+			this.deps.notifyCompatibility?.(`Image paste failed: ${error instanceof Error ? error.message : String(error)}`);
+		}
 	}
 
 	setAnimationPolicy(policy: AnimationPolicy): void {
 		if (this.animationPolicy === policy) return;
 		this.animationPolicy = policy;
-		this.stopPulse();
-		if (this.promptState === PROMPT_STATE.WORKING) this.startPulse();
+		this.stopWatchdog();
+		if (this.promptState === PROMPT_STATE.WORKING) this.startWatchdog();
 		this.deps.requestRender();
 	}
 
@@ -803,25 +973,33 @@ export class GentlePromptEditor extends CustomEditor {
 		this.deps.requestRender();
 	}
 
-	private startPulse(): void {
+	private startWatchdog(): void {
 		if (this.animationPolicy === "potato") return;
-		this.pulse = setInterval(() => {
+		const windowMs = this.deps.watchdogMs ?? SHELL_PULSE_WATCHDOG_MS;
+		this.lastRenderAt = this.deps.now();
+		this.watchdog = setInterval(() => {
+			// Render-driven petal (gentle-shell#994): streaming frames already
+			// advance the animation in render(), so under quality the watchdog
+			// stays silent unless no frame painted within its window. performance
+			// keeps its coarse cadence regardless of render traffic.
+			if (this.animationPolicy === "quality" && this.deps.now() - this.lastRenderAt < windowMs) return;
 			this.tick += 1;
 			this.deps.onPulse?.();
+			this.lastRenderAt = this.deps.now();
 			this.deps.requestRender();
-		}, this.animationPolicy === "performance" ? 1000 : SHELL_PULSE_MS);
-		this.pulse.unref();
+		}, windowMs);
+		this.watchdog.unref();
 	}
 
 	setWorking(working: boolean): void {
 		this.promptState = working ? PROMPT_STATE.WORKING : PROMPT_STATE.IDLE;
-		this.stopPulse();
+		this.stopWatchdog();
 		if (!working) {
 			this.pendingEscapeCancelDeadline = undefined;
 		} else {
 			this.pendingIdleClearDeadline = undefined;
 			this.pendingIdleClearText = undefined;
-			this.startPulse();
+			this.startWatchdog();
 		}
 		this.deps.requestRender();
 	}
@@ -1308,6 +1486,15 @@ export class GentlePromptEditor extends CustomEditor {
 	}
 
 	render(width: number): string[] {
+		// Render-driven petal (gentle-shell#994): every frame the host already
+		// paints while working advances the animation for free, so no fast
+		// timer forces renders during streaming.
+		if (this.promptState === PROMPT_STATE.WORKING && this.animationPolicy === "quality") {
+			this.tick += 1;
+			this.lastRenderAt = this.deps.now();
+			// Fork: the Matrix gauge sweep advances with the petal.
+			this.deps.onPulse?.();
+		}
 		const layout = resolvePromptLayout(width, cardStyle(), this.deps.bg);
 		this.floatMouseLayout = layout.background ? layout : undefined;
 		const inner = layout.nativeWidth;
@@ -1374,7 +1561,8 @@ export class GentlePromptEditor extends CustomEditor {
 	}
 
 	dispose(): void {
-		this.stopPulse();
+		this.disposed = true;
+		this.stopWatchdog();
 	}
 
 	private isPendingEscapeCancel(): boolean {
@@ -1389,11 +1577,60 @@ export class GentlePromptEditor extends CustomEditor {
 		);
 	}
 
-	private stopPulse(): void {
-		if (this.pulse) clearInterval(this.pulse);
-		this.pulse = undefined;
+	private stopWatchdog(): void {
+		if (this.watchdog) clearInterval(this.watchdog);
+		this.watchdog = undefined;
 		this.tick = 0;
 	}
+}
+
+const IMAGE_ATTACHMENTS_WIDGET_KEY = "gentle-shell-image-attachments";
+const IMAGE_PREVIEW_MAX_ROWS = 6;
+const IMAGE_PREVIEW_MAX_COLUMNS = 40;
+
+/** Unknown capabilities count as image-capable; Pi decides for its own models. */
+export function modelAcceptsImages(model: { input?: readonly string[] } | undefined): boolean {
+	return !model?.input || model.input.includes("image");
+}
+
+/**
+ * Lists the chips still in the draft above the prompt. Terminals with an image
+ * protocol (Kitty, iTerm2) get a thumbnail under each label; every other
+ * terminal, or a multiplexer that hides the protocol, gets the label alone.
+ */
+export function imageAttachmentsWidget(
+	attachments: ImageAttachments,
+	draft: () => string,
+	theme: { fg(color: string, text: string): string },
+	acceptsImages: () => boolean,
+	canDrawImages: () => boolean = () => getCapabilities().images !== null,
+) {
+	const previews = new Map<number, Image>();
+	return {
+		render(width: number): string[] {
+			const shown = attachments.referenced(draft());
+			for (const id of previews.keys()) if (!shown.some((attachment) => attachment.id === id)) previews.delete(id);
+			if (shown.length === 0) return [];
+			const draw = canDrawImages();
+			const warning = acceptsImages() ? "" : theme.fg("warning", " · not sent: the current model does not accept images");
+			const lines: string[] = [];
+			for (const attachment of shown) {
+				lines.push(truncateToWidth(`${theme.fg("accent", attachment.token)} ${theme.fg("dim", describeAttachment(attachment))}${warning}`, width));
+				if (!draw) continue;
+				let preview = previews.get(attachment.id);
+				if (!preview) {
+					preview = new Image(attachment.base64, attachment.mimeType, { fallbackColor: (text) => theme.fg("dim", text) },
+						{ maxWidthCells: IMAGE_PREVIEW_MAX_COLUMNS, maxHeightCells: IMAGE_PREVIEW_MAX_ROWS }, attachment.dimensions);
+					previews.set(attachment.id, preview);
+				}
+				lines.push(...preview.render(width));
+			}
+			return lines;
+		},
+		invalidate(): void {
+			for (const preview of previews.values()) preview.invalidate();
+		},
+	};
 }
 
 // Stable across extension module reloads; never infer ownership from a name.
@@ -1403,7 +1640,7 @@ type PromptFactory = NonNullable<ReturnType<ExtensionContext["ui"]["getEditorCom
 function installPrompt(
 	ctx: ExtensionContext,
 	onCreated: (prompt: GentlePromptEditor) => void,
-	promptDeps: { now: () => number; doubleEscCancelEnabled: () => boolean; dispatchQueuedText: (text: string) => void; vimRuntimeVersion?: () => string | undefined },
+	promptDeps: { now: () => number; doubleEscCancelEnabled: () => boolean; dispatchQueuedText: (text: string) => void; vimRuntimeVersion?: () => string | undefined; attachments?: ImageAttachments; readClipboardImage?: () => Promise<ClipboardImage | null> },
 ): boolean {
 	const previous = ctx.ui.getEditorComponent() as PromptFactory | undefined;
 	if (previous && !previous[PROMPT_OWNER]) return false;
@@ -1424,10 +1661,12 @@ function installPrompt(
 			tuiVersion: promptDeps.vimRuntimeVersion,
 			workingLabel: () => oddPhaseRegistry.label(ctx.sessionManager.getSessionId()),
 			pulse: (role, text, depth) => paintPulse(ctx.ui.theme, role, text, depth),
+			attachments: promptDeps.attachments,
+			readClipboardImage: promptDeps.readClipboardImage,
 		});
 		// Pi's own docs require an explicit requestRender() after a state change
 		// (docs/tui.md: "Call tui.requestRender() after state changes"); no host
-		// re-render is implicitly guaranteed, and the WORKING pulse loop does not
+		// re-render is implicitly guaranteed, and the WORKING watchdog does not
 		// run at all under the "potato" animation policy. Register this session's
 		// redraw so a phase reported by the tool is visible immediately.
 		oddPhaseRegistry.setRenderRequest(ctx.sessionManager.getSessionId(), () => tui.requestRender());
@@ -1529,26 +1768,7 @@ const fileRevision = (root: string): FileRevision => async (path) => {
 	return `${info.size}:${info.mtimeMs}`;
 };
 
-export interface ExternalEditorHost {
-	stop(): void;
-	start(): void;
-	requestRender(force?: boolean): void;
-}
-
-export function openInExternalEditor(host: ExternalEditorHost, path: string, env: NodeJS.ProcessEnv = process.env, spawn: typeof spawnSync = spawnSync, cwd?: string): boolean {
-	const command = env.VISUAL || env.EDITOR;
-	if (!command) return false;
-	const [editor, ...editorArgs] = command.split(" ");
-	host.stop();
-	try {
-		spawn(editor, [...editorArgs, path], { cwd, stdio: "inherit", shell: process.platform === "win32" });
-	} finally {
-		host.start();
-		host.requestRender(true);
-	}
-	return true;
-}
-
+export { openInExternalEditor, type ExternalEditorHost } from "../lib/external-editor.ts";
 export function changesShortcut(env: NodeJS.ProcessEnv = process.env): string | undefined {
 	const value = env.GENTLE_PI_SHELL_CHANGES_KEY?.trim();
 	if (value === undefined) return CHANGES_SHORTCUT_DEFAULT;
@@ -1576,8 +1796,11 @@ function changesPollMs(env: NodeJS.ProcessEnv): number {
 const USAGE_FETCH_TIMEOUT_DEFAULT_MS = 10_000;
 const usageFetchTimeoutMs = (env: NodeJS.ProcessEnv): number => positiveMs(env.GENTLE_PI_SHELL_USAGE_TIMEOUT_MS, USAGE_FETCH_TIMEOUT_DEFAULT_MS);
 
+// The footer memo reads this every keystroke: tracker models store the
+// digest once per scan (lib/shell-changes.ts), so this is O(1); hand-built
+// models without a stored digest fall back to computing it here.
 function changesFingerprint(model: ChangesModel): string {
-	return model.files.map((file) => `${file.path}:${file.status}:${file.added}:${file.deleted}:${file.diffRevision ?? ""}:${file.countsUnavailable ?? ""}`).join("|");
+	return model.digest ?? changesDigest(model);
 }
 
 interface OverlayDeps {
@@ -1622,7 +1845,11 @@ async function showChangesOverlay(ctx: ExtensionContext, deps: OverlayDeps): Pro
 			{ overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: 0, anchor: "center" } },
 		);
 		if (!chosen || !host) return;
-		if (!openInExternalEditor(host, chosen.file.path, process.env, spawnSync, chosen.root)) ctx.ui.notify("No editor configured. Set $VISUAL or $EDITOR.", "warning");
+		try {
+			if (!openInExternalEditor(host, chosen.file.path, process.env, spawnSync, chosen.root)) ctx.ui.notify("No editor configured. Set $VISUAL or $EDITOR.", "warning");
+		} catch (error) {
+			ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
+		}
 	} finally {
 		clearInterval(poll);
 		view?.dispose();
@@ -2260,6 +2487,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		});
 	}
 	let prompt: GentlePromptEditor | undefined;
+	// Images pasted into the current draft; emptied on every submit.
+	const imageAttachments = new ImageAttachments();
 	// Set by abortAndDispatchQueued via dispatchQueuedText when an Esc aborts
 	// a turn with a non-empty queue; sent exactly once, from agent_settled,
 	// once the aborted run has fully settled (issue #1218). Several aborts
@@ -2531,26 +2760,35 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				clearTimer: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
 				requestRender: () => tui.requestRender(),
 			});
-			const footerModel = (): ShellBarModel => ({
-				...buildShellBarModel(pi, ctx, footerData, {
-					dirty: tracker.model.files.length,
-					usage: usage.get(ctx.model?.provider ?? ""),
-					profile: deps.activeProfile(),
-					profileModels: deps.activeProfileModels(),
-					orchestratorModel: deps.profileOrchestrator(),
-					localTokens: sessionTokensByModel(ctx),
-					usageByProvider: new Map(usage.all().map((entry) => [entry.provider, entry])),
-					ddataEnv: ddataEnv?.view(ctx.sessionManager.getCwd(), ctx.sessionManager.getSessionId()),
-					ci: ciStatus?.view(ctx.sessionManager.getCwd()),
-					ciWork: ciStatus?.views(ctx.sessionManager.getCwd()),
-					ciFrame,
-					jobs: runningJobs,
+			// Fork: profile models, DDATA, CI, the gauge tick and the Usage
+			// collapse ride the memo as extras, so they join its key by value.
+			const footerStatus = createFooterStatusMemo({
+				pi, ctx, footerData,
+				usage: () => usage.get(ctx.model?.provider ?? ""),
+				profile: () => deps.activeProfile(),
+				jobs: () => runningJobs,
+				review: () => review,
+				tracker: () => tracker,
+				visualSettings: () => visualSettings,
+				cardStyle: () => cardStyle(),
+				extras: () => ({
+					options: {
+						profileModels: deps.activeProfileModels(),
+						orchestratorModel: deps.profileOrchestrator(),
+						localTokens: sessionTokensByModel(ctx),
+						usageByProvider: new Map(usage.all().map((entry) => [entry.provider, entry])),
+						ddataEnv: ddataEnv?.view(ctx.sessionManager.getCwd(), ctx.sessionManager.getSessionId()),
+						ci: ciStatus?.view(ctx.sessionManager.getCwd()),
+						ciWork: ciStatus?.views(ctx.sessionManager.getCwd()),
+						ciFrame,
+					},
+					model: {
+						tick: gaugeAnimationEnabled() ? gaugeTick.value : undefined,
+						usageExpanded: usageCollapse.expanded(),
+					},
 				}),
-				changes: { files: tracker.model.files.length, added: tracker.model.added, deleted: tracker.model.deleted },
-				tick: gaugeAnimationEnabled() ? gaugeTick.value : undefined,
-				review,
-				usageExpanded: usageCollapse.expanded(),
 			});
+			const footerModel = footerStatus.model;
 			// At narrow fullscreen widths only one status row paints: a top header
 			// suppresses the bottom bar in the layout, and otherwise the bottom bar
 			// takes over the header's data while the below-input header steps aside.
@@ -2601,7 +2839,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				digest: () => {
 					titleFrame = titleAnimator.frame();
 					titleAnimator.schedule(titleFrame);
-					return JSON.stringify([footerModel(), tracker.model, visualSettings, cardStyle(), statusTitleKey(titleFrame), statusEmbed?.digest() ?? "[]"]);
+					return JSON.stringify([footerStatus.key(), statusTitleKey(titleFrame), statusEmbed?.digest() ?? "[]"]);
 				},
 				// The rail only paints in fullscreen, where the header chrome (the top
 				// rail row, or the below-input widget) always paints too; the card then
@@ -2631,7 +2869,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			// when Status is absent. Opaque statuses and working state stay excluded.
 			const headerBar = (width: number) => renderShellHeaderChrome(buildShellHeaderModel(footerModel(), !statusCardVisible() && (statusOwner() === STATUS_OWNER.HEADER || visualSettings.statusPlacement === "hidden")), theme, width, usageShortcutKey, visualSettings, gaugePaint(ctx), gaugeAnimationEnabled() ? gaugeTick.value : undefined);
 			const disposeHeader = sidebarHeader(tui, {
-				digest: () => JSON.stringify([footerModel(), tracker.model, visualSettings, cardStyle()]),
+				digest: () => footerStatus.key(),
 				render: (width) => headerBar(width).rows,
 				invalidate() {},
 				handleMouse(event) {
@@ -2690,8 +2928,15 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				prompt.setAnimationPolicy(animationPolicy);
 				prompt.setVimPolicy(vimPolicy);
 			},
-			{ now: () => deps.now(), doubleEscCancelEnabled: () => doubleEscCancelPolicy === "on", dispatchQueuedText: (text) => { pendingQueuedText = pendingQueuedText === undefined ? text : `${pendingQueuedText}\n\n${text}`; }, vimRuntimeVersion: deps.vimRuntimeVersion },
+			{ now: () => deps.now(), doubleEscCancelEnabled: () => doubleEscCancelPolicy === "on", dispatchQueuedText: (text) => { pendingQueuedText = pendingQueuedText === undefined ? text : `${pendingQueuedText}\n\n${text}`; }, vimRuntimeVersion: deps.vimRuntimeVersion, attachments: imageAttachments, readClipboardImage: () => (deps.readClipboardImage ?? readClipboardImage)() },
 		);
+		imageAttachments.clear();
+		ctx.ui.setWidget(IMAGE_ATTACHMENTS_WIDGET_KEY, ownsPrompt
+			// Kitty re-sends a full image block whenever content above it moves, so
+			// thumbnails show only while idle; while the agent streams, labels only.
+			? (_tui, theme) => imageAttachmentsWidget(imageAttachments, () => prompt?.getText() ?? "", theme, () => modelAcceptsImages(ctx.model),
+				() => getCapabilities().images !== null && ctx.isIdle())
+			: undefined);
 		// Hide native feedback only when our petal replaces it. Native transcript
 		// thinking blocks remain Pi-owned; this changes only the supported loader UI.
 		// Inside Herdr the row stays: its native Pi detection reads it.
@@ -2781,6 +3026,20 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	pi.on("session_before_switch", (_event, ctx) => {
 		promotionStatusRegistry.clear(ctx.sessionManager.getSessionId());
 	});
+	// Chips still in the submitted draft travel as real image attachments, so
+	// the model sees the image without calling `read` on a temp-file path.
+	pi.on("input", (event, ctx) => {
+		if (event.source !== "interactive" || imageAttachments.size === 0) return { action: "continue" };
+		// The editor may already hold the next draft (a prompt Pi queued during
+		// compaction): its chips stay registered for their own submit.
+		const submitted = imageAttachments.submit(event.text, modelAcceptsImages(ctx.model), prompt?.getText() ?? "");
+		if (!submitted) return { action: "continue" };
+		if (submitted.omitted > 0 && ctx.hasUI) {
+			const count = submitted.omitted === 1 ? "1 pasted image was" : `${submitted.omitted} pasted images were`;
+			ctx.ui.notify(`${count} not sent: the current model does not accept images. Switch to a vision model and paste again.`, "warning");
+		}
+		return { action: "transform", text: submitted.text, images: [...(event.images ?? []), ...submitted.images] };
+	});
 	pi.on("session_shutdown", (_event, ctx) => {
 		closeCustomize?.();
 		if (review) {
@@ -2801,6 +3060,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		promotionStatusRegistry.clear(ctx.sessionManager.getSessionId());
 		pendingQueuedText = undefined;
 		stopIdleGaugeAnimation();
+		imageAttachments.clear();
+		ctx.ui.setWidget(IMAGE_ATTACHMENTS_WIDGET_KEY, undefined);
 		prompt?.dispose();
 		prompt = undefined;
 		if ((ctx.ui.getEditorComponent() as PromptFactory | undefined)?.[PROMPT_OWNER]) {
@@ -2820,10 +3081,14 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		applyChanges(ctx, model);
 		// A failed root scan is unknown, never clean: say so whenever one failed.
 		const failed = tracker.failedRoots.length;
+		const unborn = tracker.unbornRoots.length;
 		const roots = tracker.scannedRootCount;
 		if (model.files.length === 0) {
 			if (failed > 0 && failed === roots) ctx.ui.notify(`Could not read Git status for ${failed} ${failed === 1 ? "root" : "roots"}; uncommitted changes are unknown.`, "error");
 			else if (failed > 0) ctx.ui.notify(`No uncommitted changes in the roots Git could read; Git status failed for ${failed} of ${roots} roots.`, "warning");
+			else if (unborn > 0) ctx.ui.notify(unborn === roots
+				? `No commits yet in ${unborn === 1 ? "this session's repository" : "any root"} — make a commit to start tracking changes.`
+				: `No uncommitted changes; ${unborn} of ${roots} roots have no commits yet, so they are not tracked.`, "info");
 			else ctx.ui.notify("No uncommitted changes in this session's repository or its subagents' worktrees.", "info");
 			return;
 		}
@@ -3016,19 +3281,21 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					await refreshYolo();
 				},
 			});
-			for (const mode of ["normal", "auto", "yolo"] as const) rows.push({
+			for (const mode of ["normal", "auto", "yolo", "super-yolo"] as const) rows.push({
 				category,
 				label: () => `Session permissions: ${mode.toUpperCase()}${mode === "auto" ? " (beta)" : ""}${permissionDisplay === mode ? " (current)" : ""}`,
 				preview: () => ({ title: "Permissions · current session", sample: mode === "auto"
 					? "independent session-model action checks · extra inference cost · hard safety and native consent remain"
-					: mode === "yolo" ? "ordinary scoped delivery permission · destructive confirmations remain" : "normal checks · overrides an elevated global default" }),
+					: mode === "yolo" ? "ordinary scoped delivery permission · destructive confirmations remain"
+					: mode === "super-yolo" ? "no permission prompts · only private-path protection (.env, keys, secrets) remains"
+					: "normal checks · overrides an elevated global default" }),
 				action: async () => {
 					if (closed) return;
 					if (!adapter?.setMode || !await adapter.setMode(mode)) ctx.ui.notify("Session mode unchanged — live primary UI unavailable or changed.", "warning");
 					await refreshYolo();
 				},
 			});
-			for (const mode of ["normal", "auto", "yolo"] as const) rows.push({
+			for (const mode of ["normal", "auto", "yolo", "super-yolo"] as const) rows.push({
 				category,
 				label: () => `Default permissions: ${mode.toUpperCase()}${mode === "auto" ? " (beta)" : ""}${permissionDefault === mode ? " (saved)" : ""}`,
 				preview: () => ({ title: "Permissions · user-global default", sample: `New primary sessions start in ${mode.toUpperCase()}; current session stays unchanged. ${mode === "auto" ? "Additional classifier inference uses the session model; usage is separate." : "Independent safety and consent remain."}` }),

@@ -45,7 +45,7 @@ export interface ShellBarModel {
 	provider?: string;
 	/** Usage of every provider seen this session, so a mixed profile resolves. */
 	usageByProvider?: ReadonlyMap<string, ProviderUsage>;
-	changes?: { files: number; added: number; deleted: number; notice?: string };
+	changes?: { files: number; added: number; deleted: number };
 	cwd: string;
 	branch: string | null;
 	dirty: number | undefined;
@@ -750,7 +750,6 @@ function sidebarCardRows(model: ShellBarModel, theme: ShellBarTheme, width: numb
 				changes?.files
 					? `${changes.files} ${changes.files === 1 ? "file" : "files"} · ${theme.fg("success", `+${changes.added}`)} ${theme.fg("error", `−${changes.deleted}`)}`
 					: label("No captured changes"),
-				...(changes?.notice ? [theme.fg("warning", sanitizeStatus(changes.notice))] : []),
 				label("/gentle:changes"),
 			],
 		}]),
@@ -1157,7 +1156,9 @@ export function renderShellBelowInputFloat(model: ShellBarModel, theme: ShellBar
 	const targetWidth = Math.max(0, Math.floor(width));
 	if (floatHeaderPaint(theme, targetWidth, () => "") === undefined) return undefined;
 	const chrome = renderShellHeaderChrome(buildShellHeaderModel(model, presentation.statusPlacement === "hidden"), theme, targetWidth, usageHint, presentation, paint, model.tick);
-	const changesRow = changes?.files.length && presentation.visibility.changes !== false
+	// The row exists only while files are actually tracked; an unborn-only root
+	// is silence here (/gentle:changes explains the state on demand).
+	const changesRow = Boolean(changes && changes.files.length > 0) && presentation.visibility.changes !== false
 		? floatHeaderRow(theme, targetWidth, (inner) => renderChangesWidget(changes, theme, inner)[0] ?? "")
 		: undefined;
 	const statuses = presentation.statusPlacement === "hidden" ? [] : [

@@ -1,6 +1,7 @@
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { isFinished, TASK_STATUS, type TaskRecord, type TaskStatus } from "./agents-protocol.ts";
 import { formatCost, formatTokens } from "./shell-bar.ts";
+import { paintHoverable } from "./shell-hover.ts";
 import { CARD_TONE, panelExtraRows, panelInnerWidth, renderCard, type CardTheme, type CardTone } from "./shell-card.ts";
 import { SHELL_GLYPHS } from "./shell-glyphs.ts";
 import { SWEEP_ROLE, SWEEP_STEP_MS } from "./sweep-pulse.ts";
@@ -67,6 +68,10 @@ export interface AgentsWidgetOptions {
 	 * (or no tick) leaves the frame static.
 	 */
 	sweep?: boolean;
+	// Paint the clickable "▾ Collapse" / "▸ Expand" control in the header, the
+	// same control the Todos card carries; hovered paints its hover role.
+	collapseControl?: boolean;
+	hovered?: boolean;
 }
 
 interface StatusLook {
@@ -409,6 +414,11 @@ export function shownTasks(tasks: readonly TaskRecord[], now: number, options: P
 			: widgetTasks(tasks, now);
 }
 
+/** The tone the card paints for these tasks, so a host can locate its header row. */
+export function agentsCardTone(tasks: readonly TaskRecord[], now: number, options: Pick<AgentsWidgetOptions, "keepFinished" | "activeOnly"> = {}): CardTone {
+	return tone(shownTasks(tasks, now, options));
+}
+
 export function renderAgentsCard(tasks: readonly TaskRecord[], theme: CardTheme, width: number, now: number, options: AgentsWidgetOptions): string[] {
 	const shown = shownTasks(tasks, now, options);
 	if (shown.length === 0) return [];
@@ -431,8 +441,11 @@ export function renderAgentsCard(tasks: readonly TaskRecord[], theme: CardTheme,
 		}
 	}
 	if (hidden > 0) body.push(overflowRow(hidden, theme, options.viewKey));
+	const icon = options.collapsed ? "▸" : "▾";
+	const control = `${icon} ${width >= 28 ? (options.collapsed ? "Expand" : "Collapse") : ""}`.trimEnd();
+	const title = options.collapseControl ? `Agents ${paintHoverable(theme, control, options.hovered ?? false, "accent")}` : "Agents";
 	return renderCard(
-		{ title: "Agents", subtitle: counts(shown), body, tone: tone(shown), glyph: agentsGlyph(options.tick) },
+		{ title, subtitle: counts(shown), body, tone: tone(shown), glyph: agentsGlyph(options.tick) },
 		theme,
 		width,
 		// Flat: the frame and rows sit on the window background, no panel fill.
