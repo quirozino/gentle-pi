@@ -24,8 +24,16 @@ test("a repository runner-kit does not serve gets no CI row", () => {
 	assert.equal(row(status({}), { repo: "quirozino/other" }), undefined);
 });
 
-test("a branch with no run on the runners yet is pending", () => {
-	assert.deepEqual(row(status({})), { text: "pendiente", tone: "warning", motion: "steady" });
+test("a branch with no run on the runners yet says so, muted and steady", () => {
+	assert.deepEqual(row(status({})), { text: "sin ejecuciones", tone: "muted", motion: "steady" });
+});
+
+test("a run in a state this version does not know is pending, muted, never a warning", () => {
+	assert.deepEqual(row(status({ branches: { "feat/x": { state: "queued", sha: "s" } } })), {
+		text: "pendiente",
+		tone: "muted",
+		motion: "steady",
+	});
 });
 
 test("a running run shows job progress and elapsed minutes, pulsing", () => {
@@ -199,7 +207,7 @@ test("a change to the status file refreshes the row and notifies", async () => {
 		},
 	});
 	await controller.refresh("/r");
-	assert.equal(controller.view("/r")?.text, "pendiente");
+	assert.equal(controller.view("/r")?.text, "sin ejecuciones");
 	let notified = 0;
 	controller.onChange(() => notified++);
 	file = status({ branches: { "feat/x": { state: "running", jobs_done: 1, jobs_total: 5, started_at: minutesAgo(2), sha: "s" } } });
@@ -215,7 +223,7 @@ test("a change to the status file refreshes the row and notifies", async () => {
 const beat = (state: string, ageSeconds: number) => ({ state, heartbeat: new Date(NOW - ageSeconds * 1000).toISOString() });
 
 test("a fresh supervisor heartbeat keeps the normal row", () => {
-	assert.equal(row({ ...status({}), supervisor: beat("running", 30) })?.text, "pendiente");
+	assert.equal(row({ ...status({}), supervisor: beat("running", 30) })?.text, "sin ejecuciones");
 });
 
 test("a stale or stopped supervisor makes the row blink offline, even mid-run", () => {
@@ -225,7 +233,7 @@ test("a stale or stopped supervisor makes the row blink offline, even mid-run", 
 });
 
 test("a status file without a heartbeat (older runner-kit) keeps the previous behavior", () => {
-	assert.equal(row(status({}))?.text, "pendiente");
+	assert.equal(row(status({}))?.text, "sin ejecuciones");
 });
 
 test("the controller arms one timeout for heartbeat expiry, so a dead supervisor shows without a file change", async () => {
@@ -247,7 +255,7 @@ test("the controller arms one timeout for heartbeat expiry, so a dead supervisor
 		},
 	});
 	await controller.refresh("/r");
-	assert.equal(controller.view("/r")?.text, "pendiente");
+	assert.equal(controller.view("/r")?.text, "sin ejecuciones");
 	let notified = 0;
 	controller.onChange(() => notified++);
 	// Armed for when the 10 s old heartbeat crosses 120 s (+1 s margin).
@@ -257,4 +265,119 @@ test("the controller arms one timeout for heartbeat expiry, so a dead supervisor
 	assert.equal(controller.view("/r")?.text, "offline");
 	assert.equal(notified, 1);
 	controller.dispose();
+});
+
+// --- repositories the session works in ----------------------------------------
+
+// Two served repositories: ddata (two worktrees) and herdr-custom; /srv/workspaces
+// itself is a repository without a GitHub remote.
+const ROOTS: Record<string, { remote?: string; branch: string }> = {
+	"/srv/workspaces": { branch: "master" },
+	"/srv/workspaces/ddata-a": { remote: "https://github.com/quirozino/ddata.git", branch: "fix/a" },
+	"/srv/workspaces/ddata-b": { remote: "https://github.com/quirozino/ddata.git", branch: "fix/b" },
+	"/srv/workspaces/herdr": { remote: "git@github.com:quirozino/herdr-custom.git", branch: "main" },
+	"/srv/workspaces/public": { remote: "https://github.com/quirozino/public-thing", branch: "main" },
+};
+const workStatus: RunnerKitStatus = {
+	version: 1,
+	repos: {
+		"quirozino/ddata": { branches: { "fix/a": { state: "validated", updated_at: minutesAgo(5) }, "fix/b": { state: "failure", failed_job: "tests" } } },
+		"quirozino/herdr-custom": { branches: { main: { state: "validated", updated_at: minutesAgo(60) } } },
+	},
+};
+const workController = (file: RunnerKitStatus = workStatus, roots = ROOTS) => {
+	const gitCalls: string[] = [];
+	const controller = createCiStatusController({
+		git: async (cwd: string, args: string[]) => {
+			gitCalls.push(`${cwd} ${args[0]}`);
+			const root = roots[cwd];
+			if (!root) return undefined;
+			if (args[0] === "remote") return root.remote;
+			if (args[0] === "rev-parse") return root.branch;
+			return "0";
+		},
+		readFile: async () => JSON.stringify(file),
+		statusPath: "/x",
+		repoRoot: (path: string) => Object.keys(roots).filter((root) => path === root || path.startsWith(`${root}/`)).sort((a, b) => b.length - a.length)[0],
+		now: () => NOW,
+		watch: () => () => {},
+	});
+	return { controller, gitCalls };
+};
+
+test("work in another served repository adds a labeled CI row, even from a cwd without GitHub", async () => {
+	const { controller } = workController();
+	await controller.refresh("/srv/workspaces");
+	assert.equal(controller.view("/srv/workspaces"), undefined);
+	await controller.noteWork("/srv/workspaces/ddata-a/hosting/index.html");
+	assert.deepEqual(controller.views("/srv/workspaces"), [
+		{ label: "ddata · fix/a", row: { text: "validado · 5m", tone: "success", motion: "steady" } },
+	]);
+	controller.dispose();
+});
+
+test("work outside GitHub or in a repository runner-kit does not serve adds no row", async () => {
+	const { controller } = workController();
+	await controller.refresh("/srv/workspaces");
+	await controller.noteWork("/srv/workspaces/notes.md");
+	await controller.noteWork("/srv/workspaces/public/src/a.ts");
+	await controller.noteWork("/tmp/elsewhere/file");
+	assert.deepEqual(controller.views("/srv/workspaces"), []);
+	controller.dispose();
+});
+
+test("rows follow the most recent work first, three at most counting the session's own", async () => {
+	const { controller } = workController();
+	await controller.refresh("/srv/workspaces/ddata-a");
+	await controller.noteWork("/srv/workspaces/herdr/x");
+	await controller.noteWork("/srv/workspaces/ddata-b/y");
+	await controller.noteWork("/srv/workspaces/ddata-a/z"); // the session's own repository: no extra row
+	assert.deepEqual(controller.views("/srv/workspaces/ddata-a").map((view) => view.label), ["ddata · fix/b", "herdr-custom · main"]);
+	await controller.noteWork("/srv/workspaces/herdr/x");
+	assert.deepEqual(controller.views("/srv/workspaces/ddata-a").map((view) => view.label), ["herdr-custom · main", "ddata · fix/b"]);
+	controller.dispose();
+});
+
+test("a repeated work path asks git only once", async () => {
+	const { controller, gitCalls } = workController();
+	await controller.refresh("/srv/workspaces");
+	await controller.noteWork("/srv/workspaces/ddata-a/a");
+	const after = gitCalls.length;
+	await controller.noteWork("/srv/workspaces/ddata-a/b");
+	await controller.noteWork("/srv/workspaces/notes.md");
+	await controller.noteWork("/srv/workspaces/notes.md");
+	assert.equal(gitCalls.filter((call) => call.startsWith("/srv/workspaces/ddata-a")).length, 3);
+	assert.ok(gitCalls.length - after <= 3, "a root without GitHub is resolved once");
+	controller.dispose();
+});
+
+test("refresh re-reads the branch of every followed repository", async () => {
+	const roots = { ...ROOTS, "/srv/workspaces/ddata-a": { ...ROOTS["/srv/workspaces/ddata-a"]!, branch: "fix/a" } };
+	const { controller } = workController(workStatus, roots);
+	await controller.refresh("/srv/workspaces");
+	await controller.noteWork("/srv/workspaces/ddata-a/a");
+	roots["/srv/workspaces/ddata-a"] = { ...roots["/srv/workspaces/ddata-a"], branch: "fix/b" };
+	await controller.refresh("/srv/workspaces");
+	assert.deepEqual(controller.views("/srv/workspaces"), [
+		{ label: "ddata · fix/b", row: { text: "fallo · tests", tone: "error", motion: "blink" } },
+	]);
+	controller.dispose();
+});
+
+test("a labeled row puts the repository and branch first, then the state indented below", () => {
+	const work = [{ label: "ddata · fix/deps-audit-moderate", row: { text: "corriendo · job 2/5 · 3m", tone: "accent", motion: "pulse" } as const }];
+	const rows = renderDirectoryTree(levels, plainTheme, 28, { ciWork: work, frame: 0 });
+	assert.deepEqual(rows.slice(3), ["CI ddata · fix/deps-audit-m…", "   ● corriendo · job 2/5 ·", "     3m"]);
+	for (const row of rows) assert.ok(visibleWidth(row) <= 28, row);
+	assert.equal(renderDirectoryTree(levels, tagged, 40, { ciWork: work, frame: 0 })[3], "<muted>CI </muted><muted>ddata · fix/deps-audit-moderate</muted>");
+});
+
+test("the session's own row stays first and unlabeled, followed rows below it", () => {
+	const ci = { text: "validado · 1m", tone: "success", motion: "steady" } as const;
+	const work = [{ label: "herdr-custom · main", row: { text: "fallo", tone: "error", motion: "blink" } as const }];
+	assert.deepEqual(renderDirectoryTree(levels, plainTheme, 40, { ci, ciWork: work, frame: 0 }).slice(3), [
+		"CI ● validado · 1m",
+		"CI herdr-custom · main",
+		"   ● fallo",
+	]);
 });

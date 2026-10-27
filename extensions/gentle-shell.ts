@@ -19,7 +19,7 @@ import * as os from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { buildShellHeaderModel, createUsageCollapse, renderShellBar, renderShellBelowInputFloat, renderShellBottomOnlyBar, renderShellHeaderChrome, keepNativeWorkingRow, renderShellSidebarCard, shellBarEnabled, shellEnabled, shellHeaderUsageHit, shellJobsCount, statusTitleText, type ShellBarModel, type ShellBarTheme, type ShellSidebarCard } from "../lib/shell-bar.ts";
 import { directoryLevels, findRepoRoot } from "../lib/directory-tree.ts";
-import { createCiStatusController, type CiRow, type CiStatusController } from "../lib/ci-status.ts";
+import { createCiStatusController, type CiRow, type CiStatusController, type CiView } from "../lib/ci-status.ts";
 import { CHANGE_STATUS, DIFF_MAX_BYTES, DIFF_MAX_LINES, DIFF_TOO_LARGE, WorktreeChangesTracker, renderChangesWidget, type ChangedFile, type ChangesModel, type FileRevision, type GitRunner, type LineCounter, type WorktreeChanges } from "../lib/shell-changes.ts";
 import { WorktreeChangesView } from "../lib/shell-changes-view.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
@@ -215,6 +215,8 @@ interface BuildOptions {
 	ddataEnv?: DdataEnvView;
 	/** runner-kit CI row for the session branch, already cached (no I/O). */
 	ci?: CiRow;
+	/** runner-kit CI rows of other repositories the session works in, cached. */
+	ciWork?: readonly CiView[];
 	ciFrame?: number;
 }
 
@@ -527,7 +529,9 @@ export function buildShellBarModel(
 		oddPhase: oddPhaseRegistry.get(ctx.sessionManager.getSessionId()),
 		promotion: promotionStatusRegistry.state(ctx.sessionManager.getSessionId()),
 		...(options.ddataEnv ? { ddataEnv: options.ddataEnv } : {}),
-		...(options.ci ? { ci: options.ci, ciFrame: options.ciFrame } : {}),
+		...(options.ci ? { ci: options.ci } : {}),
+		...(options.ciWork?.length ? { ciWork: options.ciWork } : {}),
+		...(options.ci || options.ciWork?.length ? { ciFrame: options.ciFrame } : {}),
 		profile: options.profile,
 		profileModels: options.profileModels,
 		orchestratorModel: options.orchestratorModel,
@@ -2315,7 +2319,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	// Only a pulsing or blinking row runs a timer; "potato" keeps it still. The
 	// timer keeps going in a background pane, so the row is current when seen.
 	const syncCiTimer = (cwd: string) => {
-		const moving = ciStatus?.view(cwd)?.motion !== undefined && ciStatus.view(cwd)?.motion !== "steady" && animationPolicy !== "potato";
+		const rows = ciStatus ? [ciStatus.view(cwd), ...ciStatus.views(cwd).map((view) => view.row)] : [];
+		const moving = rows.some((row) => row !== undefined && row.motion !== "steady") && animationPolicy !== "potato";
 		if (moving && !ciTimer) {
 			ciTimer = setInterval(() => {
 				ciFrame = (ciFrame + 1) % 2;
@@ -2344,7 +2349,18 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			if (ciStatus === controller) ciStatus = undefined;
 			stopCiStatus = () => {};
 		};
-		void controller.refresh(ctx.sessionManager.getCwd()).catch(() => undefined);
+		const cwd = ctx.sessionManager.getCwd();
+		void (async () => {
+			await controller.refresh(cwd);
+			// A resumed session keeps following the repositories it worked in:
+			// distinct work paths of its history, oldest first so the newest wins.
+			const seen: string[] = [];
+			for (const path of historyWorkPaths(ctx.sessionManager.getBranch(), cwd, os.homedir())) {
+				if (seen.length >= DDATA_FOCUS_HISTORY_PROBES) break;
+				if (!seen.includes(path)) seen.push(path);
+			}
+			for (const path of seen.reverse()) await controller.noteWork(path);
+		})().catch(() => undefined);
 	};
 	const startDdataEnv = (ctx: ExtensionContext) => {
 		stopDdataEnv();
@@ -2526,6 +2542,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					usageByProvider: new Map(usage.all().map((entry) => [entry.provider, entry])),
 					ddataEnv: ddataEnv?.view(ctx.sessionManager.getCwd(), ctx.sessionManager.getSessionId()),
 					ci: ciStatus?.view(ctx.sessionManager.getCwd()),
+					ciWork: ciStatus?.views(ctx.sessionManager.getCwd()),
 					ciFrame,
 					jobs: runningJobs,
 				}),
@@ -3396,9 +3413,15 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		}
 	});
 	pi.on("tool_result", (event, ctx) => {
-		// A settled bash may have committed, pushed or switched branch.
-		if (ciStatus && (event as { toolName?: unknown }).toolName === "bash") {
-			void ciStatus.refresh(ctx.sessionManager.getCwd()).catch(() => undefined);
+		if (ciStatus) {
+			const toolName = (event as { toolName?: unknown }).toolName;
+			// Successful work in another repository makes the CI row follow it.
+			if ((event as { isError?: unknown }).isError !== true && typeof toolName === "string") {
+				const latest = workPathsOf(toolName, (event as { input?: unknown }).input, ctx.sessionManager.getCwd(), os.homedir()).at(-1);
+				if (latest !== undefined) void ciStatus.noteWork(latest).catch(() => undefined);
+			}
+			// A settled bash may have committed, pushed or switched branch.
+			if (toolName === "bash") void ciStatus.refresh(ctx.sessionManager.getCwd()).catch(() => undefined);
 		}
 		// A settled bash may have committed or switched branch: refresh the DDATA
 		// evidence (debounced). The result of a deploy the guard let through

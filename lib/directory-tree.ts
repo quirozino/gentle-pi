@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import type { CiRow } from "./ci-status.ts";
+import type { CiRow, CiView } from "./ci-status.ts";
 
 // The Status card's Directorio section: the session cwd drawn as a short tree
 // of its last levels, the current folder emphasised and a git repo root marked.
@@ -69,14 +69,16 @@ export function directoryLevels(cwd: string, home: string | undefined, repoRoot:
 export interface DirectoryTreeOptions {
 	/** runner-kit CI status of the session branch, drawn below the tree. */
 	ci?: CiRow;
+	/** CI rows of other repositories the session works in, each under a "CI <repo> · <branch>" line. */
+	ciWork?: readonly CiView[];
 	/** Animation frame; odd frames dim (pulse) or hide (blink) the CI dot. */
 	frame?: number;
 }
 
 const CI_LABEL = "CI ";
 const CI_DOT = "●";
-// Continuation lines align with the text after "CI ● ".
-const CI_HANG = " ".repeat(visibleWidth(`${CI_LABEL}${CI_DOT} `));
+// A followed repository's state goes under its label, aligned after "CI ".
+const CI_INDENT = " ".repeat(visibleWidth(CI_LABEL));
 
 // Greedy word wrap to `room` columns; a word wider than a line is clipped.
 function wrapWords(text: string, room: number): string[] {
@@ -98,9 +100,12 @@ function wrapWords(text: string, room: number): string[] {
 // The CI row closes the Directorio tree, unindented so it gets the full width,
 // and wraps instead of clipping. The label recedes; the dot and text carry the
 // state's role.
-function renderCiRows(ci: CiRow, theme: DirectoryTreeTheme, width: number, frame: number): string[] {
-	const room = width - visibleWidth(CI_HANG);
-	if (room <= 0) return [theme.fg(ROLE.ANCESTOR, clip(CI_LABEL.trim(), width))];
+// `lead` is the styled text before the dot and `leadText` its plain form;
+// continuation lines align with the text after "<lead>● ".
+function renderCiRows(ci: CiRow, theme: DirectoryTreeTheme, width: number, frame: number, lead = theme.fg(ROLE.ANCESTOR, CI_LABEL), leadText = CI_LABEL): string[] {
+	const hang = " ".repeat(visibleWidth(`${leadText}${CI_DOT} `));
+	const room = width - visibleWidth(hang);
+	if (room <= 0) return leadText.trim() ? [theme.fg(ROLE.ANCESTOR, clip(leadText.trim(), width))] : [];
 	const [first = "", ...rest] = wrapWords(ci.text, room);
 	const odd = frame % 2 === 1;
 	const dot = ci.motion === "blink" && odd
@@ -109,9 +114,17 @@ function renderCiRows(ci: CiRow, theme: DirectoryTreeTheme, width: number, frame
 			? theme.fg("dim", CI_DOT)
 			: undefined;
 	const head = dot === undefined
-		? theme.fg(ROLE.ANCESTOR, CI_LABEL) + theme.fg(ci.tone, `${CI_DOT} ${first}`)
-		: theme.fg(ROLE.ANCESTOR, CI_LABEL) + dot + theme.fg(ci.tone, ` ${first}`);
-	return [head, ...rest.map((line) => CI_HANG + theme.fg(ci.tone, line))];
+		? lead + theme.fg(ci.tone, `${CI_DOT} ${first}`)
+		: lead + dot + theme.fg(ci.tone, ` ${first}`);
+	return [head, ...rest.map((line) => hang + theme.fg(ci.tone, line))];
+}
+
+function renderCiWork(view: CiView, theme: DirectoryTreeTheme, width: number, frame: number): string[] {
+	const room = width - visibleWidth(CI_LABEL);
+	const label = room > 0
+		? theme.fg(ROLE.ANCESTOR, CI_LABEL) + theme.fg(ROLE.ANCESTOR, clip(view.label, room, "…"))
+		: theme.fg(ROLE.ANCESTOR, clip(CI_LABEL.trim(), width));
+	return [label, ...renderCiRows(view.row, theme, width, frame, CI_INDENT, CI_INDENT)];
 }
 
 /** One row per level, each at most `width` columns, indented as a tree. */
@@ -134,8 +147,13 @@ export function renderDirectoryTree(
 		if (!current) return theme.fg(ROLE.ANCESTOR, branch + label);
 		return (branch ? theme.fg(ROLE.ANCESTOR, branch) : "") + (label ? theme.fg(ROLE.CURRENT, theme.bold(label)) : "");
 	});
-	if (!options.ci || levels.length === 0) return rows;
-	return [...rows, ...renderCiRows(options.ci, theme, width, options.frame ?? 0)];
+	if (levels.length === 0) return rows;
+	const frame = options.frame ?? 0;
+	return [
+		...rows,
+		...(options.ci ? renderCiRows(options.ci, theme, width, frame) : []),
+		...(options.ciWork ?? []).flatMap((view) => renderCiWork(view, theme, width, frame)),
+	];
 }
 
 const repoRoots = new Map<string, string | undefined>();

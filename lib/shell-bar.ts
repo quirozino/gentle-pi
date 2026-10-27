@@ -10,7 +10,7 @@ import { REVIEW_SCOPE_UNAVAILABLE, REVIEW_SIDEBAR_LABELS, type ReviewSidebarSnap
 import type { VisualSettings } from "./visual-customization-policy.ts";
 import { renderChangesWidget, type ChangesModel } from "./shell-changes.ts";
 import { renderDirectoryTree, type DirectoryLevel } from "./directory-tree.ts";
-import type { CiRow } from "./ci-status.ts";
+import type { CiRow, CiView } from "./ci-status.ts";
 import { oddPhaseLabel, type OddPhase } from "./odd-phase.ts";
 import { promotionSidebarRows, type PromotionRowTone, type PromotionState } from "./promotion-report.ts";
 import type { DdataEnvTone, DdataPipeline } from "./ddata-env.ts";
@@ -70,6 +70,8 @@ export interface ShellBarModel {
 	directory?: readonly DirectoryLevel[];
 	/** runner-kit CI row for the session branch (Matrix-Green only); absent hides it. */
 	ci?: CiRow;
+	/** CI rows of other repositories the session works in (Matrix-Green only). */
+	ciWork?: readonly CiView[];
 	/** CI row animation frame: odd frames dim or hide its dot. */
 	ciFrame?: number;
 	/** Session ODD phase read straight from oddPhaseRegistry; undefined is the idle "En espera". */
@@ -728,7 +730,7 @@ function sidebarCardRows(model: ShellBarModel, theme: ShellBarTheme, width: numb
 			],
 		},
 		// The cwd as a tree, sized at render time so long names clip, never wrap.
-		...(model.directory?.length ? [{ title: "Directorio", lines: [], fitted: (lineWidth: number) => renderDirectoryTree(model.directory ?? [], theme, lineWidth, promotionGroupVisible(theme) && model.ci ? { ci: model.ci, frame: model.ciFrame } : {}) }] : []),
+		...(model.directory?.length ? [{ title: "Directorio", lines: [], fitted: (lineWidth: number) => renderDirectoryTree(model.directory ?? [], theme, lineWidth, promotionGroupVisible(theme) && (model.ci || model.ciWork?.length) ? { ci: model.ci, ciWork: model.ciWork, frame: model.ciFrame } : {}) }] : []),
 		// ODD phase + advisory promotion evidence in one group, directly after
 		// Directorio (both right under Project) — only while Matrix-Green is the live theme. The ODD row is
 		// the session's workflow phase (labelled so, never read as a promotion
