@@ -91,13 +91,56 @@ export async function removeSessionGgaPrivateDirectory(path: string): Promise<vo
 	await rm(path, { recursive: true, force: true });
 }
 
+/**
+ * Plain-JavaScript client: Node refuses TypeScript type stripping under node_modules,
+ * so an npm-installed package must never exec a .ts entry from the generated script.
+ */
+const SESSION_GGA_CLIENT_SCRIPT = `import { connect } from "node:net";
+
+const SESSION_GGA_MAX_PROMPT_BYTES = ${SESSION_GGA_MAX_PROMPT_BYTES};
+const SESSION_GGA_MAX_OUTPUT_BYTES = ${SESSION_GGA_MAX_OUTPUT_BYTES};
+
+try {
+	const chunks = [];
+	let bytes = 0;
+	for await (const chunk of process.stdin) {
+		const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+		bytes += buffer.length;
+		if (bytes > SESSION_GGA_MAX_PROMPT_BYTES) throw new Error("GGA prompt exceeds the session bridge size bound");
+		chunks.push(buffer);
+	}
+	const model = process.env.GGA_PI_MODEL;
+	if (!model) throw new Error("GGA_PI_MODEL is required for the pi-session provider");
+	const response = await new Promise((resolve, reject) => {
+		const socket = connect(process.env.GGA_PI_SOCKET ?? "");
+		let output = Buffer.alloc(0);
+		socket.once("error", reject);
+		socket.once("connect", () => socket.write(JSON.stringify({ capability: process.env.GGA_PI_CAPABILITY ?? "", model, prompt: Buffer.concat(chunks).toString("utf8") }) + "\\n"));
+		socket.on("data", (chunk) => {
+			output = Buffer.concat([output, chunk]);
+			if (output.length > SESSION_GGA_MAX_OUTPUT_BYTES) socket.destroy(new Error("session GGA output exceeds its size bound"));
+		});
+		socket.once("end", () => resolve(output.toString("utf8")));
+	});
+	if (response.length === 0) throw new Error("session GGA bridge returned an empty completion");
+	process.stdout.write(response);
+} catch (error) {
+	const model = process.env.GGA_PI_MODEL ?? "unknown model";
+	process.stderr.write("session GGA completion for " + model + " failed: " + (error instanceof Error ? error.message : String(error)) + "\\n");
+	process.exitCode = 1;
+}
+`;
+
 export async function writeSessionGgaClient(
 	directory: string,
-	modulePath: string,
+	_modulePath: string,
 	execPath: string,
 ): Promise<string> {
+	const clientPath = join(directory, "gga-pi-session.mjs");
 	const executablePath = join(directory, "gga-pi-session");
-	const script = `#!/bin/sh\nexec ${quoteShell(execPath)} --experimental-strip-types ${quoteShell(modulePath)} --client\n`;
+	await writeFile(clientPath, SESSION_GGA_CLIENT_SCRIPT, { mode: 0o600, flag: "wx" });
+	await chmod(clientPath, 0o600);
+	const script = `#!/bin/sh\nexec ${quoteShell(execPath)} ${quoteShell(clientPath)}\n`;
 	await writeFile(executablePath, script, { mode: 0o700, flag: "wx" });
 	await chmod(executablePath, 0o700);
 	return executablePath;
@@ -131,6 +174,7 @@ export async function startSessionGgaBridge(input: {
 	timeoutMs?: number;
 	directory?: string;
 	execPath?: string;
+	/** Retained for source compatibility; the generated client never executes this path. */
 	modulePath?: string;
 }): Promise<SessionGgaBridge> {
 	const directory = input.directory ?? await createSessionGgaPrivateDirectory();

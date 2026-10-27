@@ -21,7 +21,7 @@ test("a child process cannot overwrite the primary process phase even with the s
 
 // Pi gives each extension its own uncached jiti loader. Exercise the actual
 // writer tool and reader prompt, not two imports through Node's module cache.
-test("separate extension loaders share only the active session's ODD phase and redraw", async () => {
+test("separate extension loaders share only the active session's ODD phase and redraw", async (t) => {
 	const aiLoader = createJiti(import.meta.url, { moduleCache: false });
 	const shellLoader = createJiti(import.meta.url, { moduleCache: false });
 	const { createGentleAiExtension } = await aiLoader.import<typeof import("../extensions/gentle-ai.ts")>("../extensions/gentle-ai.ts");
@@ -60,6 +60,10 @@ test("separate extension loaders share only the active session's ODD phase and r
 		modelRegistry: { isUsingOAuth: () => false },
 	};
 	const fire = async (name: string) => { for (const fn of handlers.get(name) ?? []) await fn({}, ctx); };
+	// Safety net: the in-body shutdown only runs if every assertion before it
+	// passes; without it a failing assertion leaves the session GGA bridge
+	// listening and the test process can never exit naturally.
+	t.after(async () => { await fire("session_shutdown"); });
 	let editor: ReturnType<NonNullable<typeof editorFactory>> | undefined;
 	try {
 		await fire("session_start");
@@ -146,7 +150,7 @@ test("separate extension loaders share only the active session's ODD phase and r
 
 // The label follows the primary session's own tool activity without any
 // gentle_odd_phase call; an explicit report still refines it.
-test("tool activity in the primary session drives the working label across extension loaders", async () => {
+test("tool activity in the primary session drives the working label across extension loaders", async (t) => {
 	const aiLoader = createJiti(import.meta.url, { moduleCache: false });
 	const shellLoader = createJiti(import.meta.url, { moduleCache: false });
 	const { createGentleAiExtension } = await aiLoader.import<typeof import("../extensions/gentle-ai.ts")>("../extensions/gentle-ai.ts");
@@ -180,6 +184,9 @@ test("tool activity in the primary session drives the working label across exten
 	};
 	const fire = async (name: string, event: unknown = {}, context: unknown = ctx) => { for (const fn of handlers.get(name) ?? []) await fn(event, context); };
 	const tool = (toolName: string, args: unknown = {}) => fire("tool_execution_start", { type: "tool_execution_start", toolCallId: `call-${toolName}`, toolName, args });
+	// session_start started the session GGA bridge; without a shutdown the
+	// listening server keeps the test process alive forever, even on failure.
+	t.after(async () => { await fire("session_shutdown"); });
 	let editor: ReturnType<NonNullable<typeof editorFactory>> | undefined;
 	try {
 		await fire("session_start");
@@ -245,6 +252,8 @@ test("tool activity in the primary session drives the working label across exten
 		await tool("subagent_run", { agent: "gentle-ai-verify" });
 		assert.equal(registry.get("tool-activity-loader-test"), undefined, "another session cannot relabel the primary session");
 		assert.equal(registry.get(sessionId), "checking");
+		await fire("session_shutdown");
+		assert.equal(registry.get(sessionId), undefined, "session_shutdown clears the active session's ODD phase");
 	} finally {
 		registry.clear("tool-activity-loader-test");
 		registry.clear("other-session");

@@ -46,7 +46,7 @@ test("actual SDK gates direct and nested custom/MCP execution before side effect
   }]});
  await loader.reload();assert.deepEqual(loader.getExtensions().errors,[]);
  const {session}=await sdk.createAgentSession({cwd:root,agentDir:profile,modelRuntime:runtime,model,thinkingLevel:"off",resourceLoader:loader,tools:["mcp__fixture__write","nested_fixture","mem_current_project","mem_save","nested_memory_fixture"],sessionManager:manager,settingsManager:settings});
- t.after(async()=>{await session.abort();session.dispose();});
+ t.after(async()=>{try{await session.extensionRunner.emit({type:"session_shutdown",reason:"quit"});}finally{await session.abort();session.dispose();}});
  await session.bindExtensions({mode:"json",onError:error=>errors.push(error.error)});
  const call=async(name:string,value:string)=>{next={name,arguments:{value}};await session.prompt(`Perform the fixture action ${value} only.`,{source:"interactive"});};
  await call("mcp__fixture__write","direct");assert.deepEqual(executed,["direct"]);

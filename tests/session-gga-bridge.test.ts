@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { test } from "node:test";
 import { connect } from "node:net";
 import { dirname, join } from "node:path";
@@ -256,6 +258,33 @@ test("public GGA CLI run uses the generated bridge without invoking Claude", { s
 		assert.match(observed[0]?.prompt ?? "", /isolated staged fixture/);
 	} finally {
 		await bridge.close();
+	}
+});
+
+test("generated client runs from an npm-installed node_modules layout without type stripping", async () => {
+	const model = { provider: "openai", id: "gpt-4.1", api: "test", reasoning: false };
+	const registry = {
+		find: () => model,
+		getApiKeyAndHeaders: async () => ({ ok: true as const }),
+		getProvider: () => ({ streamSimple: () => ({ result: async () => ({ role: "assistant", content: [{ type: "text", text: "review-under-node-modules" }], stopReason: "stop", api: "test", provider: "openai", model: "gpt-4.1", usage: { input: 0, output: 0, totalTokens: 0, cacheRead: 0, cacheWrite: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, timestamp: Date.now() }) }) }),
+	};
+	const installedRoot = await mkdtemp(join(tmpdir(), "gentle-gga-installed-"));
+	try {
+		const installedLib = join(installedRoot, "node_modules", "gentle-pi", "lib");
+		mkdirSync(installedLib, { recursive: true });
+		writeFileSync(join(installedLib, "session-gga-bridge.ts"), readFileSync(new URL("../lib/session-gga-bridge.ts", import.meta.url), "utf8"));
+		const bridge = await startSessionGgaBridge({ registry: registry as any, timeoutMs: 5000, modulePath: join(installedLib, "session-gga-bridge.ts") });
+		try {
+			const output = await launchBridgeClient(bridge, "openai/gpt-4.1", "installed review prompt");
+			assert.deepEqual(output, { code: 0, stdout: "review-under-node-modules", stderr: "" });
+			const script = readFileSync(bridge.capability.executablePath, "utf8");
+			assert.ok(!script.includes(".ts"), "the executable must not reference any TypeScript entry");
+			assert.ok(!script.includes("--experimental-strip-types"), "the executable must not rely on type stripping");
+		} finally {
+			await bridge.close();
+		}
+	} finally {
+		await rm(installedRoot, { recursive: true, force: true });
 	}
 });
 
