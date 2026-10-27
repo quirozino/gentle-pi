@@ -67,31 +67,51 @@ export function directoryLevels(cwd: string, home: string | undefined, repoRoot:
 }
 
 export interface DirectoryTreeOptions {
-	/** runner-kit CI status of the session branch, drawn under the repo root row. */
+	/** runner-kit CI status of the session branch, drawn below the tree. */
 	ci?: CiRow;
 	/** Animation frame; odd frames dim (pulse) or hide (blink) the CI dot. */
 	frame?: number;
 }
 
-const CI_GUIDE = "┆ CI ";
+const CI_LABEL = "CI ";
 const CI_DOT = "●";
+// Continuation lines align with the text after "CI ● ".
+const CI_HANG = " ".repeat(visibleWidth(`${CI_LABEL}${CI_DOT} `));
 
-// The CI row hangs under the repo root row (or the current folder when the
-// root was clipped away), indented like that row's children. The guide recedes;
-// the dot and text carry the state's role.
-function renderCiRow(ci: CiRow, depth: number, theme: DirectoryTreeTheme, width: number, frame: number): string {
-	const guide = clip(" ".repeat(INDENT * depth) + CI_GUIDE, width);
-	const room = width - visibleWidth(guide);
+// Greedy word wrap to `room` columns; a word wider than a line is clipped.
+function wrapWords(text: string, room: number): string[] {
+	const lines: string[] = [];
+	let line = "";
+	for (const word of text.split(/\s+/).filter(Boolean)) {
+		const piece = visibleWidth(word) > room ? clip(word, room, "…") : word;
+		if (!line) line = piece;
+		else if (visibleWidth(`${line} ${piece}`) <= room) line = `${line} ${piece}`;
+		else {
+			lines.push(line);
+			line = piece;
+		}
+	}
+	if (line) lines.push(line);
+	return lines;
+}
+
+// The CI row closes the Directorio tree, unindented so it gets the full width,
+// and wraps instead of clipping. The label recedes; the dot and text carry the
+// state's role.
+function renderCiRows(ci: CiRow, theme: DirectoryTreeTheme, width: number, frame: number): string[] {
+	const room = width - visibleWidth(CI_HANG);
+	if (room <= 0) return [theme.fg(ROLE.ANCESTOR, clip(CI_LABEL.trim(), width))];
+	const [first = "", ...rest] = wrapWords(ci.text, room);
 	const odd = frame % 2 === 1;
-	const body = room > 0 ? clip(`${CI_DOT} ${ci.text}`, room, "…") : "";
-	const painted = !body
-		? ""
-		: ci.motion === "blink" && odd
-			? theme.fg(ci.tone, ` ${body.slice(CI_DOT.length)}`)
-			: ci.motion === "pulse" && odd
-				? theme.fg("dim", CI_DOT) + theme.fg(ci.tone, body.slice(CI_DOT.length))
-				: theme.fg(ci.tone, body);
-	return theme.fg(ROLE.ANCESTOR, guide) + painted;
+	const dot = ci.motion === "blink" && odd
+		? theme.fg(ci.tone, " ")
+		: ci.motion === "pulse" && odd
+			? theme.fg("dim", CI_DOT)
+			: undefined;
+	const head = dot === undefined
+		? theme.fg(ROLE.ANCESTOR, CI_LABEL) + theme.fg(ci.tone, `${CI_DOT} ${first}`)
+		: theme.fg(ROLE.ANCESTOR, CI_LABEL) + dot + theme.fg(ci.tone, ` ${first}`);
+	return [head, ...rest.map((line) => CI_HANG + theme.fg(ci.tone, line))];
 }
 
 /** One row per level, each at most `width` columns, indented as a tree. */
@@ -115,10 +135,7 @@ export function renderDirectoryTree(
 		return (branch ? theme.fg(ROLE.ANCESTOR, branch) : "") + (label ? theme.fg(ROLE.CURRENT, theme.bold(label)) : "");
 	});
 	if (!options.ci || levels.length === 0) return rows;
-	const rootIndex = levels.findIndex((level) => level.repoRoot);
-	const anchor = rootIndex >= 0 ? rootIndex : levels.length - 1;
-	rows.splice(anchor + 1, 0, renderCiRow(options.ci, anchor, theme, width, options.frame ?? 0));
-	return rows;
+	return [...rows, ...renderCiRows(options.ci, theme, width, options.frame ?? 0)];
 }
 
 const repoRoots = new Map<string, string | undefined>();

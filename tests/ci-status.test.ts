@@ -84,48 +84,54 @@ const tagged = { fg: (role: string, text: string) => `<${role}>${text}</${role}>
 const plainTheme = { fg: (_role: string, text: string) => text, bold: (text: string) => text };
 const levels = directoryLevels("/srv/workspaces/ddata/hosting", "/home/q", "/srv/workspaces/ddata");
 
-test("the CI row sits right under the repository root row", () => {
+test("the CI row goes below the whole tree, unindented, so it gets the full width", () => {
 	const ci = { text: "validado · 12m", tone: "success", motion: "steady" } as const;
 	assert.deepEqual(renderDirectoryTree(levels, plainTheme, 40, { ci, frame: 0 }), [
 		"📁 …/workspaces",
 		"└─ ⎇ ddata",
-		"   ┆ CI ● validado · 12m",
 		"   └─ 📂 hosting",
+		"CI ● validado · 12m",
 	]);
 });
 
-test("the CI row paints its dot and text with the state's role, the guide muted", () => {
+test("the CI row paints its label muted and its dot and text with the state's role", () => {
 	const ci = { text: "fallo · x", tone: "error", motion: "steady" } as const;
-	assert.equal(renderDirectoryTree(levels, tagged, 40, { ci, frame: 0 })[2], "<muted>   ┆ CI </muted><error>● fallo · x</error>");
+	assert.equal(renderDirectoryTree(levels, tagged, 40, { ci, frame: 0 })[3], "<muted>CI </muted><error>● fallo · x</error>");
 });
 
 test("blink hides only the dot on odd frames, keeping the row width", () => {
 	const ci = { text: "offline", tone: "error", motion: "blink" } as const;
-	const on = renderDirectoryTree(levels, plainTheme, 40, { ci, frame: 0 })[2]!;
-	const off = renderDirectoryTree(levels, plainTheme, 40, { ci, frame: 1 })[2]!;
-	assert.equal(on, "   ┆ CI ● offline");
-	assert.equal(off, "   ┆ CI   offline");
+	const on = renderDirectoryTree(levels, plainTheme, 40, { ci, frame: 0 })[3]!;
+	const off = renderDirectoryTree(levels, plainTheme, 40, { ci, frame: 1 })[3]!;
+	assert.equal(on, "CI ● offline");
+	assert.equal(off, "CI   offline");
 	assert.equal(visibleWidth(on), visibleWidth(off));
 });
 
 test("pulse dims the dot on odd frames instead of hiding it", () => {
 	const ci = { text: "corriendo", tone: "accent", motion: "pulse" } as const;
-	assert.equal(renderDirectoryTree(levels, tagged, 40, { ci, frame: 1 })[2], "<muted>   ┆ CI </muted><dim>●</dim><accent> corriendo</accent>");
+	assert.equal(renderDirectoryTree(levels, tagged, 40, { ci, frame: 1 })[3], "<muted>CI </muted><dim>●</dim><accent> corriendo</accent>");
 });
 
-test("the CI row clips to the width and never wraps", () => {
-	const ci = { text: "corriendo · job 2/5 · 3m", tone: "accent", motion: "steady" } as const;
-	const rows = renderDirectoryTree(levels, plainTheme, 16, { ci, frame: 0 });
-	assert.equal(rows[2], "   ┆ CI ● corri…");
-	assert.ok(rows.every((r) => visibleWidth(r) <= 16));
+test("a long CI text wraps onto aligned lines instead of being cut", () => {
+	const ci = { text: "fallo · Supabase stage provisioning validator gate", tone: "error", motion: "steady" } as const;
+	const rows = renderDirectoryTree(levels, plainTheme, 28, { ci, frame: 0 });
+	assert.deepEqual(rows.slice(3), ["CI ● fallo · Supabase stage", "     provisioning validator", "     gate"]);
+	assert.ok(rows.every((r) => visibleWidth(r) <= 28));
 });
 
-test("without a visible repository root the CI row follows the current folder", () => {
+test("a single word wider than the line is clipped, never overflowing", () => {
+	const ci = { text: "fallo · " + "x".repeat(40), tone: "error", motion: "steady" } as const;
+	const rows = renderDirectoryTree(levels, plainTheme, 20, { ci, frame: 0 });
+	assert.ok(rows.every((r) => visibleWidth(r) <= 20), rows.join("|"));
+});
+
+test("the CI row follows the tree even when the repository root was clipped away", () => {
 	const deep = directoryLevels("/srv/workspaces/ddata/hosting/tests/unit", "/home/q", "/srv/workspaces/ddata");
 	const ci = { text: "pendiente", tone: "warning", motion: "steady" } as const;
 	const rows = renderDirectoryTree(deep, plainTheme, 40, { ci, frame: 0 });
 	assert.equal(rows.length, 4);
-	assert.equal(rows[3], "      ┆ CI ● pendiente");
+	assert.equal(rows[3], "CI ● pendiente");
 });
 
 test("no CI option leaves the tree exactly as before", () => {
