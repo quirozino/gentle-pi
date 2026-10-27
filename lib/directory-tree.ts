@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { visibleWidth } from "@earendil-works/pi-tui";
+import type { CiRow } from "./ci-status.ts";
 
 // The Status card's Directorio section: the session cwd drawn as a short tree
 // of its last levels, the current folder emphasised and a git repo root marked.
@@ -65,10 +66,43 @@ export function directoryLevels(cwd: string, home: string | undefined, repoRoot:
 	return kept;
 }
 
+export interface DirectoryTreeOptions {
+	/** runner-kit CI status of the session branch, drawn under the repo root row. */
+	ci?: CiRow;
+	/** Animation frame; odd frames dim (pulse) or hide (blink) the CI dot. */
+	frame?: number;
+}
+
+const CI_GUIDE = "┆ CI ";
+const CI_DOT = "●";
+
+// The CI row hangs under the repo root row (or the current folder when the
+// root was clipped away), indented like that row's children. The guide recedes;
+// the dot and text carry the state's role.
+function renderCiRow(ci: CiRow, depth: number, theme: DirectoryTreeTheme, width: number, frame: number): string {
+	const guide = clip(" ".repeat(INDENT * depth) + CI_GUIDE, width);
+	const room = width - visibleWidth(guide);
+	const odd = frame % 2 === 1;
+	const body = room > 0 ? clip(`${CI_DOT} ${ci.text}`, room, "…") : "";
+	const painted = !body
+		? ""
+		: ci.motion === "blink" && odd
+			? theme.fg(ci.tone, ` ${body.slice(CI_DOT.length)}`)
+			: ci.motion === "pulse" && odd
+				? theme.fg("dim", CI_DOT) + theme.fg(ci.tone, body.slice(CI_DOT.length))
+				: theme.fg(ci.tone, body);
+	return theme.fg(ROLE.ANCESTOR, guide) + painted;
+}
+
 /** One row per level, each at most `width` columns, indented as a tree. */
-export function renderDirectoryTree(levels: readonly DirectoryLevel[], theme: DirectoryTreeTheme, width: number): string[] {
+export function renderDirectoryTree(
+	levels: readonly DirectoryLevel[],
+	theme: DirectoryTreeTheme,
+	width: number,
+	options: DirectoryTreeOptions = {},
+): string[] {
 	if (width <= 0) return [];
-	return levels.map((level, index) => {
+	const rows = levels.map((level, index) => {
 		const current = index === levels.length - 1;
 		const lead = index === 0 ? "" : " ".repeat(INDENT * (index - 1)) + BRANCH;
 		const icon = level.repoRoot ? ICON.repo : current ? ICON.current : ICON.ancestor;
@@ -80,6 +114,11 @@ export function renderDirectoryTree(levels: readonly DirectoryLevel[], theme: Di
 		if (!current) return theme.fg(ROLE.ANCESTOR, branch + label);
 		return (branch ? theme.fg(ROLE.ANCESTOR, branch) : "") + (label ? theme.fg(ROLE.CURRENT, theme.bold(label)) : "");
 	});
+	if (!options.ci || levels.length === 0) return rows;
+	const rootIndex = levels.findIndex((level) => level.repoRoot);
+	const anchor = rootIndex >= 0 ? rootIndex : levels.length - 1;
+	rows.splice(anchor + 1, 0, renderCiRow(options.ci, anchor, theme, width, options.frame ?? 0));
+	return rows;
 }
 
 const repoRoots = new Map<string, string | undefined>();

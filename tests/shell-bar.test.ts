@@ -1798,3 +1798,15 @@ test("the sidebar ranks Usage by that window, highest first, and a repeated mode
 	const names = card.rows.map(stripAnsi).flatMap((row) => /(glm5\.3-flash|claude-opus-5-5)/.exec(row)?.[1] ?? []);
 	assert.deepEqual(names, ["glm5.3-flash", "claude-opus-5-5"], "nan's 40% month above Claude's 10% week despite its 95% 5h window; the repeat shows once");
 });
+
+test("the runner-kit CI row shows under the repo root only while Matrix-Green is the theme", () => {
+	const directory = directoryLevels("/srv/workspaces/ddata/hosting", "/home/alan", "/srv/workspaces/ddata");
+	const data = model({ directory, ci: { text: "validado · 12m", tone: "success", motion: "steady" }, ciFrame: 0 });
+	const matrix = renderShellSidebarBar(data, matrixTheme, 46);
+	assert.ok(matrix.some((line) => line.includes("┆ CI ● validado · 12m")), "Matrix-Green draws the CI row");
+	assert.ok(matrix.every((line) => visibleWidth(line) === 46), "the CI row keeps the card width");
+	const root = matrix.findIndex((line) => line.includes("⎇ ddata"));
+	assert.ok(matrix[root + 1]?.includes("┆ CI"), "the CI row sits right under the repo root row");
+	assert.ok(!renderShellSidebarBar(data, plainTheme, 46).some((line) => line.includes("┆ CI")), "other themes hide it");
+	assert.ok(!renderShellSidebarBar(model({ directory }), matrixTheme, 46).some((line) => line.includes("┆ CI")), "no CI data, no row");
+});

@@ -2,7 +2,7 @@ import { CustomEditor, InteractiveMode, keyHint, UserMessageComponent, type Exte
 import { isHomeOrBroadUserDirectory } from "../lib/bounded-writer-admission.ts";
 import { Editor, decodeKittyPrintable, isKeyRelease, matchesKey, parseKey, truncateToWidth, visibleWidth, type EditorTheme, type TUI } from "@earendil-works/pi-tui";
 import { execFile, spawnSync } from "node:child_process";
-import { existsSync, realpathSync, statSync } from "node:fs";
+import { existsSync, realpathSync, statSync, unwatchFile, watchFile } from "node:fs";
 import { lstat, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { profilesFilePath, profileRoleEntries, readProfileOrchestrator, readProfilesFileResult, summarizeProfile } from "../lib/agent-profiles.ts";
@@ -19,6 +19,7 @@ import * as os from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { buildShellHeaderModel, createUsageCollapse, renderShellBar, renderShellBelowInputFloat, renderShellBottomOnlyBar, renderShellHeaderChrome, keepNativeWorkingRow, renderShellSidebarCard, shellBarEnabled, shellEnabled, shellHeaderUsageHit, shellJobsCount, statusTitleText, type ShellBarModel, type ShellBarTheme, type ShellSidebarCard } from "../lib/shell-bar.ts";
 import { directoryLevels, findRepoRoot } from "../lib/directory-tree.ts";
+import { createCiStatusController, type CiRow, type CiStatusController } from "../lib/ci-status.ts";
 import { CHANGE_STATUS, DIFF_MAX_BYTES, DIFF_MAX_LINES, DIFF_TOO_LARGE, WorktreeChangesTracker, renderChangesWidget, type ChangedFile, type ChangesModel, type FileRevision, type GitRunner, type LineCounter, type WorktreeChanges } from "../lib/shell-changes.ts";
 import { WorktreeChangesView } from "../lib/shell-changes-view.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
@@ -212,6 +213,9 @@ interface BuildOptions {
 	usage?: ProviderUsage;
 	/** DDATA environment view, already computed from cached evidence (no I/O). */
 	ddataEnv?: DdataEnvView;
+	/** runner-kit CI row for the session branch, already cached (no I/O). */
+	ci?: CiRow;
+	ciFrame?: number;
 }
 
 export type DevBinaryNotice = { state: "active"; path: string; sha256: string } | { state: "invalid"; reason: string };
@@ -242,6 +246,7 @@ export interface ShellDeps {
 	 * anything synchronous on the UI loop.
 	 */
 	ddataEnv?: () => DdataEnvController;
+	ciStatus?: () => CiStatusController;
 }
 
 // The rail digest runs every frame. Cache parsing by file identity and metadata,
@@ -522,6 +527,7 @@ export function buildShellBarModel(
 		oddPhase: oddPhaseRegistry.get(ctx.sessionManager.getSessionId()),
 		promotion: promotionStatusRegistry.state(ctx.sessionManager.getSessionId()),
 		...(options.ddataEnv ? { ddataEnv: options.ddataEnv } : {}),
+		...(options.ci ? { ci: options.ci, ciFrame: options.ciFrame } : {}),
 		profile: options.profile,
 		profileModels: options.profileModels,
 		orchestratorModel: options.orchestratorModel,
@@ -1955,6 +1961,27 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	}));
 	let ddataEnv: DdataEnvController | undefined;
 	let stopDdataEnv = () => {};
+	// runner-kit CI row: the controller watches runner-kit's status file and
+	// re-asks git after settled bash; the render path only reads `view`.
+	const ciStatusPath = join(process.env.XDG_STATE_HOME || join(os.homedir(), ".local", "state"), "runner-kit", "status.json");
+	const createCiStatus = deps.ciStatus ?? (() => createCiStatusController({
+		git: (cwd, args) => nodeGitAsync(cwd, args).catch(() => undefined),
+		readFile: (file) => deps.readFile(file, "utf8"),
+		statusPath: ciStatusPath,
+		repoRoot: (cwd) => findRepoRoot(cwd),
+		now: deps.now,
+		watch: (file, onChange) => {
+			const listener = (current: { mtimeMs: number }, previous: { mtimeMs: number }) => {
+				if (current.mtimeMs !== previous.mtimeMs) onChange();
+			};
+			watchFile(file, { interval: 2000, persistent: false }, listener);
+			return () => unwatchFile(file, listener);
+		},
+	}));
+	let ciStatus: CiStatusController | undefined;
+	let ciFrame = 0;
+	let ciTimer: ReturnType<typeof setInterval> | undefined;
+	let stopCiStatus = () => {};
 	let closeCustomize: (() => void) | undefined;
 	let profilePoll: ReturnType<typeof setInterval> | undefined;
 	const stopProfilePoll = () => {
@@ -2285,6 +2312,40 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		renderHost?.invalidateSidebar?.();
 		renderHost?.requestRender();
 	};
+	// Only a pulsing or blinking row runs a timer; "potato" keeps it still. The
+	// timer keeps going in a background pane, so the row is current when seen.
+	const syncCiTimer = (cwd: string) => {
+		const moving = ciStatus?.view(cwd)?.motion !== undefined && ciStatus.view(cwd)?.motion !== "steady" && animationPolicy !== "potato";
+		if (moving && !ciTimer) {
+			ciTimer = setInterval(() => {
+				ciFrame = (ciFrame + 1) % 2;
+				redrawReview();
+			}, animationPolicy === "performance" ? 1000 : 500);
+			ciTimer.unref?.();
+		} else if (!moving && ciTimer) {
+			clearInterval(ciTimer);
+			ciTimer = undefined;
+			ciFrame = 0;
+		}
+	};
+	const startCiStatus = (ctx: ExtensionContext) => {
+		stopCiStatus();
+		const controller = createCiStatus();
+		ciStatus = controller;
+		const offChange = controller.onChange(() => {
+			syncCiTimer(ctx.sessionManager.getCwd());
+			redrawReview();
+		});
+		stopCiStatus = () => {
+			offChange();
+			controller.dispose();
+			if (ciTimer) clearInterval(ciTimer);
+			ciTimer = undefined;
+			if (ciStatus === controller) ciStatus = undefined;
+			stopCiStatus = () => {};
+		};
+		void controller.refresh(ctx.sessionManager.getCwd()).catch(() => undefined);
+	};
 	const startDdataEnv = (ctx: ExtensionContext) => {
 		stopDdataEnv();
 		const controller = createDdataEnv();
@@ -2415,7 +2476,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		applyCardStyle();
 		applyCardContent();
 		if (!ctx.hasUI) { shellChrome.ready(); return; }
-		if (isInteractiveMode(ctx.mode)) startDdataEnv(ctx);
+		if (isInteractiveMode(ctx.mode)) {
+			startDdataEnv(ctx);
+			startCiStatus(ctx);
+		}
 		visualSettings = resolveVisualSettings(animationOptions).settings;
 		if (!overrides.activeProfile) {
 			profileReader.bind(ctx.cwd, deps.resolveWorktree, ctx.sessionManager.getSessionId());
@@ -2461,6 +2525,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					localTokens: sessionTokensByModel(ctx),
 					usageByProvider: new Map(usage.all().map((entry) => [entry.provider, entry])),
 					ddataEnv: ddataEnv?.view(ctx.sessionManager.getCwd(), ctx.sessionManager.getSessionId()),
+					ci: ciStatus?.view(ctx.sessionManager.getCwd()),
+					ciFrame,
 					jobs: runningJobs,
 				}),
 				changes: { files: tracker.model.files.length, added: tracker.model.added, deleted: tracker.model.deleted },
@@ -2709,6 +2775,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		unsubscribeReview();
 		unsubscribePromotion();
 		stopDdataEnv();
+		stopCiStatus();
 		unsubscribeJobs();
 		runningJobs = undefined;
 		stopProfilePoll();
@@ -3329,6 +3396,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		}
 	});
 	pi.on("tool_result", (event, ctx) => {
+		// A settled bash may have committed, pushed or switched branch.
+		if (ciStatus && (event as { toolName?: unknown }).toolName === "bash") {
+			void ciStatus.refresh(ctx.sessionManager.getCwd()).catch(() => undefined);
+		}
 		// A settled bash may have committed or switched branch: refresh the DDATA
 		// evidence (debounced). The result of a deploy the guard let through
 		// (bash or another tool, matched by its own toolCallId) forces a reread.
