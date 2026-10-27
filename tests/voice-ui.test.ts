@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { pushToTalkStatus, VoiceDictationView, VoiceProgressView } from "../lib/voice-ui.ts";
+import { setAlertFrameTheme } from "../lib/alert-frame.ts";
 
 // The compact /gentle:voice overlays: rendering within the width, the keys
 // each state accepts, and no repaint after disposal.
@@ -94,4 +95,22 @@ test("push-to-talk status names each phase in one line and how to finish", () =>
 	assert.match(pushToTalkStatus("recording"), /esc cancel/i);
 	assert.match(pushToTalkStatus("transcribing"), /transcrib/i);
 	for (const state of ["idle", "starting", "recording", "transcribing", "finished"] as const) assert.ok(!pushToTalkStatus(state).includes("\n"), state);
+});
+
+// Fork: under Matrix-Green every alert is drawn inside the double frame
+// (lib/alert-frame.ts); the voice overlays follow it, other themes stay stock.
+test("voice overlays use the Matrix-Green double frame and stay stock on other themes", (t) => {
+	t.after(() => setAlertFrameTheme(() => undefined));
+	const c = counters();
+	const view = new VoiceDictationView({ theme, requestRender: c.requestRender, onCancel: c.onCancel, onStop: c.onStop });
+	const stock = view.render(40);
+	assert.match(stock[0]!, /^─+$/, "no live theme keeps the stock rules");
+	setAlertFrameTheme(() => ({ name: "Matrix-Green", fg: (_role, text) => text }));
+	const framed = view.render(40);
+	assert.match(framed[0]!, /^ ╔═+╗$/);
+	assert.match(framed.at(-1)!, /^ ╚═+╝$/);
+	assert.ok(framed.slice(1, -1).every((line) => /^ ║.*║$/.test(line) && visibleWidth(line) <= 40));
+	assert.ok(framed.some((line) => line.includes("Voice dictation")));
+	setAlertFrameTheme(() => ({ name: "dark", fg: (_role, text) => text }));
+	assert.deepEqual(view.render(40), stock);
 });

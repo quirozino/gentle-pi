@@ -1,4 +1,5 @@
 import { isKeyRelease, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
+import { frameAlertComponent } from "./alert-frame.ts";
 import type { VoiceInstallProgress } from "./voice-install.ts";
 import type { VoiceSessionState } from "./voice-session.ts";
 
@@ -29,6 +30,9 @@ abstract class VoiceView {
 
 	constructor(options: VoiceViewOptions) {
 		this.options = options;
+		// Fork: Matrix-Green draws the overlay in the alert double frame (its
+		// ─ rules are replaced); every other theme keeps this stock look.
+		frameAlertComponent(this);
 	}
 
 	protected get theme(): VoiceViewTheme {

@@ -6506,7 +6506,7 @@ test("a task with an unanswered query renders as waiting for reply in the widget
 	const yielded = await pending;
 	const id = (yielded.details as { gentleAgents: { taskId: string } }).gentleAgents.taskId;
 
-	assert.match(widget()![0], /^╭─ ❀ Agents · 1 waiting ─+╮$/);
+	assert.match(widget()![0], /^╭─ ❀ Agents ▾ Collapse · 1 waiting ─+╮$/);
 	assert.match(widget()![1], /^│ \?  explore  waiting for your reply /);
 	const card = tools.get("subagent_run")!.renderCall({ agent: "explore" }, plainTheme, { toolCallId: "foreground" }).render(72).map(stripAnsi);
 	assert.match(card[0]!, /Agents · 1 waiting/);
@@ -6514,7 +6514,7 @@ test("a task with an unanswered query renders as waiting for reply in the widget
 
 	const replied = await tools.get("subagent_reply")!.execute("r1", { task_id: id, request_id: "q1", message: "lib/" }, undefined, undefined, ctx);
 	assert.match(replied.content[0].text, /accepted/);
-	assert.match(widget()![0], /Agents · 1 active/, "the answered task is working again");
+	assert.match(widget()![0], /Agents ▾ Collapse · 1 active/, "the answered task is working again");
 	assert.match(widget()![1], /◐  explore  Ask question directly/);
 
 	await fire("session_shutdown", ctx);
@@ -6543,7 +6543,7 @@ test("the widget omits a task whose tool call result is the last timeline entry"
 	await tools.get("subagent_run")!.execute("bg", { agent: "explore", task: "Background map", mode: "background" }, undefined, undefined, ctx);
 	await tick();
 	const withBackground = widget()!;
-	assert.match(withBackground[0]!, /Agents · 1 active/, "only the remaining row is counted");
+	assert.match(withBackground[0]!, /Agents ▾ Collapse · 1 active/, "only the remaining row is counted");
 	assert.ok(withBackground.every((line) => !/Ask question directly|waiting for your reply/.test(line)), "the trailing task stays omitted");
 	assert.ok(withBackground.some((line) => /explore  Background map/.test(line)));
 
