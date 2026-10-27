@@ -1585,7 +1585,8 @@ test("Lab case at inner width 38 renders the approved layout", (t) => {
 		DOTS(38),
 		" ⬢ Lab             HEAD · 731c35826fe2",
 		DOTS(38),
-		" ◎ Stage web ≠ 37af7f4-captcha-disabl…",
+		" ◎ Stage web".padEnd(38),
+		"     ≠ 37af7f4-captcha-disabled".padEnd(38),
 		DOTS(38),
 		" ◎ Stage Firebase        sin evidencia",
 		DOTS(38),
@@ -1742,6 +1743,18 @@ test("a candidate from the session's worktree shows an Origen row with worktree 
 	assert.ok(lab > 0);
 	assert.equal(lines[lab + 1], DOTS(38));
 	assert.equal(lines[lab + 2], " ⎇ Origen              ddata-x · fix/y");
+	for (const width of [46, 30, 16]) assert.ok(renderShellSidebarBar(data, recordingMatrixTheme, width).every((row) => visibleWidth(row) <= width));
+});
+
+test("a value too long for its row moves below the label, whole, instead of being cut", (t) => {
+	useCardStyle(t, CARD_STYLE.NEON);
+	const origin = { worktree: "/srv/workspaces/ddata-ci-self-hosted", branch: "ci/self-hosted-test-runners", source: "session" as const };
+	const data = model({ ddataEnv: { pipeline: envPipeline(OTHER_RELEASE), backend: { text: "Stage (por defecto)" }, origin } });
+	const lines = groupLines(renderShellSidebarBar(data, recordingMatrixTheme, 46));
+	const at = lines.indexOf(" ⎇ Origen".padEnd(38));
+	assert.ok(at > 0, lines.join("\n"));
+	assert.deepEqual(lines.slice(at + 1, at + 3), ["     ddata-ci-self-hosted ·".padEnd(38), "     ci/self-hosted-test-runners".padEnd(38)]);
+	assert.ok(!lines.some((line) => line.includes("…")), "nothing is cut with …");
 	for (const width of [46, 30, 16]) assert.ok(renderShellSidebarBar(data, recordingMatrixTheme, width).every((row) => visibleWidth(row) <= width));
 });
 

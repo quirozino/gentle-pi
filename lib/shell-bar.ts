@@ -231,23 +231,47 @@ export function renderDdataPipelineLine(pipeline: DdataPipeline, theme: ShellBar
 	return visibleWidth(line) <= width ? line : truncateToWidth(line, width, "…");
 }
 
+/** Hanging indent for a detail value that moved below its label. */
+const DETAIL_HANG = "    ";
+
+// Greedy word wrap of plain text to `room` columns; a word wider than a line is clipped.
+function wrapPlain(text: string, room: number): string[] {
+	const lines: string[] = [];
+	let line = "";
+	for (const word of text.split(/\s+/).filter(Boolean)) {
+		const piece = visibleWidth(word) > room ? truncateToWidth(word, room, "…") : word;
+		if (!line) line = piece;
+		else if (visibleWidth(`${line} ${piece}`) <= room) line = `${line} ${piece}`;
+		else {
+			lines.push(line);
+			line = piece;
+		}
+	}
+	if (line) lines.push(line);
+	return lines;
+}
+
 /**
- * One detail row on a single line: icon and label on the left, the value
- * flush right, the value (then the label) truncated with … so the row never
- * exceeds `width`.
+ * One detail row: icon and label on the left, the value flush right. When the
+ * value does not fit beside the label, it moves below it, whole, wrapped on
+ * hanging-indented lines; nothing is cut unless a single word is wider than a
+ * line. No line exceeds `width`.
  */
-function detailRow(theme: ShellBarTheme, width: number, row: { icon: string; iconRole: string; key: string; value: string; valueRole?: string }): string {
-	if (width <= 0) return "";
+function detailRow(theme: ShellBarTheme, width: number, row: { icon: string; iconRole: string; key: string; value: string; valueRole?: string }): string[] {
+	if (width <= 0) return [""];
 	const leftPlain = `${row.icon} ${row.key}`;
 	const leftWidth = Math.min(visibleWidth(leftPlain), width);
 	const left = leftWidth < visibleWidth(leftPlain)
 		? truncateToWidth(leftPlain, width, "…")
 		: `${theme.fg(row.iconRole, row.icon)} ${theme.fg(ROLE.LABEL, theme.bold(row.key))}`;
+	const paint = (text: string) => theme.fg(row.valueRole ?? ROLE.VALUE, theme.bold(text));
 	const budget = width - leftWidth - 1;
-	if (budget < 1) return left;
-	const valuePlain = visibleWidth(row.value) <= budget ? row.value : truncateToWidth(row.value, budget, "…");
-	const gap = width - leftWidth - visibleWidth(valuePlain);
-	return `${left}${" ".repeat(gap)}${theme.fg(row.valueRole ?? ROLE.VALUE, theme.bold(valuePlain))}`;
+	if (budget >= 1 && visibleWidth(row.value) <= budget) {
+		return [`${left}${" ".repeat(width - leftWidth - visibleWidth(row.value))}${paint(row.value)}`];
+	}
+	const room = width - DETAIL_HANG.length;
+	if (room < 1) return [left];
+	return [left, ...wrapPlain(row.value, room).map((line) => DETAIL_HANG + paint(line))];
 }
 
 /** Evidence text as shown: "otra versión · X" reads as "≠ X". */
@@ -267,22 +291,22 @@ function ddataEnvSections(env: DdataEnvView, theme: ShellBarTheme): StatusSectio
 	return [
 		{ fitted: (width) => renderDdataStepBoxes(env.pipeline, theme, width) ?? [renderDdataPipelineLine(env.pipeline, theme, width)] },
 		{
-			fitted: (width) => [env.pipeline.overview
+			fitted: (width) => env.pipeline.overview
 				// No candidate: nothing is "current"; the steps say what each environment publishes.
 				? detailRow(theme, width, { icon: ENTORNO_ICON, iconRole: ENV_ROLE.PENDING, key: "Entorno", value: "estado publicado" })
-				: detailRow(theme, width, { icon: ENTORNO_ICON, iconRole: ENV_ROLE.CURRENT, key: "Entorno", value: `${env.pipeline.progressLabel} · ${current.responsibility}` })],
+				: detailRow(theme, width, { icon: ENTORNO_ICON, iconRole: ENV_ROLE.CURRENT, key: "Entorno", value: `${env.pipeline.progressLabel} · ${current.responsibility}` }),
 		},
 		...env.pipeline.steps.flatMap((step): StatusSection[] => [
 			// Stage reads per part (web release, Firebase deploy), in the Stage step's role.
 			...(step.id === "stage" && env.pipeline.stageParts.length > 0
 				? env.pipeline.stageParts.map((part): StatusSection => ({
-					fitted: (width) => [detailRow(theme, width, { icon: STEP_ICON.stage, iconRole: stepRole(step), key: part.name, value: displayEvidence(part.evidence.text), valueRole: tone(part.evidence.tone) })],
+					fitted: (width) => detailRow(theme, width, { icon: STEP_ICON.stage, iconRole: stepRole(step), key: part.name, value: displayEvidence(part.evidence.text), valueRole: tone(part.evidence.tone) }),
 				}))
-				: [{ fitted: (width: number) => [detailRow(theme, width, { icon: STEP_ICON[step.id], iconRole: stepRole(step), key: step.name, value: displayEvidence(step.evidence.text), valueRole: tone(step.evidence.tone) })] }]),
+				: [{ fitted: (width: number) => detailRow(theme, width, { icon: STEP_ICON[step.id], iconRole: stepRole(step), key: step.name, value: displayEvidence(step.evidence.text), valueRole: tone(step.evidence.tone) }) }]),
 			// Where the candidate comes from, right under Lab: the worktree, then its branch.
-			...(step.id === "lab" && env.origin ? [{ fitted: (width: number) => [detailRow(theme, width, { icon: ORIGIN_ICON, iconRole: ROLE.LABEL, key: "Origen", value: originText(env.origin!) })] }] : []),
+			...(step.id === "lab" && env.origin ? [{ fitted: (width: number) => detailRow(theme, width, { icon: ORIGIN_ICON, iconRole: ROLE.LABEL, key: "Origen", value: originText(env.origin!) }) }] : []),
 		]),
-		{ fitted: (width) => [detailRow(theme, width, { icon: BACKEND_ICON, iconRole: tone(env.backend.tone) ?? ROLE.LABEL, key: "Backend", value: env.backend.text, valueRole: tone(env.backend.tone) })] },
+		{ fitted: (width) => detailRow(theme, width, { icon: BACKEND_ICON, iconRole: tone(env.backend.tone) ?? ROLE.LABEL, key: "Backend", value: env.backend.text, valueRole: tone(env.backend.tone) }) },
 	];
 }
 
