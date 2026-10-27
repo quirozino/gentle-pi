@@ -104,8 +104,8 @@ export interface CiStatusDeps {
 	now(): number;
 	/** Calls onChange when the status file changes; returns the unsubscribe. */
 	watch(path: string, onChange: () => void): () => void;
-	/** Calls fn periodically; returns the stop. A dead supervisor stops writing, so time alone must re-evaluate. */
-	every?(ms: number, fn: () => void): () => void;
+	/** Calls fn once after ms; returns the cancel. A dead supervisor stops writing, so time alone must re-evaluate. */
+	after?(ms: number, fn: () => void): () => void;
 }
 
 export interface CiStatusController {
@@ -143,6 +143,7 @@ export function createCiStatusController(deps: CiStatusDeps): CiStatusController
 	};
 
 	const publish = () => {
+		armExpiry();
 		const next = context && file ? ciRowFor(file, context.repo, context.branch, context.ahead, deps.now()) : undefined;
 		const changed = JSON.stringify(next) !== JSON.stringify(row);
 		row = next;
@@ -164,12 +165,23 @@ export function createCiStatusController(deps: CiStatusDeps): CiStatusController
 		return inflight;
 	};
 
-	const every = deps.every ?? ((ms: number, fn: () => void) => {
-		const timer = setInterval(fn, ms);
+	// One timeout armed for the instant the current heartbeat goes stale, re-armed
+	// on every status read: no periodic wake-ups, and it fires only if the
+	// supervisor really stopped writing.
+	const after = deps.after ?? ((ms: number, fn: () => void) => {
+		const timer = setTimeout(fn, ms);
 		timer.unref?.();
-		return () => clearInterval(timer);
+		return () => clearTimeout(timer);
 	});
-	const stopClock = every(30_000, publish);
+	let cancelExpiry = () => {};
+	const armExpiry = () => {
+		cancelExpiry();
+		cancelExpiry = () => {};
+		const heartbeat = Date.parse(file?.supervisor?.heartbeat ?? "");
+		if (disposed || file?.supervisor?.state !== "running" || !Number.isFinite(heartbeat)) return;
+		const wait = Math.max(1_000, heartbeat + HEARTBEAT_STALE_MS + 1_000 - deps.now());
+		cancelExpiry = after(wait, publish);
+	};
 	const unwatch = deps.watch(deps.statusPath, () => {
 		void run(async () => {
 			file = await readStatus();
@@ -193,7 +205,7 @@ export function createCiStatusController(deps: CiStatusDeps): CiStatusController
 		dispose() {
 			disposed = true;
 			unwatch();
-			stopClock();
+			cancelExpiry();
 			listeners.clear();
 		},
 	};

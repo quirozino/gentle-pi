@@ -222,9 +222,10 @@ test("a status file without a heartbeat (older runner-kit) keeps the previous be
 	assert.equal(row(status({}))?.text, "pendiente");
 });
 
-test("the controller re-evaluates on its own clock, so a dead supervisor shows without a file change", async () => {
+test("the controller arms one timeout for heartbeat expiry, so a dead supervisor shows without a file change", async () => {
 	let now = NOW;
 	let tick = () => {};
+	const delays: number[] = [];
 	const file = { ...status({}), supervisor: beat("running", 10) };
 	const controller = createCiStatusController({
 		git: async (_c: string, args: string[]) => (args[0] === "remote" ? "https://github.com/quirozino/ddata" : args[0] === "rev-parse" ? "feat/x" : "0"),
@@ -233,7 +234,8 @@ test("the controller re-evaluates on its own clock, so a dead supervisor shows w
 		repoRoot: () => "/r",
 		now: () => now,
 		watch: () => () => {},
-		every: (_ms, fn) => {
+		after: (ms, fn) => {
+			delays.push(ms);
 			tick = fn;
 			return () => {};
 		},
@@ -242,6 +244,8 @@ test("the controller re-evaluates on its own clock, so a dead supervisor shows w
 	assert.equal(controller.view("/r")?.text, "pendiente");
 	let notified = 0;
 	controller.onChange(() => notified++);
+	// Armed for when the 10 s old heartbeat crosses 120 s (+1 s margin).
+	assert.equal(delays.at(-1), 111_000);
 	now += 5 * 60_000;
 	tick();
 	assert.equal(controller.view("/r")?.text, "offline");
