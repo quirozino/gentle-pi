@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Container, CURSOR_MARKER, ScrollView, stripTerminalSequences, TuiAltScreen, visibleWidth } from "@earendil-works/pi-tui";
 import { createChatViewport } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/chat-viewport.js";
-import { findScrollBox, installTranscriptRails, MIN_RAILS_WIDTH, paintRails, RAIL_COLUMNS } from "../lib/transcript-scrollbar-rails.ts";
+import { createRailsPainter, findScrollBox, installTranscriptRails, MIN_RAILS_WIDTH, paintRails, RAIL_COLUMNS } from "../lib/transcript-scrollbar-rails.ts";
 import { installTranscriptRightGutter, transcriptLeftInset, transcriptRightGutter } from "../lib/transcript-gutter.ts";
 
 const plain = (name: string) => ({ name, fg: (_role: string, text: string) => text, bold: (text: string) => text });
@@ -193,4 +193,25 @@ test("end to end: transcript cards, a pi full-width box, the dock card and the r
 	} finally {
 		setCardStyle(previous);
 	}
+});
+
+// Fork: an idle Matrix screen repaints every frame (animations), so the rails
+// must not re-parse rows that did not change since the previous paint.
+test("the rails painter recomposes only rows whose line or middle cell changed, with the same output", () => {
+	const compose = { calls: 0 };
+	const paint = createRailsPainter(() => { compose.calls++; });
+	const rect = { x: 0, y: 0, width: 12, height: 3 };
+	const screen = ["\x1b[32mabcdefghijkl\x1b[0m", "mnopqrstuvwx", "yz0123456789"];
+	const middle = (row: number) => (row === 1 ? "#" : " ");
+	const first = paint(screen, rect, rect, 12, "|", middle);
+	assert.deepEqual(first.map(stripTerminalSequences), paintRails(screen, rect, rect, 12, "|", middle).map(stripTerminalSequences));
+	assert.equal(stripTerminalSequences(first[1]!), "mnopqrst|#| ");
+	assert.equal(compose.calls, 3);
+	assert.deepEqual(paint(screen, rect, rect, 12, "|", middle), first, "unchanged frame: cached rows");
+	assert.equal(compose.calls, 3, "no row recomposed");
+	const moved = paint(screen, rect, rect, 12, "|", (row) => (row === 2 ? "#" : " "));
+	assert.equal(compose.calls, 5, "only the two rows whose thumb cell changed");
+	assert.equal(stripTerminalSequences(moved[2]!), "yz012345|#| ");
+	paint(["changed-line", screen[1]!, screen[2]!], rect, rect, 12, "|", (row) => (row === 2 ? "#" : " "));
+	assert.equal(compose.calls, 6, "a changed line is recomposed");
 });

@@ -70,24 +70,58 @@ export function findScrollBox(box: LayoutBox | undefined, scrollView: unknown, d
 	return undefined;
 }
 
-/** Repaints the last four columns of `rect` on every visible row: rail, middle cell, rail, blank gap. */
-export function paintRails(screen: string[], rect: Rect, clip: Rect, width: number, rail: string, middle: (row: number) => string): string[] {
-	if (rect.width < RAIL_COLUMNS) return screen;
+type MiddleCell = (row: number) => string;
+
+// One composite per row for all four columns: compositeTuiLine re-parses the
+// whole styled row on every call, and the rails repaint every frame.
+function railRow(line: string, left: number, width: number, rail: string, middle: string): string {
+	return compositeTuiLine(line, `${rail}${middle}${rail} `, left, RAIL_COLUMNS, width);
+}
+
+function railsGeometry(rect: Rect, clip: Rect, width: number): { left: number } | undefined {
+	if (rect.width < RAIL_COLUMNS) return undefined;
 	const left = rect.x + rect.width - RAIL_COLUMNS;
 	const gap = rect.x + rect.width - 1;
-	if (left < clip.x || gap >= clip.x + clip.width || gap >= width) return screen;
-	const out = screen.slice();
-	for (let offset = 0; offset < rect.height; offset++) {
-		const y = rect.y + offset;
-		if (y < clip.y || y >= clip.y + clip.height || y < 0 || y >= out.length) continue;
-		let line = out[y] ?? "";
-		line = compositeTuiLine(line, rail, left, 1, width);
-		line = compositeTuiLine(line, middle(offset), left + 1, 1, width);
-		line = compositeTuiLine(line, rail, left + 2, 1, width);
-		line = compositeTuiLine(line, " ", gap, 1, width);
-		out[y] = line;
-	}
-	return out;
+	if (left < clip.x || gap >= clip.x + clip.width || gap >= width) return undefined;
+	return { left };
+}
+
+/** Repaints the last four columns of `rect` on every visible row: rail, middle cell, rail, blank gap. */
+export function paintRails(screen: string[], rect: Rect, clip: Rect, width: number, rail: string, middle: MiddleCell): string[] {
+	return createRailsPainter()(screen, rect, clip, width, rail, middle);
+}
+
+/**
+ * A paintRails that remembers each row's last input and output, so a row whose
+ * line and middle cell did not change since the previous paint is reused
+ * instead of re-parsed. Idle animated frames leave almost every row unchanged.
+ * `onCompose` observes each real composite (tests).
+ */
+export function createRailsPainter(onCompose?: () => void): (screen: string[], rect: Rect, clip: Rect, width: number, rail: string, middle: MiddleCell) => string[] {
+	const rows = new Map<number, { line: string; middle: string; left: number; width: number; rail: string; out: string }>();
+	return (screen, rect, clip, width, rail, middle) => {
+		const geometry = railsGeometry(rect, clip, width);
+		if (!geometry) return screen;
+		const { left } = geometry;
+		const out = screen.slice();
+		for (let offset = 0; offset < rect.height; offset++) {
+			const y = rect.y + offset;
+			if (y < clip.y || y >= clip.y + clip.height || y < 0 || y >= out.length) continue;
+			const line = out[y] ?? "";
+			const cell = middle(offset);
+			const cached = rows.get(y);
+			if (cached && cached.line === line && cached.middle === cell && cached.left === left && cached.width === width && cached.rail === rail) {
+				out[y] = cached.out;
+				continue;
+			}
+			onCompose?.();
+			const painted = railRow(line, left, width, rail, cell);
+			rows.set(y, { line, middle: cell, left, width, rail, out: painted });
+			out[y] = painted;
+		}
+		for (const y of rows.keys()) if (y >= screen.length) rows.delete(y);
+		return out;
+	};
 }
 
 /**
@@ -114,6 +148,7 @@ export function installTranscriptRails(tui: unknown, state: unknown, options: Tr
 		return active() && width >= MIN_RAILS_WIDTH ? width - RAIL_COLUMNS : stockWidth.call(scroll, width);
 	};
 
+	const painter = createRailsPainter();
 	const composed = (screen: string[], layout: Layout, width: number): string[] => {
 		const result = compose.call(host, screen, layout, width);
 		const theme = options.theme();
@@ -122,7 +157,7 @@ export function installTranscriptRails(tui: unknown, state: unknown, options: Tr
 			const box = findScrollBox(layout?.root, state);
 			if (!box?.rect || !box.clip || box.rect.width < MIN_RAILS_WIDTH) return result;
 			const rail = theme.fg(SCROLLBAR_ROLES.TRACK, RAIL_GLYPH);
-			return paintRails(result, box.rect, box.clip, width, rail, (row) => {
+			return painter(result, box.rect, box.clip, width, rail, (row) => {
 				const cell = options.cells[row];
 				return cell?.thumb ? cell.text : " ";
 			});
