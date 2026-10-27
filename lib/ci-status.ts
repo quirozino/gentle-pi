@@ -20,7 +20,20 @@ export interface RunnerKitRepo {
 
 export interface RunnerKitStatus {
 	version?: number;
+	/** Written every poll cycle; absent in older runner-kit status files. */
+	supervisor?: { state?: string; heartbeat?: string };
 	repos?: Record<string, RunnerKitRepo>;
+}
+
+/** A heartbeat older than this means the supervisor is gone (it beats every ~20 s). */
+const HEARTBEAT_STALE_MS = 120_000;
+
+function supervisorDown(file: RunnerKitStatus, now: number): boolean {
+	const supervisor = file.supervisor;
+	if (!supervisor) return false;
+	if (supervisor.state !== "running") return true;
+	const at = Date.parse(supervisor.heartbeat ?? "");
+	return !Number.isFinite(at) || now - at > HEARTBEAT_STALE_MS;
 }
 
 /** steady: painted as is; pulse: the dot dims on odd frames; blink: the dot hides on odd frames. */
@@ -50,6 +63,8 @@ function age(iso: string | undefined, now: number): string {
 export function ciRowFor(file: RunnerKitStatus, repo: string, branch: string, ahead: number, now: number): CiRow | undefined {
 	const entry = file.repos?.[repo];
 	if (!entry) return undefined;
+	// No supervisor, no runners: nothing in progress can finish, so this wins.
+	if (supervisorDown(file, now)) return { text: "offline", tone: "error", motion: "blink" };
 	const run = entry.branches?.[branch];
 	if (run?.state === "running") {
 		const elapsed = Math.max(0, Math.floor((now - Date.parse(run.started_at ?? "")) / 60_000));
@@ -89,6 +104,8 @@ export interface CiStatusDeps {
 	now(): number;
 	/** Calls onChange when the status file changes; returns the unsubscribe. */
 	watch(path: string, onChange: () => void): () => void;
+	/** Calls fn periodically; returns the stop. A dead supervisor stops writing, so time alone must re-evaluate. */
+	every?(ms: number, fn: () => void): () => void;
 }
 
 export interface CiStatusController {
@@ -147,6 +164,12 @@ export function createCiStatusController(deps: CiStatusDeps): CiStatusController
 		return inflight;
 	};
 
+	const every = deps.every ?? ((ms: number, fn: () => void) => {
+		const timer = setInterval(fn, ms);
+		timer.unref?.();
+		return () => clearInterval(timer);
+	});
+	const stopClock = every(30_000, publish);
 	const unwatch = deps.watch(deps.statusPath, () => {
 		void run(async () => {
 			file = await readStatus();
@@ -170,6 +193,7 @@ export function createCiStatusController(deps: CiStatusDeps): CiStatusController
 		dispose() {
 			disposed = true;
 			unwatch();
+			stopClock();
 			listeners.clear();
 		},
 	};
