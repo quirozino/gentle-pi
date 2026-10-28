@@ -8,6 +8,7 @@ import test, { after, afterEach, type TestContext } from "node:test";
 import { initTheme, type ExtensionAPI, type ExtensionContext, type SlashCommandInfo, type SourceInfo } from "@earendil-works/pi-coding-agent";
 import { CURSOR_MARKER, matchesKey, stripTerminalSequences as stripAnsi, TuiMainScreen, visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import installGentleShell, { backgroundChangeRefreshesSettled, buildShellBarModel, createActiveProfileModelsReader, createActiveProfileOrchestratorReader, createActiveProfileReader, changesShortcut, devBinaryCard, extractQueuedText, fetchCodexUsage, fetchKimiUsage, fetchNanUsage, loadFileDiff, shellGitRunner, openInExternalEditor, usageShortcut, GentlePromptEditor } from "../extensions/gentle-shell.ts";
+import { PROMPT_PULSE_STEP_MS } from "../lib/shell-prompt.ts";
 import { CODEX_USAGE_URL, KIMI_USAGE_URL, NAN_QUOTA_URL, USAGE_SOURCE_EVENT, USAGE_SOURCE_SCHEMA } from "../lib/shell-usage.ts";
 import { bindSessionProfile, clearSessionProfileBinding, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
 import { createVimEditorAdapter, isAuditedPiEditorVersion } from "../lib/vim-editor-adapter.ts";
@@ -3576,20 +3577,44 @@ test("streaming frames advance the working petal and the quality watchdog stays 
 	writeFileSync(join(configHome, "animations.json"), '{"schema":"gentle-pi.animations/v1","policy":"quality"}');
 	const intervals = recordIntervals(t);
 	const renders = t.mock.method(fakeTui, "requestRender", () => {});
+	let clock = 1_000_000;
 	const { pi, handlers } = fakePi();
-	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: configHome }, { now: () => 1_000_000 });
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: configHome }, { now: () => clock });
 	const { ctx, ui } = fakeContext();
 	const editor = installedPrompt(ctx, ui, handlers);
 	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
 	const watchdog = intervals.find((entry) => entry.delay === 1000);
 	assert.ok(watchdog, "working installs the 1000ms silence watchdog");
-	const glyphs = [0, 1, 2, 3].map(() => petalGlyphOf(editor));
-	assert.ok(new Set(glyphs).size > 1, `each streamed frame must advance the petal, got ${glyphs.join("")}`);
+	// Fork: frames advance the petal at most once per PROMPT_PULSE_STEP_MS, so it
+	// keeps one pace however often the host repaints (a running subagent repaints a lot).
+	const glyphs = [0, 1, 2, 3].map(() => { clock += PROMPT_PULSE_STEP_MS; return petalGlyphOf(editor); });
+	assert.ok(new Set(glyphs).size > 1, `each streamed frame a step apart must advance the petal, got ${glyphs.join("")}`);
 	const before = renders.mock.callCount();
 	watchdog!.tick();
 	assert.equal(renders.mock.callCount(), before, "renders are already flowing, so the watchdog must not force one");
 	editor.dispose();
 	assert.equal(watchdog!.stopped, true);
+});
+
+test("rapid repaints advance the working petal at most once per pulse step", (t) => {
+	const configHome = scopedDoubleEscCancelConfigHome(t);
+	writeFileSync(join(configHome, "animations.json"), '{"schema":"gentle-pi.animations/v1","policy":"quality"}');
+	recordIntervals(t);
+	t.mock.method(fakeTui, "requestRender", () => {});
+	let clock = 1_000_000;
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: configHome }, { now: () => clock });
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers);
+	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+	const first = petalGlyphOf(editor);
+	// Twenty frames 10ms apart (a busy screen) stay inside one step: no change.
+	const burst = Array.from({ length: 20 }, () => { clock += 10; return petalGlyphOf(editor); });
+	assert.deepEqual(new Set(burst), new Set([first]), `frames inside one step must not advance the petal, got ${first}${burst.join("")}`);
+	clock += PROMPT_PULSE_STEP_MS;
+	assert.notEqual(petalGlyphOf(editor), first, "a frame a full step later advances it");
+	assert.equal(PROMPT_PULSE_STEP_MS, 300, "the same pace as the Status wordmark sweep");
+	editor.dispose();
 });
 
 test("silent working phases repaint only through the 1000ms watchdog window", (t) => {

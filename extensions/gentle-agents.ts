@@ -105,8 +105,10 @@ export const AGENTS_STALE_NOTICE_TYPE = "gentle-agents.stale-notice";
 const RENDER_COALESCE_MS = 400;
 const CLOCK_TICK_MS = 1000;
 // Half the prompt face's 80ms frame rate, so both animations read as the same
-// family without the card twitching.
-const AGENTS_WINK_MS = 160;
+// family without the card twitching. Fork: about 2.5x slower than upstream
+// (160ms), the calm pace of the Matrix chrome (tests/animation-pace.test.ts);
+// 420 rather than 400 so it never equals RENDER_COALESCE_MS.
+export const AGENTS_WINK_MS = 420;
 // Two minutes with no streamed delta on a RUNNING task is long enough that a
 // stalled worker and a merely slow one need to look different: below this a
 // quiet task still reads as "thinking", above it the row calls out the idle

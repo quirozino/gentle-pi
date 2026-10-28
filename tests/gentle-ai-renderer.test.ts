@@ -385,6 +385,9 @@ function pulsedCells(swept: string[], plain: string[]): string[] {
 	return out;
 }
 
+// The live start, in sweep steps, so the pulse lands on the same perimeter cells at any pace.
+const BASE = 20 * SWEEP_STEP_MS;
+
 function liveContext(extra: Record<string, unknown> = {}): Record<string, unknown> {
 	return { state: {}, argsComplete: true, executionStarted: false, sweep: true, ...extra };
 }
@@ -396,10 +399,10 @@ function renderLive(context: Record<string, unknown>, now: number, detail = "$ g
 test("a running Gentle AI card sweeps an 8-cell contrast pulse around its accent frame", (t) => {
 	t.mock.timers.enable({ apis: ["setTimeout"] });
 	const context = liveContext();
-	renderLive(context, 1_000); // stamps the live start
+	renderLive(context, BASE); // stamps the live start
 	assert.equal(SWEEP_LENGTH, 8);
-	const swept = renderLive(context, 1_000 + SWEEP_STEP_MS * 10);
-	const plain = renderLive(liveContext({ state: context.state, sweep: false }), 1_000 + SWEEP_STEP_MS * 10);
+	const swept = renderLive(context, BASE + SWEEP_STEP_MS * 10);
+	const plain = renderLive(liveContext({ state: context.state, sweep: false }), BASE + SWEEP_STEP_MS * 10);
 	const pulsed = pulsedCells(swept, plain);
 	assert.ok(pulsed.length > 0 && pulsed.length <= SWEEP_LENGTH, `pulse cells: ${pulsed.join(" ")}`);
 	for (const cell of pulsed) assert.match(cell, /:text$/);
@@ -409,11 +412,11 @@ test("a running Gentle AI card sweeps an 8-cell contrast pulse around its accent
 test("the pulse moves with the clock", (t) => {
 	t.mock.timers.enable({ apis: ["setTimeout"] });
 	const context = liveContext();
-	renderLive(context, 1_000);
+	renderLive(context, BASE);
 	const at = (now: number) => pulsedCells(renderLive(context, now), renderLive(liveContext({ state: context.state, sweep: false }), now)).join(" ");
-	const first = at(1_000 + SWEEP_STEP_MS * 9), second = at(1_000 + SWEEP_STEP_MS * 10);
+	const first = at(BASE + SWEEP_STEP_MS * 9), second = at(BASE + SWEEP_STEP_MS * 10);
 	assert.notEqual(first, second);
-	assert.equal(at(1_000 + SWEEP_STEP_MS * 9 + 10), first, "same 50 ms step, same pulse");
+	assert.equal(at(BASE + SWEEP_STEP_MS * 9 + 10), first, "same sweep step, same pulse");
 });
 
 test("completed and failed Gentle AI cards render exactly as before", () => {
@@ -446,14 +449,14 @@ test("a non-quality animation policy keeps the card static", (t) => {
 	assert.deepEqual(pulsedCells(again, reference), []);
 });
 
-test("the row timer ticks at 50 ms while sweeping, 1000 ms otherwise, and is gone after the terminal render", (t) => {
+test("the row timer ticks at the sweep step while sweeping, 1000 ms otherwise, and is gone after the terminal render", (t) => {
 	t.mock.timers.enable({ apis: ["setTimeout"] });
 	let invalidations = 0;
 	const state: Record<string, unknown> = {};
 	const context = { state, argsComplete: true, executionStarted: false, sweep: true, invalidate: () => { invalidations += 1; } };
-	assert.equal(CARD_SWEEP_TICK_MS, 50);
+	assert.equal(CARD_SWEEP_TICK_MS, SWEEP_STEP_MS);
 	renderGentleAiLifecycleCall("review capture", sweepTheme, context as never, undefined, 1_000);
-	t.mock.timers.tick(49);
+	t.mock.timers.tick(CARD_SWEEP_TICK_MS - 1);
 	assert.equal(invalidations, 0);
 	t.mock.timers.tick(1);
 	assert.equal(invalidations, 1);
@@ -494,9 +497,9 @@ function preparingContext(state: Record<string, unknown>, args: unknown, sweep =
 test("a preparing card pulses once its arguments are seen streaming", (t) => {
 	t.mock.timers.enable({ apis: ["setTimeout"] });
 	const state: Record<string, unknown> = {};
-	renderLive(preparingContext(state, { lineageId: "l" }), 1_000);
-	const swept = renderLive(preparingContext(state, { lineageId: "l", collectBindings: ["b"] }), 1_000 + SWEEP_STEP_MS * 10);
-	const plain = renderLive(preparingContext({}, { lineageId: "l" }, false), 1_000 + SWEEP_STEP_MS * 10);
+	renderLive(preparingContext(state, { lineageId: "l" }), BASE);
+	const swept = renderLive(preparingContext(state, { lineageId: "l", collectBindings: ["b"] }), BASE + SWEEP_STEP_MS * 10);
+	const plain = renderLive(preparingContext({}, { lineageId: "l" }, false), BASE + SWEEP_STEP_MS * 10);
 	const pulsed = pulsedCells(swept, plain);
 	assert.ok(pulsed.length > 0 && pulsed.length <= SWEEP_LENGTH, `pulse cells: ${pulsed.join(" ")}`);
 	for (const cell of pulsed) assert.match(cell, /:text$/);
@@ -508,7 +511,7 @@ test("an abandoned preparing stream goes still and stops waking itself", (t) => 
 	t.mock.timers.enable({ apis: ["setTimeout"] });
 	const state: Record<string, unknown> = {};
 	const args = { lineageId: "l", collectBindings: ["b"] };
-	renderLive(preparingContext(state, { lineageId: "l" }), 1_000);
+	renderLive(preparingContext(state, { lineageId: "l" }), BASE);
 	renderLive(preparingContext(state, args), 2_000);
 	assert.notEqual(statePendingTimer(state), undefined, "a live stream wakes itself");
 	// The stream stops: only the row's own wakes render it, with the same arguments.

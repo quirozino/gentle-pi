@@ -53,7 +53,8 @@ export function thumbSpan(piTop: number, piHeight: number, trackLength: number, 
 }
 
 /** One eighth-of-a-row step of the sweep. */
-export const SWEEP_STEP_MS = 60;
+// Fork: 150ms, 2.5x slower than upstream (60ms); see tests/animation-pace.test.ts.
+export const SWEEP_STEP_MS = 150;
 /** Lower blocks by eighths filled from the bottom; index 8 is a full block. */
 const LOWER_EIGHTHS = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"] as const;
 

@@ -43,7 +43,7 @@ import { BANNER_COLORS, DEFAULT_BANNER_CONFIG, readBannerConfig, readBannerConfi
 import { agentsViewKey } from "../lib/agents-keys.ts";
 import { serveShellChrome } from "../lib/shell-chrome-gate.ts";
 import { GentleAiDevBinaryOverrideError, resolveGentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
-import { DOUBLE_ESC_CANCEL_HINT, floatPromptRow, framePromptLines, resolvePromptLayout, IDLE_ESC_CLEAR_HINT, PROMPT_HINT, PROMPT_STATE, SHELL_PULSE_WATCHDOG_MS, withPromptHint, type PromptState } from "../lib/shell-prompt.ts";
+import { DOUBLE_ESC_CANCEL_HINT, floatPromptRow, framePromptLines, resolvePromptLayout, IDLE_ESC_CLEAR_HINT, PROMPT_HINT, PROMPT_PULSE_STEP_MS, PROMPT_STATE, SHELL_PULSE_WATCHDOG_MS, withPromptHint, type PromptState } from "../lib/shell-prompt.ts";
 import { SHELL_GLYPHS } from "../lib/shell-glyphs.ts";
 import { oddPhaseRegistry } from "../lib/odd-phase.ts";
 import { bareToolName, installPromotionCompletionCapture, promotionStatusRegistry, restorePromotionState, settledOutcome, settledVerifierMessage, settledVerifierResult, verifierRunStart, verifierRunTaskId } from "../lib/promotion-report.ts";
@@ -762,6 +762,7 @@ export function extractQueuedText(combined: string, draft: string): string | und
 export class GentlePromptEditor extends CustomEditor {
 	private promptState: PromptState = PROMPT_STATE.IDLE;
 	private tick = 0;
+	private lastPulseAt = Number.NEGATIVE_INFINITY;
 	private animationPolicy: AnimationPolicy = "quality";
 	private vimPolicy: VimPolicy = "off";
 	private vimRejected = false;
@@ -1490,10 +1491,16 @@ export class GentlePromptEditor extends CustomEditor {
 		// paints while working advances the animation for free, so no fast
 		// timer forces renders during streaming.
 		if (this.promptState === PROMPT_STATE.WORKING && this.animationPolicy === "quality") {
-			this.tick += 1;
-			this.lastRenderAt = this.deps.now();
-			// Fork: the Matrix gauge sweep advances with the petal.
-			this.deps.onPulse?.();
+			const now = this.deps.now();
+			this.lastRenderAt = now;
+			// Fork: at most one step per PROMPT_PULSE_STEP_MS, so a busy screen
+			// (a running subagent repaints constantly) cannot speed it up.
+			if (now - this.lastPulseAt >= PROMPT_PULSE_STEP_MS) {
+				this.lastPulseAt = now;
+				this.tick += 1;
+				// Fork: the Matrix gauge sweep advances with the petal.
+				this.deps.onPulse?.();
+			}
 		}
 		const layout = resolvePromptLayout(width, cardStyle(), this.deps.bg);
 		this.floatMouseLayout = layout.background ? layout : undefined;

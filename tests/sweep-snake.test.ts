@@ -7,13 +7,13 @@ import { paintPulse, SWEEP_LENGTH, SWEEP_STEP_MS } from "../lib/sweep-pulse.ts";
 // The running sweep moves like a snake: one perimeter cell per short step, with
 // a body long enough to read as a moving line instead of a jumping block.
 
-test("the snake advances one perimeter cell every 50 ms and is 8 cells long", () => {
-	assert.equal(SWEEP_STEP_MS, 50);
+test("the snake advances one perimeter cell every 125 ms (fork; upstream 50 ms) and is 8 cells long", () => {
+	assert.equal(SWEEP_STEP_MS, 125);
 	assert.equal(SWEEP_LENGTH, 8);
 	assert.equal(cardSweepAt(0).position, 0);
-	assert.equal(cardSweepAt(49).position, 0);
-	assert.equal(cardSweepAt(50).position, 1);
-	assert.equal(cardSweepAt(1000).position, 20);
+	assert.equal(cardSweepAt(124).position, 0);
+	assert.equal(cardSweepAt(125).position, 1);
+	assert.equal(cardSweepAt(2500).position, 20);
 });
 
 test("the snake lights its 8 cells behind the head along the frame", () => {

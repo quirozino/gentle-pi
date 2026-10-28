@@ -56,7 +56,8 @@ test("one loop runs reveal → pause → scan → hold → hide → rest, then r
 	for (const { frame } of frames) assert.ok(frame.nextMs > 0, "every frame schedules forward");
 	assert.deepEqual(statusTitleFrame(N, statusTitleCycleMs(N) + 5), statusTitleFrame(N, 5), "the loop repeats");
 	const total = statusTitleCycleMs(N);
-	assert.ok(total > 4000 && total < 5000, `about the HTML loop length: ${total} ms`);
+	// Fork: reveal, scan and hide run 2.5x slower than the HTML loop (about 4.5 s upstream).
+	assert.ok(total > 7000 && total < 8000, `about the fork's calm loop length: ${total} ms`);
 });
 
 test("hidden characters keep their width and the band paints only the role ladder", () => {

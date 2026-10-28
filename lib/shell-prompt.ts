@@ -29,6 +29,11 @@ export type PetalTone = (typeof PETAL_TONE)[keyof typeof PETAL_TONE];
 // prompt's own frames while streaming, so the only timer left is a watchdog
 // that repaints silent working phases (long tool runs with no output).
 export const SHELL_PULSE_WATCHDOG_MS = 1000;
+// Fork: frames advance the petal and the Matrix gauge sweep at most once per
+// step, so the working animation keeps one pace however often the host repaints
+// (a running subagent repaints many times a second). Same pace as the Status
+// wordmark sweep (startup-banner WORDMARK_SWEEP_MS).
+export const PROMPT_PULSE_STEP_MS = 300;
 export const SHELL_SCANNER_STEPS = 15;
 const SCANNER_ENTRY_OFFSET = 3;
 

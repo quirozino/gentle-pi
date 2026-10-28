@@ -409,7 +409,7 @@ test("sweep pulses muted for queued or waiting-only tasks and in the contrast ro
 	const opts = { collapsed: false, sweep: true };
 	// The waiting pulse follows the clock at its slower step, so the clock moves with the tick here.
 	assert.deepEqual([...frameSweepRoles((tick) => renderAgentsCard([queued, waiting], roleTheme, 60, 2000 + tick * SWEEP_WAITING_STEP_MS, { ...opts, tick }))], ["muted"]);
-	assert.deepEqual([...frameSweepRoles((tick) => renderAgentsCard([queued, task({ id: "r" })], roleTheme, 60, 2000, { ...opts, tick }))], ["text"]);
+	assert.deepEqual([...frameSweepRoles((tick) => renderAgentsCard([queued, task({ id: "r" })], roleTheme, 60, 40 * SWEEP_STEP_MS, { ...opts, tick }))], ["text"]);
 });
 
 test("sweep never colours the frame when off, untick'd or nothing is unfinished", () => {
@@ -429,8 +429,10 @@ test("sweep is opt-in: absent option renders identically to sweep false", () => 
 
 test("sweep advances one snake step with the clock", () => {
 	const at = (now: number) => renderAgentsCard([task({})], roleTheme, 60, now, { collapsed: false, tick: 5, sweep: true });
-	assert.notDeepEqual(at(2000), at(2000 + SWEEP_STEP_MS));
-	assert.deepEqual(at(2000), at(2000 + SWEEP_STEP_MS - 1), "same step, same position");
+	// Measured in steps, so the head lands on the same perimeter cells at any pace.
+	const base = 40 * SWEEP_STEP_MS;
+	assert.notDeepEqual(at(base), at(base + SWEEP_STEP_MS));
+	assert.deepEqual(at(base), at(base + SWEEP_STEP_MS - 1), "same step, same position");
 });
 
 test("hasWorkingTask is true only for a running task that is not idle", () => {
