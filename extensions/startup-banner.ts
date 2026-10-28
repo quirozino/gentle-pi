@@ -551,8 +551,9 @@ const RESIZE_GRACE_PERIOD_MS = 300;
 const HEADER_OWNERSHIP_GRACE_MS = 5000;
 // Ambient cadence for a looping wordmark sweep, once the intro window has
 // passed. Deliberately far slower than the intro's 25ms: the band still
-// reads as moving, at a fraction of the redraw traffic.
-const WORDMARK_SWEEP_MS = 120;
+// reads as moving, at a fraction of the redraw traffic. One column per step,
+// so 120ms (~8 cols/s) read as frantic on the Matrix wordmark.
+const WORDMARK_SWEEP_MS = 300;
 const WORDMARK_SWEEP_SLOW_MS = 500;
 
 function currentIntroMode(): IntroMode {
