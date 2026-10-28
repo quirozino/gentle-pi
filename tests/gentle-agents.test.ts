@@ -3764,6 +3764,28 @@ test("subagent_list_agents publishes each agent's declared tool inventory so rou
 	} finally { rmSync(fixture, TEST_DIR_REMOVAL); }
 });
 
+test("a foreground subagent_run call card shows its task while it runs, though Pi built the card before launch", async () => {
+	const { pi, tools, fire } = fakePi();
+	const harness = deps();
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	// Pi renders the call when execution starts, before launch() records the
+	// task, and a foreground run sends no partial result that would rebuild it.
+	const card = tools.get("subagent_run")!.renderCall({ agent: "explore" }, plainTheme, { toolCallId: "fg-1" });
+	assert.deepEqual(card.render(60), [], "no task yet: nothing to draw");
+	const running = tools.get("subagent_run")!.execute("fg-1", { agent: "explore", task: "Map lib/.", label: "map lib" }, undefined, undefined, ctx);
+	await tick();
+	await tick();
+	const live = card.render(60).join("\n");
+	assert.match(live, /❀ Agents/, "the same card now draws the running task");
+	assert.match(live, /explore/);
+	harness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }] });
+	harness.children[0].emit({ type: "agent_settled" });
+	await running;
+	await fire("session_shutdown", ctx);
+});
+
 test("subagent_list_agents and subagent_run in task mode launch a child with the resolved profile and return its answer", async () => {
 	const { pi, tools, fire } = fakePi();
 	const harness = deps();

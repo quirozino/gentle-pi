@@ -2247,8 +2247,11 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				// A result poll draws no card of its own: the result row carries the
 				// title with the answer, so repeated polls never stack blocks.
 				if (name === "result") return { render: () => [], invalidate() {} };
-				const taskId = resolveRenderTaskId(name, args, context?.toolCallId);
-				return { render: (width: number) => agentToolCard(theme, width, taskId), invalidate() {} };
+				// Fork: resolved at each render, not once here. Pi builds the call card
+				// when execution starts, before launch() records the task, and a
+				// foreground run sends no partial result that would rebuild it, so a
+				// task id fixed here left the card empty for the whole run.
+				return { render: (width: number) => agentToolCard(theme, width, resolveRenderTaskId(name, args, context?.toolCallId)), invalidate() {} };
 			},
 			renderResult(result, options, theme) {
 				const task = (result.details as { gentleAgents?: { status?: string; taskId?: string } } | undefined)?.gentleAgents;
