@@ -3,6 +3,7 @@ import { designCommentBatchContent, designCommentContent, hasSystemTokens, listD
 import { createDesignCommentStore, DesignCommentsError, type StoredDesignComment } from "./design-comments.ts";
 import { createDesignHandoffStore, DesignHandoffsError, sendDesignHandoff, type DesignHandoff, type DesignHandoffDelivery, type DesignHandoffStatus } from "./design-handoffs.ts";
 import { openInBrowser, type OpenInBrowserResult } from "./design-open-browser.ts";
+import { resolveDesignRemote, type DesignRemoteResolution } from "./design-remote.ts";
 import { detectDesignSources, staleDesignSources } from "./design-sources.ts";
 
 // Gentle Design helpers: argument parsing, the designs already written under
@@ -208,6 +209,8 @@ export async function sendDesignImplement(cwd: string, plan: Extract<DesignImple
 export interface DesignCanvasDeps {
 	startServer?: (options: DesignCanvasServerOptions) => Promise<DesignCanvasServer>;
 	openBrowser?: (url: string) => Promise<OpenInBrowserResult>;
+	/** The tailnet settings, read each time a server starts (default: design.json in the gentle-pi config home). */
+	remote?: () => DesignRemoteResolution;
 }
 
 /**
@@ -215,7 +218,7 @@ export interface DesignCanvasDeps {
  * `refreshed` is true when an already connected canvas page was told to show and reload it,
  * so no new tab was opened (S14).
  */
-export type DesignOpenNotice = DesignNotice & { url?: string; opened?: boolean; refreshed?: boolean };
+export type DesignOpenNotice = DesignNotice & { url?: string; opened?: boolean; refreshed?: boolean; tailnet?: boolean };
 
 export interface DesignCanvas {
 	/**
@@ -242,7 +245,8 @@ function canvasUrl(server: DesignCanvasServer, slug: string | null): string {
 export function createDesignCanvas(deliver: (message: DesignSessionContent) => DesignHandoffDelivery | Promise<DesignHandoffDelivery>, deps: DesignCanvasDeps = {}): DesignCanvas {
 	const startServer = deps.startServer ?? startDesignCanvasServer;
 	const openBrowser = deps.openBrowser ?? ((url: string) => openInBrowser(url));
-	let running: { root: string; server: Promise<DesignCanvasServer>; url?: string } | undefined;
+	const readRemote = deps.remote ?? (() => resolveDesignRemote());
+	let running: { root: string; server: Promise<DesignCanvasServer>; url?: string; remote: DesignRemoteResolution } | undefined;
 
 	async function stop(): Promise<boolean> {
 		const current = running;
@@ -258,6 +262,7 @@ export function createDesignCanvas(deliver: (message: DesignSessionContent) => D
 		// A new session cwd means a different design root, so the old server goes.
 		if (running && running.root !== root) await stop();
 		if (!running) {
+			const remote = readRemote();
 			const server = startServer({
 				designRoot: root,
 				onComment: async (comment) => { await deliver(designCommentContent(comment)); },
@@ -269,8 +274,9 @@ export function createDesignCanvas(deliver: (message: DesignSessionContent) => D
 					if (plan.kind === "refuse") throw new Error(plan.notice.message);
 					return deliver(plan.message);
 				},
+				...(remote.remote ? { remote: remote.remote } : {}),
 			});
-			running = { root, server };
+			running = { root, server, remote };
 			server.catch(() => { if (running?.server === server) running = undefined; });
 		}
 		return running.server;
@@ -296,14 +302,20 @@ export function createDesignCanvas(deliver: (message: DesignSessionContent) => D
 			return { message: `The design canvas could not start: ${error instanceof Error ? error.message : String(error)}`, level: "error" };
 		}
 		const url = canvasUrl(server, slug);
+		const remote = running?.remote;
 		if (running) running.url = url;
 		if (reused && server.connectedClients() > 0 && server.show(slug) > 0) {
 			return { message: `Design canvas refreshed: ${url}`, level: "info", url, opened: true, refreshed: true };
 		}
+		// On the tailnet the browser runs on another device, so the link is the way in.
+		if (server.publicOrigin !== undefined) {
+			return { message: `Design canvas (tailnet): ${url}\nOpen this link on any device in your tailnet.`, level: "info", url, opened: false, tailnet: true };
+		}
+		const remoteNote = remote?.problem ? `\nTailnet canvas disabled: ${remote.problem}.` : remote?.remote ? `\nEvery tailnet canvas port (${remote.remote.ports[0]}-${remote.remote.ports.at(-1)}) is busy, so this canvas is loopback only.` : "";
 		const result = await openBrowser(url);
-		if (result.opened) return { message: `Design canvas: ${url}`, level: "info", url, opened: true };
+		if (result.opened) return { message: `Design canvas: ${url}${remoteNote}`, level: remoteNote ? "warning" : "info", url, opened: true };
 		const reason = result.error ? ` (${result.error})` : "";
-		return { message: `Design canvas: ${url}\nThe browser could not be opened${reason}. Open the URL manually.`, level: "warning", url, opened: false };
+		return { message: `Design canvas: ${url}\nThe browser could not be opened${reason}. Open the URL manually.${remoteNote}`, level: "warning", url, opened: false };
 	}
 
 	return { open, stop, url: () => running?.url };
@@ -500,7 +512,7 @@ export async function runDesignTool(cwd: string, params: DesignToolParams, canva
 	if (params.action === "open") {
 		const notice = await canvas.open(cwd, params.slug || undefined);
 		if (notice.url === undefined) throw new Error(notice.message);
-		const details = notice.refreshed ? { url: notice.url, opened: true, refreshed: true as const } : { url: notice.url, opened: notice.opened === true };
+		const details = notice.refreshed ? { url: notice.url, opened: true, refreshed: true as const } : { url: notice.url, opened: notice.opened === true, ...(notice.tailnet ? { tailnet: true as const } : {}) };
 		return { texts: [notice.message], details };
 	}
 	const target = params.target ?? "";

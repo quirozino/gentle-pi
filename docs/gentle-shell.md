@@ -406,6 +406,22 @@ The canvas opens in navigation mode: the mouse wheel, trackpad, and drag always 
 
 The canvas server binds `127.0.0.1` on a random port and needs a random per-server token in every URL. It rejects any `Host` other than its own loopback address, accepts every write (comments, Send all, resolve/reopen, Implement) only with its own `Origin` (`http://127.0.0.1:<port>` or `http://localhost:<port>`), a JSON body, and bounded lengths, keeps at most 500 comments per design, and serves only files under `design/` in the session cwd (design folders, plus exactly `design/system.html` for the system board), resolved by real path so neither `..` nor a symlink can escape. Artboards run in iframes sandboxed without `allow-same-origin`, so they cannot read the canvas or post comments themselves. The canvas may frame only loopback origins (its `frame-src`), and the Compare preview frame keeps its own origin (`allow-scripts allow-same-origin allow-forms allow-popups`, never top navigation) only because it is another origin than the canvas: the canvas refuses a preview on its own port, and sends no referrer, so the app never sees the token. No other network traffic is involved. The server and the tool write `comments.json` and `handoffs.json` one at a time through an atomic replace, and never overwrite a file they cannot parse.
 
+#### Opening the canvas from another device (tailnet)
+
+When Pi runs on a headless host and you browse from another machine or a phone, the canvas can be reached through [`tailscale serve`](https://tailscale.com/kb/1312/serve) instead of an SSH tunnel. Create `~/.pi/gentle-ai/design.json`:
+
+```json
+{ "schema": "gentle-pi.design/v1", "publicHost": "<host>.<tailnet>.ts.net", "ports": [8450, 8459] }
+```
+
+and forward each port of the range once, on the Pi host (the mappings persist across reboots):
+
+```bash
+for port in $(seq 8450 8459); do tailscale serve --bg --https=$port http://127.0.0.1:$port; done
+```
+
+The canvas server then listens on the first free port of the range, still on `127.0.0.1` only, so several Pi sessions can each have a canvas. It also accepts `<publicHost>:<port>` as its `Host` and `https://<publicHost>:<port>` as its own `Origin`; the token is still required on every route. `open` shows the link (`Design canvas (tailnet): https://<publicHost>:<port>/<token>/…`) instead of opening a browser on the host: open it on any device in your tailnet. With every port of the range busy, the canvas falls back to a random loopback-only port and says so; a malformed file is named in the notice and changes nothing. `publicHost` must be a `.ts.net` name and the range may span at most 32 ports. Compare still frames the app's loopback preview URL, which on another device points at that device's own `localhost`.
+
 ### Gentle Music
 
 `/gentle:music [mood]` hands the terminal to the [gentle-stream](https://github.com/Gentleman-Programming/gentle-stream) player, like Pi's external editor, passing the mood and the session model. In the player, `b` returns to Pi with the music playing and `q` returns and stops it. `/gentle:music next`, `pause`, `play`, `stop`, and `status` control the music without leaving Pi. Quitting Pi after using the command stops the music. gentle-stream runs from `PATH`, or through `uvx`/`uv` when it is not installed. See [Gentle Music](gentle-music.md).

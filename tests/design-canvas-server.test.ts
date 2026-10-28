@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
-import { request as httpRequest } from "node:http";
+import { createServer as createHttpServer, request as httpRequest, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
@@ -1093,4 +1093,95 @@ test("a batch attaches at most six screenshots, in order, and names the rest for
 	assert.deepEqual(content, [{ type: "text", text }, ...[0, 2, 3, 4, 5, 6].map((index) => ({ type: "image", data: `data${index}`, mimeType: "image/png" }))]);
 	const plain = batch.map(({ screenshot: _drop, ...rest }) => rest);
 	assert.equal(designCommentBatchContent(plain), formatDesignCommentBatch(plain));
+});
+
+// Tailnet reach (odd/tasks/design-tailnet-canvas.md S2-S4): `tailscale serve` forwards
+// https://<publicHost>:<port> to 127.0.0.1:<port> with the public Host and Origin intact.
+const PUBLIC_HOST = "ddata.tail0000.ts.net";
+
+/** A port the OS just handed out and released, so the server can take it. */
+async function freePort(): Promise<number> {
+	const probe = createHttpServer();
+	await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
+	const { port } = probe.address() as { port: number };
+	await new Promise<void>((resolve) => probe.close(() => resolve()));
+	return port;
+}
+
+async function hold(t: TestContext, port: number): Promise<Server> {
+	const busy = createHttpServer();
+	await new Promise<void>((resolve) => busy.listen(port, "127.0.0.1", resolve));
+	t.after(() => new Promise<void>((resolve) => busy.close(() => resolve())));
+	return busy;
+}
+
+async function startRemote(t: TestContext, ports: number[]) {
+	const { root } = fixture(t);
+	const comments: DesignComment[] = [];
+	const server = await startDesignCanvasServer({ designRoot: root, onComment: (comment) => { comments.push(comment); }, randomToken: () => TOKEN, remote: { publicHost: PUBLIC_HOST, ports } });
+	t.after(() => server.close());
+	return { server, comments, port: server.port, base: `/${TOKEN}/` };
+}
+
+test("with a tailnet range the canvas listens on loopback and answers to its public name", async (t) => {
+	const first = await freePort();
+	const { server, port, base, comments } = await startRemote(t, [first]);
+	assert.equal(port, first);
+	assert.equal(server.publicOrigin, `https://${PUBLIC_HOST}:${port}`);
+	assert.equal(server.url, `https://${PUBLIC_HOST}:${port}/${TOKEN}/`);
+	const publicHost = `${PUBLIC_HOST}:${port}`;
+	assert.equal((await rawRequest(port, base, { host: publicHost })).status, 200);
+	assert.equal((await rawRequest(port, base)).status, 200, "loopback still works");
+	assert.equal((await rawRequest(port, base, { host: `${PUBLIC_HOST}:${port + 1}` })).status, 421);
+	assert.equal((await rawRequest(port, base, { host: `evil.${PUBLIC_HOST}:${port}` })).status, 421);
+	assert.equal((await rawRequest(port, base, { host: PUBLIC_HOST })).status, 421);
+	assert.equal((await rawRequest(port, "/", { host: publicHost })).status, 404, "the token is still required");
+	const read = { host: publicHost, headers: { Origin: `https://${publicHost}` } };
+	assert.equal((await rawRequest(port, `${base}api/designs`, read)).status, 200);
+	assert.equal((await rawRequest(port, `${base}api/designs`, { host: publicHost, headers: { Origin: `http://${publicHost}` } })).status, 403, "only the https origin");
+	assert.equal((await postComment(port, VALID, { Origin: `https://${PUBLIC_HOST}:${port + 1}` })).status, 403);
+	assert.equal((await postComment(port, VALID, { Origin: `https://${publicHost}` })).status, 202);
+	assert.equal(comments.length, 1);
+	assert.equal(String((await rawRequest(port, `${base}files/alpha/01-hero.html`, { host: publicHost })).headers["content-security-policy"]), [
+		"sandbox allow-scripts",
+		`default-src 'self' https://${publicHost} 'unsafe-inline' data: blob:`,
+		"connect-src 'none'",
+		"base-uri 'none'",
+		"form-action 'none'",
+		`frame-ancestors http://127.0.0.1:${port} http://localhost:${port} https://${publicHost}`,
+	].join("; "));
+});
+
+test("a busy tailnet port moves the canvas to the next one in the range", async (t) => {
+	const taken = await freePort();
+	await hold(t, taken);
+	const next = await freePort();
+	const { server } = await startRemote(t, [taken, next]);
+	assert.equal(server.port, next);
+	assert.equal(server.publicOrigin, `https://${PUBLIC_HOST}:${next}`);
+});
+
+test("with every tailnet port busy the canvas falls back to a loopback-only random port", async (t) => {
+	const taken = await freePort();
+	await hold(t, taken);
+	const { server, port, base } = await startRemote(t, [taken]);
+	assert.notEqual(port, taken);
+	assert.equal(server.publicOrigin, undefined);
+	assert.equal(server.url, `http://127.0.0.1:${port}/${TOKEN}/`);
+	assert.equal((await rawRequest(port, base, { host: `${PUBLIC_HOST}:${port}` })).status, 421);
+	assert.equal((await postComment(port, VALID, { Origin: `https://${PUBLIC_HOST}:${port}` })).status, 403);
+});
+
+test("without a tailnet range the public name is refused like any foreign host", async (t) => {
+	const { server, port, base } = await start(t);
+	assert.equal(server.publicOrigin, undefined);
+	assert.equal((await rawRequest(port, base, { host: `${PUBLIC_HOST}:${port}` })).status, 421);
+});
+
+test("an invalid tailnet range is refused before listening", async (t) => {
+	const { root } = fixture(t);
+	const opts = (remote: unknown) => ({ designRoot: root, onComment: () => {}, remote } as DesignCanvasServerOptions);
+	await assert.rejects(startDesignCanvasServer(opts({ publicHost: "Evil Host", ports: [8450] })), /publicHost/);
+	await assert.rejects(startDesignCanvasServer(opts({ publicHost: PUBLIC_HOST, ports: [80] })), /ports/);
+	await assert.rejects(startDesignCanvasServer(opts({ publicHost: PUBLIC_HOST, ports: "8450" })), /ports/);
 });
