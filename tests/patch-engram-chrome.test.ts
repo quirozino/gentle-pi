@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 const helperUrl = new URL("../scripts/patch-engram-chrome.mjs", import.meta.url);
-const { patchChromeFile, patchIndexFile } = await import(helperUrl.href);
+const { addMissingToolLabels, patchChromeFile, patchIndexFile } = await import(helperUrl.href);
 
 // A stand-in for gentle-engram's true pristine, never-patched
 // memory-tool-chrome.js: the patch script anchors on the renderCallText /
@@ -806,4 +806,24 @@ test("under gentle-pi's Matrix rails the box drops its left margin too and keeps
 		}
 		assert.equal(lines[1].indexOf("🧠"), 2, "the text keeps its two cells inside the frame");
 	}
+});
+
+// gentle-engram 0.5.1 registers mem_search_prompts but its chrome has no label
+// or argument key for it, so the call card showed no query. The fork adds them.
+test("mem_search_prompts gets a label and shows its query; re-running is a no-op", (t) => {
+	const source = 'const TOOL_LABELS = {\n  mem_search: "search",\n  mem_save: "save",\n};\n\nconst ARG_KEYS = {\n  mem_search: ["query"],\n  mem_save: ["title", "type"],\n};\n';
+	const target = tempFile(t, "memory-tool-chrome.js", source);
+	assert.equal(addMissingToolLabels(target).changed, true);
+	const patched = readFileSync(target, "utf8");
+	assert.match(patched, /mem_search: "search",\n  mem_search_prompts: "search prompts",/);
+	assert.match(patched, /mem_search: \["query"\],\n  mem_search_prompts: \["query"\],/);
+	assert.equal(addMissingToolLabels(target).changed, false);
+	assert.equal(readFileSync(target, "utf8"), patched, "idempotent");
+});
+
+test("a chrome that already labels mem_search_prompts is left untouched", (t) => {
+	const source = 'const TOOL_LABELS = {\n  mem_search: "search",\n  mem_search_prompts: "prompts",\n};\n\nconst ARG_KEYS = {\n  mem_search: ["query"],\n  mem_search_prompts: ["query"],\n};\n';
+	const target = tempFile(t, "memory-tool-chrome.js", source);
+	assert.deepEqual(addMissingToolLabels(target), { changed: false, ok: true });
+	assert.equal(readFileSync(target, "utf8"), source);
 });

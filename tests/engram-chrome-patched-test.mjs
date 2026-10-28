@@ -1,4 +1,5 @@
 /* ENGRAM_CHROME_PATCHED_V8 */
+/* ENGRAM_CHROME_TEST_TOOLS_V2 */
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -13,6 +14,10 @@ import {
 
 const existingTools = [
   "mem_search",
+  "mem_search_prompts",
+  "mem_consolidate",
+  "mem_judge_many",
+  "mem_session_finalize",
   "mem_save",
   "mem_update",
   "mem_delete",

@@ -388,9 +388,34 @@ export function patchChromeFile(target) {
   return { changed: true, ok: true };
 }
 
+// Tools gentle-engram registers without chrome metadata: the call card then
+// derives a label but shows no argument. Each entry is inserted right after an
+// anchor tool's line in TOOL_LABELS and ARG_KEYS, only when it is missing.
+const MISSING_TOOL_CHROME = [
+  { tool: "mem_search_prompts", after: "mem_search", label: "search prompts", args: '["query"]' },
+];
+
+/** Adds labels and argument keys for MISSING_TOOL_CHROME. Idempotent. */
+export function addMissingToolLabels(target) {
+  const original = readFileSync(target, "utf8");
+  let working = original;
+  for (const entry of MISSING_TOOL_CHROME) {
+    if (!working.includes(`  ${entry.tool}: "`)) {
+      working = working.replace(new RegExp(`^(  ${entry.after}: "[^"\\n]*",\\n)`, "m"), `$1  ${entry.tool}: "${entry.label}",\n`);
+    }
+    if (!working.includes(`  ${entry.tool}: [`)) {
+      working = working.replace(new RegExp(`^(  ${entry.after}: \\[[^\\n]*\\],\\n)`, "m"), `$1  ${entry.tool}: ${entry.args},\n`);
+    }
+  }
+  if (working === original) return { changed: false, ok: true };
+  writeFileSync(target, working, "utf8");
+  return { changed: true, ok: true };
+}
+
 function patchChrome(engramDir, quiet) {
   const target = join(engramDir, "memory-tool-chrome.js");
   const result = patchChromeFile(target);
+  if (result.ok && existsSync(target) && addMissingToolLabels(target).changed) result.changed = true;
   if (!result.ok) {
     // A failed match is always worth surfacing, quiet or not: it means the
     // patch anchors drifted from gentle-engram's real shape and the chrome
@@ -559,7 +584,9 @@ function patchTests(engramDir, quiet) {
   const testFile = join(engramDir, "test", "memory-tool-chrome.test.mjs");
   if (!existsSync(testFile)) return;
   const content = readFileSync(testFile, "utf8");
-  if (content.includes("ENGRAM_CHROME_PATCHED_V8")) {
+  // The template carries its own marker: a newer tool list re-copies it even
+  // where the chrome itself is already at V8.
+  if (content.includes("ENGRAM_CHROME_TEST_TOOLS_V2")) {
     if (!quiet) console.log("patch-engram-chrome: tests already patched; skipping.");
     return;
   }
