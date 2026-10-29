@@ -248,7 +248,7 @@ function fakeContext(tui: { requestRender(): void } = fakeTui, confirmResult: (t
 		const factory = widgets.get("gentle-agents");
 		return factory ? factory(tui, plainTheme).render(72).map(stripAnsi) : undefined;
 	};
-	const widgetComponent = () => widgets.get("gentle-agents")?.(tui, plainTheme) as Component | undefined;
+	const widgetComponent = (theme: unknown = plainTheme) => widgets.get("gentle-agents")?.(tui, theme) as Component | undefined;
 	return { ctx, widget, widgetComponent, dialogs, overlays, customCompletions, customOptions };
 }
 
@@ -3959,6 +3959,29 @@ test("the Agents card moves to the fullscreen rail like Todos and its header tog
 	assert.match(collapsed[0]!, /Agents ▸ Expand/);
 	assert.doesNotMatch(collapsed.join("\n"), /map test suites/, "the collapsed card keeps one row");
 	assert.equal(rail.render(46).filter((line) => /explore/.test(stripAnsi(line))).length, 1, "both surfaces share the collapsed state");
+});
+
+test("Matrix-Green keeps the Agents card above the editor, out of the fullscreen rail", async () => {
+	const { pi, tools, fire } = fakePi();
+	gentleAgents(pi, {}, deps().deps);
+	const terminalTui = { requestRender() {}, terminal: { columns: 160, rows: 40 } };
+	const { ctx, widgetComponent } = fakeContext(terminalTui);
+	await fire("session_start", ctx);
+	await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Map lib/", label: "map lib modules", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	// The live theme is a proxy, so a mid-session switch reaches both surfaces.
+	const theme = { ...plainTheme, name: "Matrix-Green" };
+	const component = widgetComponent(theme)!;
+	const state = sidebarState(terminalTui as unknown as TUI);
+	const rail = state.parts.get("agents")!;
+	state.active = true;
+	state.ownsHost = () => true;
+	assert.deepEqual(rail.render(46), [], "the rail paints no Agents section under Matrix-Green");
+	assert.match(component.render(72).map(stripAnsi).join("\n"), /explore  map lib modules/, "the above-editor card keeps showing the task");
+	theme.name = "Gentle";
+	assert.equal(rail.render(46).filter((line) => /explore/.test(stripAnsi(line))).length, 1, "other themes keep the rail card");
+	assert.deepEqual(component.render(72), [], "and the bottom copy steps aside again");
+	state.active = false;
 });
 
 test("the Agents rail digest stays stable while no task is running, so an idle card never rebuilds the rail every second", async () => {

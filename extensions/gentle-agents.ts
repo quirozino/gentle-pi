@@ -1807,10 +1807,17 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		// Agents follows Todos: the fullscreen rail shows it when the terminal is
 		// wide enough, and sidebarPart suppresses the above-editor copy only
 		// while the rail owns the host; narrower terminals keep the widget.
+		// Matrix-Green already shows each subagent's card in the timeline above
+		// the prompt, so there the rail section stays empty and the widget keeps
+		// painting. The theme is pi's live proxy: a switch applies on next render.
 		ui?.setWidget(AGENTS_WIDGET_KEY, (tui, theme) => {
 			host = tui;
 			sidebarTui = tui;
-			return sidebarPart(tui, "agents", agentsCard(tui, theme, false), agentsCard(tui, theme, true));
+			const inRail = () => (theme as { name?: string }).name !== "Matrix-Green";
+			const bottom = agentsCard(tui, theme, false);
+			const rail = agentsCard(tui, theme, true);
+			const part = sidebarPart(tui, "agents", bottom, { ...rail, render: (width: number) => inRail() ? rail.render(width) : [] });
+			return { ...part, render: (width: number) => inRail() ? part.render(width) : bottom.render(width) };
 		});
 	};
 
