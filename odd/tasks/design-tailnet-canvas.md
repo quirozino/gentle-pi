@@ -13,9 +13,9 @@ Branch: `feat/design-tailnet-canvas` (worktree `gentle-pi-worktrees/design-tailn
 
 ## Tasks
 
-- [x] T1 (S2-S5) config reader, server remote origin + port range, open notice, tests, docs — inline
-- [ ] T2 (S3) independent verifier (Risk item 2: request guards) — delegated
-- [ ] T3 (S2) deploy: tag, pack, global install, tailscale serve mappings, live check — inline
+- [x] T1 (S2-S5) config reader, server remote origin + port range, open notice, tests, docs — inline — 05053de58
+- [x] T2 (S3) independent verifier (Risk item 2: request guards) — delegated — PASS, 0 blockers
+- [ ] T3 (S2) deploy: tag, pack, global install, tailscale serve mappings, live check — inline — installed + serve live; pending user's click from magneto/r2-d2
 
 ## Log
 
@@ -24,3 +24,6 @@ Branch: `feat/design-tailnet-canvas` (worktree `gentle-pi-worktrees/design-tailn
 - L3: known limit: Compare frames the app's loopback preview URL, which on a remote client points at that client's own localhost; out of scope.
 - L4: T1 checks: focused tests green (design-canvas-server 61, gentle-design 4 new, design-remote 3); RED on base: 3 server tests fail; `npm run typecheck`: 0 diagnostics, no regressions; differential probe without design.json (Host loopback/public/evil, comment POST with loopback and public Origin) identical to v4.4.0-ddata.3. Full suite running.
 - L5: full suite (minus 3 files that hang identically on base: auto-mode-sdk, odd-phase-loader, review-loadout-rdd-off-sdk): 8365 pass, 8 fail; every failure also fails on base (float-chrome-roles 1, install-tui-mode-setting 6, grouped Status 1).
+- L6: T2 verifier PASS on every S# (Host/Origin variants rejected, rejected POSTs write nothing, no-config byte-identical to base); advisories: BOM config refused, https-only public origin, empty ports list via direct API, mixed loopback/public Host+Origin accepted. RDD: risk+reliability review approved and acknowledged (3 non-blocking advisories).
+- L7: deployed v4.4.0-ddata.4 (local tag on 05053de58, ~/gentle-pi-builds/v4.4.0-ddata.4); verify-customizations all ok, patch-pi applied; ~/.pi/gentle-ai/design.json written; tailscale serve 8450-8459 tailnet only; live GET through https://ddata.tail054f8a.ts.net:8450/<token>/ = 200, no token = 404. Rollback: npm i -g ~/gentle-pi-builds/v4.4.0-ddata.3/gentle-pi-4.4.0.tgz. Branch and tag not pushed.
+- L8: 2026-10-29: later builds on this branch: v4.4.0-ddata.5 (wordmark sweep pace), ddata.6 (calm Matrix animations, live foreground subagent card), ddata.7 (a03bc3329, Matrix-Green keeps the Agents card above the editor; gentle-agents tests 281/281). Branch and tags through ddata.7 pushed to `fork`; live install is ddata.7.
