@@ -19,11 +19,13 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 // animation-policy gate and the redraw scheduling.
 
 /** One terminal frame of the reveal and hide steps. */
-export const TITLE_FRAME_MS = 40;
+// Fork: 100ms, 2.5x slower than upstream (40ms); see tests/animation-pace.test.ts.
+export const TITLE_FRAME_MS = 100;
 const REVEAL_PER_FRAME = 1;
 const HIDE_PER_FRAME = 3;
 const PAUSE_MS = 250;
-const SCAN_MS = 1250;
+/** Fork: 3125ms, 2.5x slower than upstream (1250ms). */
+export const TITLE_SCAN_MS = 3125;
 const HOLD_MS = 1800;
 const REST_MS = 500;
 /** The band's role ladder, left to right; its middle cell is the head. */
@@ -60,7 +62,7 @@ function spans(length: number): Span[] {
 	return [
 		{ phase: TITLE_PHASE.REVEAL, ms: Math.ceil(length / REVEAL_PER_FRAME) * TITLE_FRAME_MS },
 		{ phase: TITLE_PHASE.PAUSE, ms: PAUSE_MS },
-		{ phase: TITLE_PHASE.SCAN, ms: Math.ceil(SCAN_MS / scanSteps) * scanSteps },
+		{ phase: TITLE_PHASE.SCAN, ms: Math.ceil(TITLE_SCAN_MS / scanSteps) * scanSteps },
 		{ phase: TITLE_PHASE.HOLD, ms: HOLD_MS },
 		{ phase: TITLE_PHASE.HIDE, ms: Math.ceil(length / HIDE_PER_FRAME) * TITLE_FRAME_MS },
 		{ phase: TITLE_PHASE.REST, ms: REST_MS },

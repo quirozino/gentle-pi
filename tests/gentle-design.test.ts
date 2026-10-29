@@ -10,6 +10,10 @@ import gentleDesign, { DESIGN_COMMAND_NAME } from "../extensions/gentle-design.t
 import { formatDesignComment, formatDesignCommentBatch, startDesignCanvasServer, type DesignCanvasServer, type DesignCanvasServerOptions, type DesignComment } from "../lib/design-canvas-server.ts";
 import type { OpenInBrowserResult } from "../lib/design-open-browser.ts";
 import { __testing } from "../extensions/skill-registry.ts";
+import type { DesignRemoteResolution } from "../lib/design-remote.ts";
+
+// No test may read the real ~/.pi/gentle-ai/design.json: an empty config home means loopback only.
+process.env.GENTLE_PI_CONFIG_HOME = mkdtempSync(join(tmpdir(), "gentle-design-config-"));
 
 // /gentle:design wiring: a brief starts one design run through the
 // gentle-design skill; open/no arguments show the canvas for a design in the
@@ -1310,4 +1314,68 @@ test("the gentle_design tool schema and description name the handoff action", ()
 test("the skill tells the agent to report handoff progress and to name the chosen artboard in the ODD Log", () => {
 	const source = readFileSync(SKILL_PATH, "utf8");
 	for (const part of ['action "handoff"', '"in_progress"', '"implemented"', "previewUrl", "chosen artboard"]) assert.ok(source.includes(part), `SKILL.md mentions ${part}`);
+});
+
+// Tailnet canvas (odd/tasks/design-tailnet-canvas.md S2, S4, S5).
+
+const REMOTE: DesignRemoteResolution = { file: "/cfg/design.json", remote: { publicHost: "ddata.tail0000.ts.net", ports: [8450, 8451] } };
+
+/** fakeCanvas whose server answers on the tailnet when `tailnet` is true. */
+function fakeTailnetCanvas(tailnet: boolean) {
+	const canvas = fakeCanvas();
+	const startServer = async (options: DesignCanvasServerOptions): Promise<DesignCanvasServer> => {
+		const server = await canvas.startServer(options);
+		if (!tailnet) return server;
+		const base = "https://ddata.tail0000.ts.net:8450/tok/";
+		return { ...server, port: 8450, publicOrigin: "https://ddata.tail0000.ts.net:8450", url: options.initialSlug ? `${base}d/${options.initialSlug}/` : base };
+	};
+	return { ...canvas, startServer };
+}
+
+test("on the tailnet open shows the tailnet link and opens no browser on the host", async () => {
+	const cwd = scratchCwd();
+	writeDesign(cwd, "pricing-page", "Pricing page");
+	const { pi, command } = fakePi();
+	const canvas = fakeTailnetCanvas(true);
+	gentleDesign(pi, { ...canvas, remote: () => REMOTE });
+	const { ctx, notices } = fakeContext(cwd);
+	await command().handler("open pricing-page", ctx);
+	assert.deepEqual(canvas.starts[0].remote, REMOTE.remote, "the configured range reaches the server");
+	assert.deepEqual(canvas.opens, []);
+	assert.deepEqual(notices, [{ message: "Design canvas (tailnet): https://ddata.tail0000.ts.net:8450/tok/d/pricing-page/\nOpen this link on any device in your tailnet.", level: "info" }]);
+});
+
+test("the gentle_design open action reports a tailnet canvas as tailnet, not as a failed browser", async () => {
+	const cwd = scratchCwd();
+	writeDesign(cwd, "pricing-page", "Pricing page");
+	const { pi, tool } = fakePi();
+	const canvas = fakeTailnetCanvas(true);
+	gentleDesign(pi, { ...canvas, remote: () => REMOTE });
+	const result = await tool("gentle_design")!.execute("call", { action: "open", slug: "pricing-page" }, undefined, undefined, fakeContext(cwd).ctx);
+	assert.deepEqual(result.details, { url: "https://ddata.tail0000.ts.net:8450/tok/d/pricing-page/", opened: false, tailnet: true });
+	assert.deepEqual(canvas.opens, []);
+});
+
+test("with every tailnet port busy open falls back to the loopback canvas and says so", async () => {
+	const cwd = scratchCwd();
+	writeDesign(cwd, "pricing-page", "Pricing page");
+	const { pi, command } = fakePi();
+	const canvas = fakeTailnetCanvas(false);
+	gentleDesign(pi, { ...canvas, remote: () => REMOTE });
+	const { ctx, notices } = fakeContext(cwd);
+	await command().handler("open pricing-page", ctx);
+	assert.deepEqual(canvas.opens, ["http://127.0.0.1:4100/tok/d/pricing-page/"]);
+	assert.deepEqual(notices, [{ message: "Design canvas: http://127.0.0.1:4100/tok/d/pricing-page/\nEvery tailnet canvas port (8450-8451) is busy, so this canvas is loopback only.", level: "warning" }]);
+});
+
+test("a malformed tailnet config keeps the loopback canvas and names the problem", async () => {
+	const cwd = scratchCwd();
+	writeDesign(cwd, "pricing-page", "Pricing page");
+	const { pi, command } = fakePi();
+	const canvas = fakeTailnetCanvas(false);
+	gentleDesign(pi, { ...canvas, remote: () => ({ file: "/cfg/design.json", problem: "/cfg/design.json: not valid JSON" }) });
+	const { ctx, notices } = fakeContext(cwd);
+	await command().handler("open pricing-page", ctx);
+	assert.equal(canvas.starts[0].remote, undefined);
+	assert.deepEqual(notices, [{ message: "Design canvas: http://127.0.0.1:4100/tok/d/pricing-page/\nTailnet canvas disabled: /cfg/design.json: not valid JSON.", level: "warning" }]);
 });

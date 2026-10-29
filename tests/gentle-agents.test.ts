@@ -16,7 +16,7 @@ import { createAssistantMessageEventStream, type AssistantMessage } from "@earen
 import { visibleWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { sidebarState } from "../lib/shell-sidebar.ts";
 import { CHILD_PACKAGE_INJECTION_ENV, encodeChildPackageInjection } from "../lib/child-package-injection.ts";
-import gentleAgents, { agentRuntimePaths, agentsCollapseKey, agentsEnabled, agentsStopKey, agentsViewKey, agentResultPreview, answerThroughUi, childContextExtensionPaths, completionText, createDefaultSessionTransport, legacySubagentsInstalled, PARENT_WAKE_GRACE_MS, type AgentsDeps, type SessionTransportFactory } from "../extensions/gentle-agents.ts";
+import gentleAgents, { AGENTS_WINK_MS, agentRuntimePaths, agentsCollapseKey, agentsEnabled, agentsStopKey, agentsViewKey, agentResultPreview, answerThroughUi, childContextExtensionPaths, completionText, createDefaultSessionTransport, legacySubagentsInstalled, PARENT_WAKE_GRACE_MS, type AgentsDeps, type SessionTransportFactory } from "../extensions/gentle-agents.ts";
 import { SWEEP_WAITING_STEP_MS } from "../lib/agents-widget.ts";
 import { SWEEP_STEP_MS } from "../lib/sweep-pulse.ts";
 import { shellGlyphs } from "../lib/shell-glyphs.ts";
@@ -248,7 +248,7 @@ function fakeContext(tui: { requestRender(): void } = fakeTui, confirmResult: (t
 		const factory = widgets.get("gentle-agents");
 		return factory ? factory(tui, plainTheme).render(72).map(stripAnsi) : undefined;
 	};
-	const widgetComponent = () => widgets.get("gentle-agents")?.(tui, plainTheme) as Component | undefined;
+	const widgetComponent = (theme: unknown = plainTheme) => widgets.get("gentle-agents")?.(tui, theme) as Component | undefined;
 	return { ctx, widget, widgetComponent, dialogs, overlays, customCompletions, customOptions };
 }
 
@@ -3764,6 +3764,28 @@ test("subagent_list_agents publishes each agent's declared tool inventory so rou
 	} finally { rmSync(fixture, TEST_DIR_REMOVAL); }
 });
 
+test("a foreground subagent_run call card shows its task while it runs, though Pi built the card before launch", async () => {
+	const { pi, tools, fire } = fakePi();
+	const harness = deps();
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	// Pi renders the call when execution starts, before launch() records the
+	// task, and a foreground run sends no partial result that would rebuild it.
+	const card = tools.get("subagent_run")!.renderCall({ agent: "explore" }, plainTheme, { toolCallId: "fg-1" });
+	assert.deepEqual(card.render(60), [], "no task yet: nothing to draw");
+	const running = tools.get("subagent_run")!.execute("fg-1", { agent: "explore", task: "Map lib/.", label: "map lib" }, undefined, undefined, ctx);
+	await tick();
+	await tick();
+	const live = card.render(60).join("\n");
+	assert.match(live, /❀ Agents/, "the same card now draws the running task");
+	assert.match(live, /explore/);
+	harness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }] });
+	harness.children[0].emit({ type: "agent_settled" });
+	await running;
+	await fire("session_shutdown", ctx);
+});
+
 test("subagent_list_agents and subagent_run in task mode launch a child with the resolved profile and return its answer", async () => {
 	const { pi, tools, fire } = fakePi();
 	const harness = deps();
@@ -3937,6 +3959,29 @@ test("the Agents card moves to the fullscreen rail like Todos and its header tog
 	assert.match(collapsed[0]!, /Agents ▸ Expand/);
 	assert.doesNotMatch(collapsed.join("\n"), /map test suites/, "the collapsed card keeps one row");
 	assert.equal(rail.render(46).filter((line) => /explore/.test(stripAnsi(line))).length, 1, "both surfaces share the collapsed state");
+});
+
+test("Matrix-Green keeps the Agents card above the editor, out of the fullscreen rail", async () => {
+	const { pi, tools, fire } = fakePi();
+	gentleAgents(pi, {}, deps().deps);
+	const terminalTui = { requestRender() {}, terminal: { columns: 160, rows: 40 } };
+	const { ctx, widgetComponent } = fakeContext(terminalTui);
+	await fire("session_start", ctx);
+	await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Map lib/", label: "map lib modules", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	// The live theme is a proxy, so a mid-session switch reaches both surfaces.
+	const theme = { ...plainTheme, name: "Matrix-Green" };
+	const component = widgetComponent(theme)!;
+	const state = sidebarState(terminalTui as unknown as TUI);
+	const rail = state.parts.get("agents")!;
+	state.active = true;
+	state.ownsHost = () => true;
+	assert.deepEqual(rail.render(46), [], "the rail paints no Agents section under Matrix-Green");
+	assert.match(component.render(72).map(stripAnsi).join("\n"), /explore  map lib modules/, "the above-editor card keeps showing the task");
+	theme.name = "Gentle";
+	assert.equal(rail.render(46).filter((line) => /explore/.test(stripAnsi(line))).length, 1, "other themes keep the rail card");
+	assert.deepEqual(component.render(72), [], "and the bottom copy steps aside again");
+	state.active = false;
 });
 
 test("the Agents rail digest stays stable while no task is running, so an idle card never rebuilds the rail every second", async () => {
@@ -6382,18 +6427,18 @@ async function withSingleFrameGlyphs<T>(run: () => Promise<T>): Promise<T> {
 
 test("the quality sweep ticks at the snake step only while an agent actively works and at the waiting step while it only idles", async () => {
 	await withSingleFrameGlyphs(async () => {
-		assert.equal(SWEEP_STEP_MS, 50);
+		assert.equal(SWEEP_STEP_MS, 125, "fork: the calm snake step (upstream 50 ms)");
 		const working = await clockIntervals("quality", false);
-		assert.ok(working.includes(SWEEP_STEP_MS), "an actively working agent ticks at the 50 ms snake step");
+		assert.ok(working.includes(SWEEP_STEP_MS), "an actively working agent ticks at the snake step");
 		const idle = await clockIntervals("quality", true);
-		assert.ok(idle.includes(SWEEP_WAITING_STEP_MS) && !idle.includes(SWEEP_STEP_MS) && !idle.includes(160), "an idle-only card steps at the waiting pace");
+		assert.ok(idle.includes(SWEEP_WAITING_STEP_MS) && !idle.includes(SWEEP_STEP_MS) && !idle.includes(AGENTS_WINK_MS), "an idle-only card steps at the waiting pace");
 	});
 });
 
 test("the performance policy never schedules the wink rate from the sweep", async () => {
 	await withSingleFrameGlyphs(async () => {
 		const working = await clockIntervals("performance", false);
-		assert.ok(working.includes(1000) && !working.includes(160) && !working.includes(SWEEP_STEP_MS), "a working agent still ticks once a second");
+		assert.ok(working.includes(1000) && !working.includes(AGENTS_WINK_MS) && !working.includes(SWEEP_STEP_MS), "a working agent still ticks once a second");
 	});
 });
 test("issue #1162: an answered subagent query is dropped and never replays after task completion", async () => {

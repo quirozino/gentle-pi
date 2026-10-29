@@ -16,7 +16,8 @@ export const SWEEP_TAIL_VAR = "sweepTail";
 
 // The running sweep moves like a snake: one perimeter cell per step, with a
 // body of SWEEP_LENGTH cells behind the head (depth 0 is the head).
-export const SWEEP_STEP_MS = 50;
+// Fork: 125ms, 2.5x slower than upstream (50ms); see tests/animation-pace.test.ts.
+export const SWEEP_STEP_MS = 125;
 export const SWEEP_LENGTH = 8;
 
 const PULSE_THEME_FILES: Readonly<Record<string, URL>> = {

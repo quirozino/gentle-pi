@@ -105,8 +105,10 @@ export const AGENTS_STALE_NOTICE_TYPE = "gentle-agents.stale-notice";
 const RENDER_COALESCE_MS = 400;
 const CLOCK_TICK_MS = 1000;
 // Half the prompt face's 80ms frame rate, so both animations read as the same
-// family without the card twitching.
-const AGENTS_WINK_MS = 160;
+// family without the card twitching. Fork: about 2.5x slower than upstream
+// (160ms), the calm pace of the Matrix chrome (tests/animation-pace.test.ts);
+// 420 rather than 400 so it never equals RENDER_COALESCE_MS.
+export const AGENTS_WINK_MS = 420;
 // Two minutes with no streamed delta on a RUNNING task is long enough that a
 // stalled worker and a merely slow one need to look different: below this a
 // quiet task still reads as "thinking", above it the row calls out the idle
@@ -1805,10 +1807,17 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		// Agents follows Todos: the fullscreen rail shows it when the terminal is
 		// wide enough, and sidebarPart suppresses the above-editor copy only
 		// while the rail owns the host; narrower terminals keep the widget.
+		// Matrix-Green already shows each subagent's card in the timeline above
+		// the prompt, so there the rail section stays empty and the widget keeps
+		// painting. The theme is pi's live proxy: a switch applies on next render.
 		ui?.setWidget(AGENTS_WIDGET_KEY, (tui, theme) => {
 			host = tui;
 			sidebarTui = tui;
-			return sidebarPart(tui, "agents", agentsCard(tui, theme, false), agentsCard(tui, theme, true));
+			const inRail = () => (theme as { name?: string }).name !== "Matrix-Green";
+			const bottom = agentsCard(tui, theme, false);
+			const rail = agentsCard(tui, theme, true);
+			const part = sidebarPart(tui, "agents", bottom, { ...rail, render: (width: number) => inRail() ? rail.render(width) : [] });
+			return { ...part, render: (width: number) => inRail() ? part.render(width) : bottom.render(width) };
 		});
 	};
 
@@ -2247,8 +2256,11 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				// A result poll draws no card of its own: the result row carries the
 				// title with the answer, so repeated polls never stack blocks.
 				if (name === "result") return { render: () => [], invalidate() {} };
-				const taskId = resolveRenderTaskId(name, args, context?.toolCallId);
-				return { render: (width: number) => agentToolCard(theme, width, taskId), invalidate() {} };
+				// Fork: resolved at each render, not once here. Pi builds the call card
+				// when execution starts, before launch() records the task, and a
+				// foreground run sends no partial result that would rebuild it, so a
+				// task id fixed here left the card empty for the whole run.
+				return { render: (width: number) => agentToolCard(theme, width, resolveRenderTaskId(name, args, context?.toolCallId)), invalidate() {} };
 			},
 			renderResult(result, options, theme) {
 				const task = (result.details as { gentleAgents?: { status?: string; taskId?: string } } | undefined)?.gentleAgents;

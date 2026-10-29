@@ -106,10 +106,19 @@ export type DesignCanvasServerOptions = {
 	onImplement?: (request: DesignImplementRequest) => DesignHandoffDelivery | Promise<DesignHandoffDelivery>;
 	initialSlug?: string;
 	randomToken?: () => string;
+	/**
+	 * Tailnet reach (lib/design-remote.ts): listen on the first free port of `ports`,
+	 * still on 127.0.0.1, and also accept `https://<publicHost>:<port>` as this
+	 * server's own Host and Origin. Every port busy: a random loopback-only port.
+	 */
+	remote?: { publicHost: string; ports: readonly number[] };
 };
 
 export type DesignCanvasServer = {
+	/** The tailnet URL when `remote` got one of its ports, else the loopback URL. */
 	url: string;
+	/** The tailnet origin in use; undefined when the server is loopback only. */
+	publicOrigin?: string;
 	port: number;
 	token: string;
 	close(): Promise<void>;
@@ -457,6 +466,11 @@ export async function startDesignCanvasServer(options: DesignCanvasServerOptions
 	if (typeof options.designRoot !== "string" || !isAbsolute(options.designRoot)) throw new Error("designRoot must be an absolute path");
 	if (typeof options.onComment !== "function") throw new Error("onComment must be a function");
 	if (options.initialSlug !== undefined && !SLUG.test(options.initialSlug)) throw new Error("initialSlug must be kebab-case");
+	if (options.remote !== undefined) {
+		const { publicHost: name, ports } = options.remote;
+		if (typeof name !== "string" || !/^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(name)) throw new Error("remote.publicHost must be a lowercase DNS name");
+		if (!Array.isArray(ports) || ports.some((candidate) => !Number.isInteger(candidate) || candidate < 1024 || candidate > 65535)) throw new Error("remote.ports must be ports from 1024 to 65535");
+	}
 	const token = (options.randomToken ?? (() => randomBytes(24).toString("base64url")))();
 	if (!TOKEN_SHAPE.test(token)) throw new Error("token must be 16-128 base64url characters");
 	const designRoot = options.designRoot;
@@ -568,14 +582,14 @@ export async function startDesignCanvasServer(options: DesignCanvasServerOptions
 
 	/** Artboard responses are CSP-sandboxed so even a top-level visit gets an opaque origin. */
 	function artboardCsp(host: string): string {
-		const self = `'self' http://${host}`;
+		const self = `'self' ${publicHost !== undefined && host === `${publicHost}:${port}` ? "https" : "http"}://${host}`;
 		return [
 			"sandbox allow-scripts",
 			`default-src ${self} 'unsafe-inline' data: blob:`,
 			"connect-src 'none'",
 			"base-uri 'none'",
 			"form-action 'none'",
-			`frame-ancestors http://${HOST}:${port} http://localhost:${port}`,
+			`frame-ancestors ${[...ownOrigins].join(" ")}`,
 		].join("; ");
 	}
 
@@ -810,7 +824,7 @@ export async function startDesignCanvasServer(options: DesignCanvasServerOptions
 
 	async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		const host = req.headers.host;
-		if (host !== `${HOST}:${port}` && host !== `localhost:${port}`) return reply(res, 421, { error: "misdirected" });
+		if (host !== `${HOST}:${port}` && host !== `localhost:${port}` && (publicHost === undefined || host !== `${publicHost}:${port}`)) return reply(res, 421, { error: "misdirected" });
 		const raw = String(req.url ?? "");
 		if (!raw.startsWith("/")) return reply(res, 404, { error: "not-found" });
 		const mark = raw.indexOf("?");
@@ -903,13 +917,27 @@ export async function startDesignCanvasServer(options: DesignCanvasServerOptions
 		return undefined;
 	}
 
-	await new Promise<void>((resolve, reject) => {
-		server.once("error", reject);
-		server.listen(0, HOST, () => {
-			server.off("error", reject);
-			resolve();
+	function listen(on: number): Promise<void> {
+		return new Promise<void>((resolve, reject) => {
+			server.once("error", reject);
+			server.listen(on, HOST, () => {
+				server.off("error", reject);
+				resolve();
+			});
 		});
-	});
+	}
+	let publicHost: string | undefined;
+	for (const candidate of options.remote?.ports ?? []) {
+		try {
+			await listen(candidate);
+			publicHost = options.remote!.publicHost;
+			break;
+		} catch (error) {
+			// Another session holds this port; any other failure is real.
+			if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE") throw error;
+		}
+	}
+	if (publicHost === undefined) await listen(0);
 	const address = server.address();
 	if (!address || typeof address === "string" || address.address !== HOST) {
 		server.close();
@@ -917,7 +945,8 @@ export async function startDesignCanvasServer(options: DesignCanvasServerOptions
 	}
 	port = address.port;
 	origin = `http://${HOST}:${port}`;
-	ownOrigins = new Set([origin, `http://localhost:${port}`]);
+	const publicOrigin = publicHost === undefined ? undefined : `https://${publicHost}:${port}`;
+	ownOrigins = new Set([origin, `http://localhost:${port}`, ...(publicOrigin ? [publicOrigin] : [])]);
 	await ensureWatcher();
 
 	function close(): Promise<void> {
@@ -942,6 +971,6 @@ export async function startDesignCanvasServer(options: DesignCanvasServerOptions
 		return clients.size;
 	}
 
-	const url = `${origin}${base}${options.initialSlug ? `d/${options.initialSlug}/` : ""}`;
-	return { url, port, token, close, connectedClients: () => clients.size, show };
+	const url = `${publicOrigin ?? origin}${base}${options.initialSlug ? `d/${options.initialSlug}/` : ""}`;
+	return { url, port, token, publicOrigin, close, connectedClients: () => clients.size, show };
 }
