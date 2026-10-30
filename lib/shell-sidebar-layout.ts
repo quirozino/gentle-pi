@@ -338,9 +338,9 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			// section collection it renders a second time, at the narrow rail width,
 			// as a stray section right under Status — a duplicate nothing wants, so
 			// the exclusion is unconditional rather than tied to any flag.
-			const KNOWN = ["footer", "agents", "todo"].filter((key) => key !== "todo" || state.visibility?.todo !== false);
+			const KNOWN = ["footer", "jobs", "agents", "todo"].filter((key) => key !== "todo" || state.visibility?.todo !== false);
 			const RAIL_EXCLUDED = new Set(["changes", "header"]);
-			const knownKeys = new Set(["footer", "agents", "todo"]);
+			const knownKeys = new Set(["footer", "jobs", "agents", "todo"]);
 			const collectCached = (keys: Array<[string, SidebarRail]>, keepBlank = false) => keys.map(([key, component]) => {
 				const digest = digestByPart.get(key);
 				const existing = sectionCache.get(key);
