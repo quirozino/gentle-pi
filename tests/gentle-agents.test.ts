@@ -3764,7 +3764,7 @@ test("subagent_list_agents publishes each agent's declared tool inventory so rou
 	} finally { rmSync(fixture, TEST_DIR_REMOVAL); }
 });
 
-test("a foreground subagent_run call card shows its task while it runs, though Pi built the card before launch", async () => {
+test("a foreground subagent_run call card stays empty while the widget draws the running task, then keeps its final row", async () => {
 	const { pi, tools, fire } = fakePi();
 	const harness = deps();
 	gentleAgents(pi, {}, harness.deps);
@@ -3777,12 +3777,13 @@ test("a foreground subagent_run call card shows its task while it runs, though P
 	const running = tools.get("subagent_run")!.execute("fg-1", { agent: "explore", task: "Map lib/.", label: "map lib" }, undefined, undefined, ctx);
 	await tick();
 	await tick();
-	const live = card.render(60).join("\n");
-	assert.match(live, /❀ Agents/, "the same card now draws the running task");
-	assert.match(live, /explore/);
+	assert.deepEqual(card.render(60), [], "the Agents widget is the one card of a running task");
 	harness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }] });
 	harness.children[0].emit({ type: "agent_settled" });
 	await running;
+	const done = card.render(60).join("\n");
+	assert.match(done, /❀ Agents/, "the same card, built before launch, draws the finished task");
+	assert.match(done, /explore/);
 	await fire("session_shutdown", ctx);
 });
 
@@ -3824,10 +3825,8 @@ test("subagent_list_agents and subagent_run in task mode launch a child with the
 	// The timeline block is that call's own task row, not the whole Agents
 	// card: the agent, its model and its elapsed time belong where the work
 	// happens, scoped by the toolCallId launch() recorded for "c9".
-	const callCard = tools.get("subagent_run")!.renderCall({ agent: "explore" }, plainTheme, { toolCallId: "c9" }).render(60).join("\n");
-	assert.match(callCard, /❀ Agents/);
-	assert.match(callCard, /explore/);
-	assert.match(callCard, /◐|○|\?|✓/);
+	const callCard = tools.get("subagent_run")!.renderCall({ agent: "explore" }, plainTheme, { toolCallId: "c9" });
+	assert.deepEqual(callCard.render(60), [], "running: the widget draws it");
 	// A call with no resolvable task (args missing task_id, no matching
 	// toolCallId) renders nothing rather than the whole session's card.
 	assert.deepEqual(tools.get("subagent_run")!.renderCall({ agent: "explore" }, plainTheme, { toolCallId: "unknown-call" }).render(60), []);
@@ -3851,6 +3850,12 @@ test("each subagent_run timeline block is scoped to only the task it launched, n
 	await tick();
 	const second = tools.get("subagent_run")!.execute("call-b", { agent: "explore", task: "Second task", label: "second job", mode: "background" }, undefined, undefined, ctx);
 	await second;
+	await tick();
+	// Running blocks stay empty (the widget draws them): finish both first.
+	for (const child of harness.children) {
+		child.emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }] });
+		child.emit({ type: "agent_settled" });
+	}
 	await tick();
 
 	const cardA = tools.get("subagent_run")!.renderCall({ agent: "explore" }, plainTheme, { toolCallId: "call-a" }).render(72).join("\n");
@@ -3905,7 +3910,7 @@ test("running subagent_result polls hide only their tool chrome, not the model r
 		assert.deepEqual(resultTool.renderCall({ task_id: id }, plainTheme).render(80), [], "poll title is hidden");
 		assert.deepEqual(resultTool.renderResult(poll as Parameters<Registered["renderResult"]>[0], { expanded }, plainTheme).render(80), [], "poll body is hidden");
 	}
-	assert.match(tools.get("subagent_status")!.renderCall({ task_id: id }, plainTheme).render(80).join(""), /❀ Agents/, "other tools keep the per-call Agents card");
+	assert.deepEqual(tools.get("subagent_status")!.renderCall({ task_id: id }, plainTheme).render(80), [], "a running task's per-call card leaves it to the widget");
 	harness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "All done." }] }] });
 	harness.children[0].emit({ type: "agent_settled" });
 	await tick();
@@ -6553,9 +6558,7 @@ test("a task with an unanswered query renders as waiting for reply in the widget
 
 	assert.match(widget()![0], /^╭─ ❀ Agents ▾ Collapse · 1 waiting ─+╮$/);
 	assert.match(widget()![1], /^│ \?  explore  waiting for your reply /);
-	const card = tools.get("subagent_run")!.renderCall({ agent: "explore" }, plainTheme, { toolCallId: "foreground" }).render(72).map(stripAnsi);
-	assert.match(card[0]!, /Agents · 1 waiting/);
-	assert.match(card[1]!, /\?  explore  waiting for your reply /);
+	assert.deepEqual(tools.get("subagent_run")!.renderCall({ agent: "explore" }, plainTheme, { toolCallId: "foreground" }).render(72), [], "the widget is the waiting task's one card");
 
 	const replied = await tools.get("subagent_reply")!.execute("r1", { task_id: id, request_id: "q1", message: "lib/" }, undefined, undefined, ctx);
 	assert.match(replied.content[0].text, /accepted/);
@@ -6565,15 +6568,14 @@ test("a task with an unanswered query renders as waiting for reply in the widget
 	await fire("session_shutdown", ctx);
 });
 
-// When the turn ends on a task's own tool card, that card already sits at the
-// bottom of the timeline; the widget must not stack an identical row on it.
-test("the widget omits a task whose tool call result is the last timeline entry", async () => {
+// One card per running task: the widget keeps it even when the task's own
+// tool result ends the timeline, because that timeline block stays empty.
+test("the widget keeps a running task whose tool call result is the last timeline entry", async () => {
 	const { pi, tools, fire } = fakePi();
 	const harness = deps();
 	gentleAgents(pi, {}, harness.deps);
 	const { ctx, widget } = fakeContext();
-	let leaf: unknown;
-	(ctx.sessionManager as unknown as { getLeafEntry: () => unknown }).getLeafEntry = () => leaf;
+	(ctx.sessionManager as unknown as { getLeafEntry: () => unknown }).getLeafEntry = () => ({ type: "message", id: "e2", parentId: "e1", message: { role: "toolResult", toolCallId: "foreground", content: [] } });
 	await fire("session_start", ctx);
 
 	await fire("agent_start", ctx);
@@ -6582,24 +6584,12 @@ test("the widget omits a task whose tool call result is the last timeline entry"
 	harness.children[0].message({ id: "q1", kind: "query", message: "Which directory should I inspect?" });
 	await pending;
 
-	leaf = { type: "message", id: "e2", parentId: "e1", message: { role: "toolResult", toolCallId: "foreground", content: [] } };
-	assert.deepEqual(widget(), [], "the only row is already drawn by the trailing tool card");
-
-	await tools.get("subagent_run")!.execute("bg", { agent: "explore", task: "Background map", mode: "background" }, undefined, undefined, ctx);
-	await tick();
-	const withBackground = widget()!;
-	assert.match(withBackground[0]!, /Agents ▾ Collapse · 1 active/, "only the remaining row is counted");
-	assert.ok(withBackground.every((line) => !/Ask question directly|waiting for your reply/.test(line)), "the trailing task stays omitted");
-	assert.ok(withBackground.some((line) => /explore  Background map/.test(line)));
-
-	leaf = { type: "message", id: "e3", parentId: "e2", message: { role: "user", content: "lib/" } };
-	assert.ok(widget()!.some((line) => /\?  explore  waiting for your reply/.test(line)), "once anything follows the result, the widget shows the task again");
-
-	leaf = { type: "message", id: "e4", parentId: "e3", message: { role: "toolResult", toolCallId: "unrelated-call", content: [] } };
-	assert.ok(widget()!.some((line) => /waiting for your reply/.test(line)), "another call's trailing result does not hide this task");
+	assert.ok(widget()!.some((line) => /\?  explore  waiting for your reply/.test(line)), "the widget still draws the task");
+	assert.deepEqual(tools.get("subagent_run")!.renderCall({ agent: "explore" }, plainTheme, { toolCallId: "foreground" }).render(72), [], "and the timeline block does not repeat it");
 
 	await fire("session_shutdown", ctx);
 });
+
 
 
 // gentle-shell#1587: children do not load the gentle-pi package in the

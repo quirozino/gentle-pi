@@ -775,24 +775,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	};
 	const replyView = (task: TaskRecord): TaskRecord =>
 		awaitingReply.has(task.id) && task.status === TASK_STATUS.RUNNING ? { ...task, status: TASK_STATUS.WAITING, lastStep: "waiting for your reply" } : task;
-	// Tasks whose own tool card ends the timeline: the leaf entry, and any
-	// sibling results right before it, are results of calls that launched them.
-	// That card already shows the row at the bottom, so the widget skips it
-	// until anything else is appended after the result.
-	const trailingCardTaskIds = (): Set<string> => {
-		const ids = new Set<string>();
-		let entry = sessions?.getLeafEntry?.();
-		while (entry?.type === "message" && entry.message.role === "toolResult") {
-			const taskId = callTaskIds.get(entry.message.toolCallId);
-			if (taskId !== undefined) ids.add(taskId);
-			entry = entry.parentId === null ? undefined : sessions?.getEntry?.(entry.parentId);
-		}
-		return ids;
-	};
-	const widgetTaskList = (): TaskRecord[] => {
-		const trailing = trailingCardTaskIds();
-		return visibleTasks().filter((task) => !trailing.has(task.id)).map(replyView);
-	};
+	const widgetTaskList = (): TaskRecord[] => visibleTasks().map(replyView);
 	type SessionTransport = { generation: number; sessionId: string; sessionManager: ExtensionContext["sessionManager"]; client: SessionTransportClient; listener: SessionTransportListener; registry: SessionTransportRegistry; close(): Promise<void> };
 	let transportGeneration = 0;
 	let activeSessionTransport: SessionTransport | undefined;
@@ -1807,9 +1790,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		// Agents follows Todos: the fullscreen rail shows it when the terminal is
 		// wide enough, and sidebarPart suppresses the above-editor copy only
 		// while the rail owns the host; narrower terminals keep the widget.
-		// Matrix-Green already shows each subagent's card in the timeline above
-		// the prompt, so there the rail section stays empty and the widget keeps
-		// painting. The theme is pi's live proxy: a switch applies on next render.
+		// Matrix-Green keeps the card above the prompt: there the rail section
+		// stays empty and the widget keeps painting. The theme is pi's live proxy: a switch applies on next render.
 		ui?.setWidget(AGENTS_WIDGET_KEY, (tui, theme) => {
 			host = tui;
 			sidebarTui = tui;
@@ -2208,14 +2190,12 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		if (taskId === undefined) return [];
 		const task = store.get(taskId);
 		if (!task) return [];
-		// A running task's card winks and sweeps its frame like the widget, on
-		// the widget's clock (it re-renders the screen while a task runs); a
-		// finished one is static.
-		const now = deps.now();
-		const live = !isFinished(task.status);
-		return renderAgentsCard([replyView(task)], theme, width, now, {
+		// Fork: one card per task. While it runs, the Agents widget (above the
+		// prompt, or the rail) draws it with its controls, so the timeline block
+		// stays empty; once it finishes, the block keeps its final row as history.
+		if (!isFinished(task.status) && agentsVisible) return [];
+		return renderAgentsCard([replyView(task)], theme, width, deps.now(), {
 			collapsed: false, maxRows: widgetRows(undefined), keepFinished: true, idleAfterMs: AGENTS_IDLE_AFTER_MS,
-			...(live ? { tick: Math.floor(now / AGENTS_WINK_MS), sweep: sweepEnabled() } : {}),
 		});
 	};
 
